@@ -2198,3 +2198,102 @@ class TestAnonymisation:
             pseudo = cells[2]
             choices = tuple(cells[6:6 + loaded.k])
             assert choices == by_pseudo[pseudo]
+
+
+# ==========================================================================
+# Cross-file: does every cohort fit?
+# ==========================================================================
+
+
+def test_a_cohort_that_cannot_fit_its_zone_warns_at_validate_time(case: ConfigCase):
+    """Hall's condition asked of the roster, at step 1 of the runbook.
+
+    The solver already detects the desk-level version and fails with names, but
+    only after everyone has ranked. This became worth checking when both cohorts
+    were restricted: while candidates could sit anywhere they absorbed any
+    overflow, so only one zone could ever be tight.
+    """
+    zone = case.zone_ids[0]
+    # Confine a rule to one zone, then put more people in it than it has desks.
+    case.eligibility["rules"] = [
+        {"id": "confined", "when": {"candidacy": "confined"},
+         "allow_zones": [zone], "reason": "test"},
+        {"id": "rest", "when": {}, "allow_zones": "*", "reason": "test"},
+    ]
+    seats = sum(
+        1
+        for room in case.rooms["rooms"]
+        for d in room["desks"]
+        if d["zone"] == zone and d.get("available", True)
+    )
+    for i in range(seats + 2):
+        case.roster_rows.append({
+            "name": f"Confined {i}", "email": f"confined{i}@umich.edu",
+            "year": "1", "candidacy": "confined", "keeps_desk": "no",
+            "current_desk": "",
+        })
+    hits = [w for w in case.warnings() if "can only be seated" in w]
+    assert len(hits) == 1, (
+        "only the MINIMAL over-subscribed set should be reported; a superset "
+        f"adds nothing and buries it. Got:\n" + "\n".join(hits)
+    )
+    warning = hits[0]
+    assert zone in warning
+    assert f"{seats + 2} people" in warning
+    assert f"{seats} desk" in warning
+    assert "2 too few" in warning
+    case.load()  # a warning, never an error
+
+
+def test_a_cohort_that_fits_exactly_does_not_warn(case: ConfigCase):
+    """Exactly enough seats is fine, and must not cry wolf."""
+    zone = case.zone_ids[0]
+    case.eligibility["rules"] = [
+        {"id": "confined", "when": {"candidacy": "confined"},
+         "allow_zones": [zone], "reason": "test"},
+        {"id": "rest", "when": {}, "allow_zones": "*", "reason": "test"},
+    ]
+    seats = sum(
+        1
+        for room in case.rooms["rooms"]
+        for d in room["desks"]
+        if d["zone"] == zone and d.get("available", True)
+    )
+    # Replace the roster so nobody else competes for the same zone via "*".
+    case.roster_rows[:] = [
+        {"name": f"Confined {i}", "email": f"confined{i}@umich.edu",
+         "year": "1", "candidacy": "confined", "keeps_desk": "no",
+         "current_desk": ""}
+        for i in range(seats)
+    ]
+    hits = [w for w in case.warnings() if "can only be seated" in w]
+    assert not hits, "an exactly-fitting cohort must not warn: " + repr(hits)
+    case.load()  # and the config is valid
+
+
+def test_desk_keepers_do_not_count_against_the_cohort(case: ConfigCase):
+    """Somebody keeping their desk is out of the pool, and so is their desk."""
+    zone = case.zone_ids[0]
+    case.eligibility["rules"] = [
+        {"id": "confined", "when": {"candidacy": "confined"},
+         "allow_zones": [zone], "reason": "test"},
+        {"id": "rest", "when": {}, "allow_zones": "*", "reason": "test"},
+    ]
+    zone_desks = [
+        d["id"]
+        for room in case.rooms["rooms"]
+        for d in room["desks"]
+        if d["zone"] == zone
+    ]
+    case.roster_rows[:] = [
+        {"name": f"Confined {i}", "email": f"confined{i}@umich.edu",
+         "year": "1", "candidacy": "confined",
+         "keeps_desk": "yes" if i == 0 else "no",
+         "current_desk": zone_desks[0] if i == 0 else ""}
+        for i in range(len(zone_desks))
+    ]
+    assert not [w for w in case.warnings() if "can only be seated" in w], (
+        "a keeper occupies a desk but is not competing for one; counting them "
+        "on the demand side while their desk still counts on the supply side "
+        "would be a false alarm"
+    )

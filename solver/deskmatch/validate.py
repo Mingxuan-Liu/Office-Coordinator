@@ -2293,3 +2293,127 @@ def _validate_seeds(ctx: ValidationContext, doc: Mapping[str, Any]) -> None:
                 f"is the same as tie_break_seed ({_fmt(value)}), so this sensitivity run"
                 " just reproduces the published one.",
             )
+
+
+# --------------------------------------------------------------------------
+# Cross-file: does every cohort actually fit?
+# --------------------------------------------------------------------------
+
+
+def validate_zone_capacity(
+    rooms_doc: Mapping[str, Any] | None,
+    elig_doc: Mapping[str, Any] | None,
+    roster_rows: Sequence[Mapping[str, str]] | None,
+) -> ValidationContext:
+    """Warn when a group of people cannot fit in the zones open to them.
+
+    This is Hall's condition one level up from the solver's. The solver already
+    detects the desk-level version and fails loudly with names -- but only after
+    everyone has ranked. This is the same question asked of the *roster*, at
+    `deskmatch validate` time, which is step 1 of the runbook: if thirteen
+    pre-candidates share twelve pre-candidate desks, the coordinator should hear
+    about it before the form opens, not after collection closes.
+
+    It became worth checking when both cohorts were restricted. While candidates
+    could sit anywhere they absorbed any overflow, so only one zone could ever be
+    tight; now every cohort is capped and each one can independently not fit.
+
+    A warning, not an error: people who do not submit are excluded from the pool,
+    so a roster that is one over may still solve. It says so.
+    """
+    ctx = ValidationContext()
+    # Every input here can be malformed -- that is what the rest of the
+    # validator is for -- so bail out rather than adding a second, confusing
+    # complaint about a file that is already being reported as broken.
+    if not (_is_mapping(rooms_doc) and _is_mapping(elig_doc) and roster_rows):
+        return ctx
+    if not _is_list(rooms_doc.get("rooms")):
+        return ctx
+
+    capacity: dict[str, int] = {}
+    for room in rooms_doc.get("rooms", []) or []:
+        if not _is_mapping(room):
+            continue
+        for desk in room.get("desks", []) or []:
+            if not _is_mapping(desk) or desk.get("available") is False:
+                continue
+            zone = str(desk.get("zone", ""))
+            if zone:
+                capacity[zone] = capacity.get(zone, 0) + 1
+    all_zones = sorted(capacity)
+    if not all_zones:
+        return ctx
+
+    # Which zones each roster member could be assigned to. Reuses the shipped
+    # rule table rather than re-deriving cohorts, so a new rule is covered for
+    # free.
+    from .eligibility import match_value  # local: avoids an import cycle
+
+    rules = _rules_of(elig_doc)
+    demand: dict[tuple[str, ...], int] = {}
+    for row in roster_rows:
+        if parse_keeps_desk(row.get("keeps_desk", "")) is True:
+            continue                      # keepers are out of the pool entirely
+        allowed: tuple[str, ...] | None = None
+        for rule in rules:
+            if not _is_mapping(rule):
+                continue
+            when = rule.get("when")
+            if not _is_mapping(when):
+                continue
+            try:
+                if all(match_value(m, row.get(a)) for a, m in when.items()):
+                    zones = rule.get("allow_zones")
+                    allowed = (
+                        tuple(all_zones)
+                        if zones == "*"
+                        else tuple(sorted(str(z) for z in zones or ()))
+                    )
+                    break
+            except Exception:
+                return ctx           # a malformed predicate is reported elsewhere
+        if allowed is None:
+            continue
+        demand[allowed] = demand.get(allowed, 0) + 1
+
+    if not demand:
+        return ctx
+
+    # Hall's condition over the (few) distinct zone-sets in play. Exact, and
+    # 2^len(all_zones) is nothing at department scale; skip rather than hang if
+    # somebody ever defines a preposterous number of zones.
+    if len(all_zones) > 16:            # pragma: no cover - defensive
+        return ctx
+    from itertools import combinations
+
+    seen: set[tuple[str, ...]] = set()
+    for size in range(1, len(all_zones) + 1):
+        for subset in combinations(all_zones, size):
+            group = set(subset)
+            confined = sum(n for zs, n in demand.items() if set(zs) <= group)
+            seats = sum(capacity.get(z, 0) for z in subset)
+            if confined <= seats:
+                continue
+            key = tuple(sorted(subset))
+            # Report only MINIMAL over-subscribed sets, the same way the solver
+            # reports blocking sets. If {precandidate_side} is already short,
+            # {precandidate_side, senior_office} being short as well adds no
+            # information and buries the actionable line. Subsets are enumerated
+            # smallest-first, so anything implied by an earlier report is a
+            # superset of it.
+            if any(set(prev) <= group for prev in seen):
+                continue
+            seen.add(key)
+            names = ", ".join(f"'{z}'" for z in subset)
+            ctx.warn(
+                f"{ROSTER_FILE} + {ROOMS_FILE}",
+                f"{confined} people on the roster can only be seated in {names}, "
+                f"which has {seats} desk(s) between them -- {confined - seats} too "
+                f"few.",
+                "The solve will fail (and name them) if they all submit. People "
+                "who do not submit are excluded, so it may still work out -- but "
+                "it is much easier to add a desk, move the zone boundary in "
+                "rooms.json, or widen a rule in eligibility.json now than after "
+                "the form closes.",
+            )
+    return ctx

@@ -50,6 +50,7 @@ from .types import (
     Zone,
 )
 from .validate import (
+    validate_zone_capacity,
     CONFIG_FILES,
     ELIGIBILITY_FILE,
     ROOMS_FILE,
@@ -132,6 +133,15 @@ def load_config(config_dir: str | Path) -> Config:
         )
     if scoring_doc is not None:
         ctx.merge(validate_scoring(scoring_doc))
+    # Cross-file: can each cohort actually fit in the zones open to it? Asked
+    # here, at step 1 of the runbook, rather than discovered after collection.
+    ctx.merge(
+        validate_zone_capacity(
+            rooms_doc,
+            elig_doc,
+            roster_table[1] if roster_table is not None else None,
+        )
+    )
 
     problems = _grouped_by_file(ctx.problems)
     warnings = _grouped_by_file(ctx.warnings)
