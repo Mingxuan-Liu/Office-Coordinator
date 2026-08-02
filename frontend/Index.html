@@ -26,11 +26,23 @@
 <header class="appbar">
   <div class="wrap appbar__inner">
     <span class="brand">
+      <!-- A bipartite matching: people on the left, desks on the right, and the
+           edges the solver chose. Two of them cross, which is the whole idea in
+           one glyph -- the optimiser swaps a pair when that makes the total
+           better, rather than serving people in the order they arrived. Reads
+           at 24px because it is six dots and three lines. -->
       <svg class="brand__mark" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="1.6" aria-hidden="true">
-        <circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"></circle>
-        <ellipse cx="12" cy="12" rx="10" ry="4.6" transform="rotate(-24 12 12)"></ellipse>
-        <circle cx="20.1" cy="8.6" r="1.5" fill="currentColor" stroke="none"></circle>
+           stroke-width="1.5" stroke-linecap="round" role="img"
+           aria-label="Two columns of dots joined by lines: an assignment of people to desks">
+        <path d="M5 5 L19 12 M5 12 L19 5 M5 19 L19 19"></path>
+        <g fill="currentColor" stroke="none">
+          <circle cx="5" cy="5" r="2.1"></circle>
+          <circle cx="5" cy="12" r="2.1"></circle>
+          <circle cx="5" cy="19" r="2.1"></circle>
+          <circle cx="19" cy="5" r="2.1"></circle>
+          <circle cx="19" cy="12" r="2.1"></circle>
+          <circle cx="19" cy="19" r="2.1"></circle>
+        </g>
       </svg>
       <span class="brand__name">Desk selection</span>
       <span class="brand__sub">&middot; Astronomy</span>

@@ -1381,9 +1381,10 @@
 
   /* The identity step re-asks this on every candidacy change, and it is the
      SERVER's rule-table evaluation that answers — not a second implementation
-     in the browser. Mirrors Code.gs getEligibleZonesForClaim(): the answer is
-     the intersection of what the roster entitles them to and what their claimed
-     candidacy entitles them to, so nobody unlocks a zone by retyping it. */
+     in the browser. Mirrors Code.gs getEligibleZonesForClaim(): the SUBMITTED
+     candidacy governs on its own. It used to be intersected with the roster's
+     zones, which returned the empty set as soon as a correction crossed the
+     cohort boundary — see the note in Code.gs submitRanking(). */
   function getEligibleZonesForClaim(claim) {
     if (params.mockFail === 'getEligibleZonesForClaim') {
       throw new Error('Mock failure: getEligibleZonesForClaim.');
@@ -1398,10 +1399,10 @@
     var claimZones = zonesForAttributes(claimed);
     return {
       ok: true,
-      zones: intersect(rosterZones, claimZones),
+      zones: claimZones,
       rosterZones: rosterZones,
       claimZones: claimZones,
-      reason: decisionForAttributes(person).reason
+      reason: decisionForAttributes(claimed).reason
     };
   }
 

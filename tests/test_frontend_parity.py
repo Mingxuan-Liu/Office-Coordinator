@@ -405,3 +405,116 @@ else {
   }
 }
 """
+
+
+@requires_js
+def test_correcting_your_candidacy_never_leaves_you_with_no_zone(tmp_path):
+    """The submitted candidacy governs, on its own.
+
+    `getEligibleZonesForClaim` used to return the INTERSECTION of the roster's
+    zones and the submitted ones. That was invisible while candidates were
+    allowed everywhere, because intersecting with "*" is a no-op. The moment
+    candidates were restricted, a student whose roster row said "candidate"
+    correcting themselves to "precandidate" got
+    {candidate_side, senior_office} ∩ {precandidate_side} = {} and was told they
+    had "no zone at all" -- a dead end reached by using the field exactly as
+    intended, on the one screen where a student cannot route around it.
+
+    So: for every roster member crossed with every candidacy the rules mention,
+    the answer must be non-empty AND must equal what the Python rule table gives
+    for that candidacy alone, ignoring the roster.
+    """
+    config = load_config(CONFIG_DIR)
+
+    candidacies = sorted(
+        {
+            str(v).strip()
+            for rule in config.eligibility.rules
+            for v in (
+                [rule.when.get("candidacy")]
+                if not isinstance(rule.when.get("candidacy"), (list, tuple))
+                else list(rule.when["candidacy"])
+            )
+            if v
+        }
+        | {p.candidacy for p in config.roster.people if p.candidacy}
+    )
+    assert candidacies, "no candidacy values to test"
+
+    cases = [
+        {"email": p.email, "candidacy": c}
+        for p in config.roster.people
+        for c in candidacies
+    ]
+    cases_path = tmp_path / "claims.json"
+    cases_path.write_text(json.dumps(cases), encoding="utf-8")
+
+    harness = tmp_path / "claims.js"
+    harness.write_text(
+        _CLAIM_HARNESS % {
+            "repo": json.dumps(str(REPO) + os.sep),
+            "cases": json.dumps(str(cases_path)),
+        },
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [_jsc(), str(harness)], capture_output=True, text=True, timeout=180, cwd=tmp_path
+    )
+    assert proc.returncode == 0, f"harness failed:\n{proc.stdout}\n{proc.stderr}"
+    got = {
+        (row["email"], row["candidacy"]): sorted(row["zones"] or [])
+        for row in json.loads(proc.stdout.strip().splitlines()[-1])
+    }
+
+    empties, mismatches = [], []
+    for case in cases:
+        person = config.roster.by_email(case["email"])
+        corrected = Person(
+            email=person.email, name=person.name, year=person.year,
+            candidacy=case["candidacy"], keeps_desk=person.keeps_desk,
+            current_desk=person.current_desk,
+            attributes={**dict(person.attributes), "candidacy": case["candidacy"]},
+        )
+        expected = sorted(
+            elig.allowed_zones(config.eligibility, config.rooms, corrected)
+        )
+        actual = got.get((case["email"], case["candidacy"]))
+        if not actual:
+            empties.append(f"  {case['email']} as {case['candidacy']!r} -> no zones")
+        elif actual != expected:
+            mismatches.append(
+                f"  {case['email']} as {case['candidacy']!r}: "
+                f"apps_script={actual} python={expected}"
+            )
+
+    assert not empties, (
+        "correcting your candidacy must never leave you with nowhere to sit:\n"
+        + "\n".join(empties)
+    )
+    assert not mismatches, (
+        "the form and the solver disagree about a corrected candidacy:\n"
+        + "\n".join(mismatches)
+    )
+
+
+_CLAIM_HARNESS = r"""
+var R = %(repo)s;
+var Session = { getActiveUser: function () { return { getEmail: function () { return ''; } }; } };
+var SpreadsheetApp = {};
+var PropertiesService = { getScriptProperties: function () { return { getProperty: function () { return null; } }; } };
+var Utilities = { getUuid: function () { return 'u'; }, formatDate: function () { return ''; } };
+var HtmlService = {}, LockService = {}, Logger = { log: function () {} };
+
+(0, eval)(readFile(R + 'frontend/ConfigData.gs'));
+(0, eval)(readFile(R + 'frontend/Code.gs'));
+
+var cases = JSON.parse(readFile(%(cases)s));
+var out = [];
+cases.forEach(function (c) {
+  var res;
+  try { res = getEligibleZonesForClaim(c); }
+  catch (e) { res = { zones: [], error: String(e && e.message || e) }; }
+  out.push({ email: c.email, candidacy: c.candidacy, zones: res.zones || [] });
+});
+print(JSON.stringify(out));
+"""

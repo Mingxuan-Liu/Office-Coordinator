@@ -337,14 +337,17 @@ function getEligibleZonesForClaim(claim) {
     if (!row) {
       return { ok: false, error: 'That email address is not on the roster.', zones: [] };
     }
+    // The submitted candidacy governs; see the note in submitRanking(). This
+    // must agree with the submit path exactly, or the form shows one set of
+    // zones and the server enforces another.
     var rosterZones = getEligibleZones(row.attributes);
     var claimZones = getEligibleZones(claimAttributes_(row, claim));
     return {
       ok: true,
-      zones: intersect_(rosterZones, claimZones),
+      zones: claimZones,
       rosterZones: rosterZones,
       claimZones: claimZones,
-      reason: safeDecision_(row.attributes).reason
+      reason: safeDecision_(claimAttributes_(row, claim)).reason
     };
   } catch (err) {
     return { ok: false, error: errText_(err), zones: [] };
@@ -641,13 +644,30 @@ function submitRanking(payload) {
   var eligibilityReason = '';
   if (person) {
     try {
+      // The SUBMITTED candidacy governs, on its own.
+      //
+      // This used to intersect the roster's zones with the submitted ones, as a
+      // hedge against somebody widening their own eligibility. That hedge broke
+      // the moment candidates stopped being allowed everywhere: a student whose
+      // roster row says "candidate" correcting themselves to "precandidate" got
+      // {candidate_side, senior_office} ∩ {precandidate_side} = {} and was told
+      // they had "no zone at all" — a dead end produced by using the field
+      // exactly as intended.
+      //
+      // Intersecting is also the wrong policy here. The roster is stale by
+      // design, the correction exists precisely to cross the cohort boundary,
+      // and the department's position is that the student's own answer is the
+      // one that counts. The conflict is still recorded for the coordinator's
+      // report; it just no longer silently narrows anyone to nothing.
       var rosterZones = getEligibleZones(person.attributes);
-      var claimZones = getEligibleZones(claimAttributes_(person, { candidacy: candidacy }));
-      allowedZones = intersect_(rosterZones, claimZones);
-      eligibilityReason = eligibilityDecision_(person.attributes).reason;
+      allowedZones = getEligibleZones(claimAttributes_(person, { candidacy: candidacy }));
+      eligibilityReason = eligibilityDecision_(
+        claimAttributes_(person, { candidacy: candidacy })
+      ).reason;
       if (allowedZones.length === 0) {
-        errors.push('The eligibility rules leave you with no zone at all. That is a ' +
-          'configuration bug — send this message to the coordinator.');
+        errors.push('The eligibility rules give "' + candidacy + '" nowhere to sit. ' +
+          'That is a configuration bug rather than a decision about you — send ' +
+          'this message to the coordinator.');
       }
     } catch (err2) {
       errors.push('Your eligibility could not be determined: ' + errText_(err2));
