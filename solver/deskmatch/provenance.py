@@ -437,7 +437,7 @@ def build_provenance(
         if config_sha256 is None:
             config_sha256 = config.file_hashes
         if seed_string is None:
-            seed_string = config.scoring.tie_break_seed
+            seed_string = config.scoring.resolved_seed()
         if k is None:
             k = config.k
         if config_path is None:

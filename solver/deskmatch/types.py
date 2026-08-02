@@ -62,12 +62,32 @@ class Zone:
 
 
 @dataclass(frozen=True)
+class Feature:
+    """A non-selectable piece of the floor plan: wall, door, room, window,
+    partition, furniture, or the room outline.
+
+    Features exist so a student can see *why* a desk is desirable -- next to the
+    window, or backing onto the telecom closet -- and so the map still reads as a
+    room when the floor plan image is missing. They are never clickable and never
+    enter the solve; nothing here has a zone.
+    """
+
+    id: str
+    kind: str                             # see validate.KNOWN_FEATURE_KINDS
+    label: str
+    shape_kind: str                       # "rect" | "polygon" | "polyline"
+    shape: tuple[float, ...] | tuple[tuple[float, float], ...]
+    note: str = ""
+
+
+@dataclass(frozen=True)
 class Room:
     id: RoomId
     label: str
     image: str                            # path relative to the config dir
     image_size: tuple[int, int]           # (width_px, height_px)
     desks: tuple[Desk, ...]
+    features: tuple[Feature, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -148,6 +168,30 @@ class Scoring:
     tie_break_seed: str
     seed_committed_at: str | None = None
     sensitivity_seeds: tuple[str, ...] = ()
+    #: When set, the tie-break seed is the cycle year as a string ("2026") and
+    #: `tie_break_seed` is ignored. See `resolved_seed()`.
+    seed_year: int | None = None
+    #: True when `seed_year` was filled in from the clock rather than written in
+    #: the config. Purely informational; the resolved value is what gets used and
+    #: recorded, so a later re-run reproduces regardless.
+    seed_year_from_clock: bool = False
+
+    def resolved_seed(self) -> str:
+        """The seed string the solver actually uses.
+
+        Using the calendar year means the seed changes every cycle without the
+        coordinator choosing it, which removes seed-shopping as a possibility
+        rather than merely discouraging it.
+
+        The year is resolved ONCE, at the start of a run, and written into
+        `results.json`. It is never read from the clock inside the solve. If it
+        were, re-running the 2026 cycle in January 2027 would silently produce a
+        different assignment and every published hash would stop verifying --
+        which would break invariant I3, the property the whole audit rests on.
+        """
+        if self.seed_year is not None:
+            return str(self.seed_year)
+        return self.tie_break_seed
 
     @property
     def k(self) -> int:

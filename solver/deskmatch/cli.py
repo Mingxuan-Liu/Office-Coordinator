@@ -52,7 +52,13 @@ def cmd_validate(args: argparse.Namespace) -> int:
           f"{sum(1 for p in cfg.roster.people if p.keeps_desk)} keeping their desk")
     print(f"  scoring    : K={cfg.k}, primary curve '{cfg.scoring.primary_curve}' = "
           f"{[str(v) for v in cfg.scoring.curve()]}")
-    print(f"  seed       : {cfg.scoring.tie_break_seed!r}")
+    seed = cfg.scoring.resolved_seed()
+    if cfg.scoring.seed_year is not None:
+        origin = "cycle year, taken from the clock" if cfg.scoring.seed_year_from_clock \
+            else "cycle year, pinned in scoring.json"
+        print(f"  seed       : {seed!r}  ({origin})")
+    else:
+        print(f"  seed       : {seed!r}")
     if cfg.warnings:
         print(f"\n{len(cfg.warnings)} warning(s):")
         for w in cfg.warnings:
@@ -76,7 +82,7 @@ def cmd_solve(args: argparse.Namespace) -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    seed = cfg.scoring.tie_break_seed
+    seed = cfg.scoring.resolved_seed()
 
     _rule("INPUTS")
     print(f"  config      : {args.config}")
@@ -85,9 +91,16 @@ def cmd_solve(args: argparse.Namespace) -> int:
     print(f"  submissions : {len(resp.submissions)} row(s), "
           f"{len(resp.latest)} person/people after de-duplication")
     print(f"  seed        : {seed!r}")
+    if cfg.scoring.seed_year is not None and cfg.scoring.seed_year_from_clock:
+        print(f"                (cycle year {cfg.scoring.seed_year}, resolved now and "
+              f"recorded in results.json;\n"
+              f"                 pin it in scoring.json to re-run this cycle later)")
     if cfg.scoring.seed_committed_at:
         print(f"  committed   : {cfg.scoring.seed_committed_at}")
-    else:
+    elif cfg.scoring.seed_year is None:
+        # Only meaningful when a human picked the seed. Under seed_year there is
+        # nothing to announce -- the seed is the calendar year, which nobody
+        # chooses and everybody can predict.
         _eprint("  ! scoring.json has no seed_committed_at. Record when you "
                 "announced the seed -- it is part of the audit trail.")
 
@@ -251,7 +264,7 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     build = problem_mod.build_problem(cfg, resp, args.curve)
     result = diagnostics.preflight(
-        build.problem, len(outstanding), cfg.scoring.tie_break_seed
+        build.problem, len(outstanding), cfg.scoring.resolved_seed()
     )
 
     _rule("PRE-DEADLINE FEASIBILITY CHECK")

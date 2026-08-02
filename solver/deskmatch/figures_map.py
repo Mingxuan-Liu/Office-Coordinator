@@ -40,6 +40,28 @@ produce byte-identical files:
   there is no global figure registry and no interactive-backend state that
   could differ between machines.
 
+Structural features
+-------------------
+`rooms.json` (schema 2+) carries a `features` array per room: the room outline,
+walls, doors, windows, partitions, furniture and named side-rooms. They are
+**decoration**, drawn in muted grey *underneath* every desk patch, and they are
+data in no sense at all:
+
+* they are never shaded, never counted, and never enter the colour scale — the
+  metric is computed in `compute_desk_popularity`, which walks `room.desks` and
+  has never heard of a feature;
+* they are absent from the contested-desk figure for the same reason;
+* they get no legend entry. The legend is a key to *selectable states* (which
+  zone, in the pool or not, assigned or not) and a wall is none of those. The
+  caption says what the grey shapes are instead.
+
+They earn their place in the report by making the plan legible: a reader can see
+that desk 27 is under the windows and that the Quiet Grad Room is behind desk
+23. That matters most where there is no floor-plan image to fall back on — the
+senior office has none, and without its features that page would be a scatter of
+rectangles on blank paper rather than a room. Which is why `room` and `outline`
+features are labelled inside their own shape.
+
 Missing floor-plan image
 ------------------------
 `config/floorplans/*.png` is dropped in by the coordinator and may simply not
@@ -76,11 +98,13 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg  # noqa: E402
 from matplotlib.backends.backend_pdf import PdfPages  # noqa: E402
 from matplotlib.cm import ScalarMappable  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
 from matplotlib.patches import Patch, Polygon as MplPolygon, Rectangle  # noqa: E402
 
 from .types import (  # noqa: E402
     Desk,
     DeskId,
+    Feature,
     PersonId,
     Problem,
     Room,
@@ -253,6 +277,26 @@ _TINT_ALPHA = 0.11        # zone region fill; faint by design
 _TEXT_DARK = "#141414"
 _TEXT_LIGHT = "#ffffff"
 
+#: Structural features. One warm-grey family, deliberately: features are
+#: differentiated by weight, fill lightness and dash pattern, never by hue.
+#: Hue is the data channel on this figure and lending any of it to a wall would
+#: invite the reader to think the wall means something.
+_FEAT_LINE = "#6b665e"         # default stroke
+_FEAT_LINE_DARK = "#4f4a43"    # the outline and load-bearing walls
+_FEAT_LINE_SOFT = "#948d84"    # furniture, and anything unrecognised
+_FEAT_FILL_WALL = "#a49d94"    # solid poché
+_FEAT_FILL_BAND = "#d6d2cb"    # windows
+_FEAT_FILL_ROOM = "#e8e5e0"    # named side-rooms
+_FEAT_FILL_SOFT = "#efece8"    # furniture, doors
+_FEAT_TEXT = "#5b564f"
+_FEAT_TEXT_BG = "#f7f5f2"      # translucent plate under a feature label
+
+#: Draw order. Everything structural sits below the zone tint (1), the zone
+#: halo (2) and the desk patches (3), so a feature can never obscure a desk.
+_Z_FEATURE_FILL = 0.30
+_Z_FEATURE_LINE = 0.40
+_Z_FEATURE_TEXT = 0.50
+
 
 def _build_cmap(name: str) -> mcolors.Colormap:
     """Clip a named colormap to `_CMAP_CLIP` and return it as a fixed map."""
@@ -331,6 +375,22 @@ def _desk_polygon(desk: Desk) -> list[Point]:
     for p in desk.shape:  # type: ignore[union-attr]
         pts.append((float(p[0]), float(p[1])))  # type: ignore[index]
     return pts
+
+
+def _feature_points(feature: Feature) -> tuple[list[Point], bool]:
+    """A feature's geometry as ``(points, closed)`` in the config's own space.
+
+    Same rect-becomes-a-polygon trick as `_desk_polygon`, plus the third shape
+    kind features are allowed and desks are not: a `polyline` has no interior,
+    so it comes back open and is stroked rather than filled.
+    """
+    if feature.shape_kind == "rect":
+        x, y, w, h = (float(v) for v in feature.shape)  # type: ignore[misc]
+        return ([(x, y), (x + w, y), (x + w, y + h), (x, y + h)], True)
+    pts: list[Point] = []
+    for p in feature.shape:  # type: ignore[union-attr]
+        pts.append((float(p[0]), float(p[1])))  # type: ignore[index]
+    return (pts, feature.shape_kind != "polyline")
 
 
 def _scaled(pts: Sequence[Point], sx: float, sy: float) -> list[Point]:
@@ -782,6 +842,10 @@ _CB_TEXT = 1.05      # tick labels + the two-line rotated label
 _T_PAD = 0.20
 _TITLE_H = 0.30
 _SUB_H = 0.24
+#: Leading for a wrapped subtitle. The subtitle grows with the number of rooms
+#: (it names the per-page and department-wide desk counts), so it cannot be
+#: assumed to fit on one line at any particular page width.
+_SUB_LINE_H = 0.16
 _GAP_AFTER_TITLE = 0.24
 _ROOM_TITLE_H = 0.26
 _CELL_GAP_X = 0.34
@@ -895,8 +959,11 @@ def _new_page(
         + legend_rows * _LEGEND_ROW_H
         + (_GAP_BEFORE_LEGEND if legend_rows else 0.0)
     )
-    above = _T_PAD + (_TITLE_H if title else 0.0) + (_SUB_H if subtitle else 0.0)
-    above += _GAP_AFTER_TITLE if (title or subtitle) else 0.0
+    sub_lines = _wrap(subtitle, width - _M_L - _M_R, 9.5) if subtitle else []
+    above = _T_PAD + (_TITLE_H if title else 0.0)
+    if sub_lines:
+        above += _SUB_H + (len(sub_lines) - 1) * _SUB_LINE_H
+    above += _GAP_AFTER_TITLE if (title or sub_lines) else 0.0
     height = below + content_h + above
 
     if reuse is not None:
@@ -959,9 +1026,10 @@ def _new_page(
         fig.text(fx(_M_L), fy(y), title, ha="left", va="top",
                  fontsize=14.0, color="#111111", fontweight="semibold")
         y -= _TITLE_H
-    if subtitle:
-        fig.text(fx(_M_L), fy(y), subtitle, ha="left", va="top",
+    for line in sub_lines:
+        fig.text(fx(_M_L), fy(y), line, ha="left", va="top",
                  fontsize=9.5, color=_MUTED)
+        y -= _SUB_LINE_H
 
     y = _B_PAD
     for line in reversed(list(footer_lines)):
@@ -1087,6 +1155,283 @@ def _zone_regions(
     return out
 
 
+# ==========================================================================
+# Structural features (decoration only -- see the module docstring)
+# ==========================================================================
+
+
+@dataclass(frozen=True)
+class _FeatureStyle:
+    """How one `kind` of feature is drawn. Grey, always."""
+
+    edge: str
+    lw: float
+    face: str | None = None
+    ls: Any = "solid"
+    alpha: float = 1.0
+    #: Fills are deliberately more transparent than the strokes that bound
+    #: them. Where there *is* a floor-plan image, an opaque grey box over the
+    #: Huddle Room erases the chairs and the door swing the architect drew --
+    #: detail the reader came for. The edge carries the shape; the fill only
+    #: needs to say "enclosed area, not open floor".
+    face_alpha: float = 0.55
+    #: Stroke weight when the shape is drawn as a line rather than an area --
+    #: an open polyline, or a thin box collapsed to its axis.
+    stroke_lw: float = 1.0
+    #: "none"      draw the area as given
+    #: "add"       area, plus a line down its long axis (a window mullion)
+    #: "instead"   a thin box *is* a line; draw only the axis (partitions,
+    #:             the zone divider, which is not a physical wall at all)
+    centre_line: str = "none"
+    #: Only rooms and the outline are named on the map. Labelling every door
+    #: "Door" would bury the plan in nine-point grey text.
+    label: bool = False
+
+
+_FEATURE_STYLES: Mapping[str, _FeatureStyle] = {
+    "outline": _FeatureStyle(
+        edge=_FEAT_LINE_DARK, lw=1.5, face=None, alpha=0.85, label=True,
+    ),
+    "wall": _FeatureStyle(
+        edge=_FEAT_LINE_DARK, lw=0.9, face=_FEAT_FILL_WALL, alpha=0.80,
+        face_alpha=0.70, stroke_lw=1.9,
+    ),
+    "window": _FeatureStyle(
+        edge=_FEAT_LINE, lw=0.9, face=_FEAT_FILL_BAND, alpha=0.90,
+        face_alpha=0.62, stroke_lw=0.7, centre_line="add",
+    ),
+    "door": _FeatureStyle(
+        edge=_FEAT_LINE, lw=0.9, face=_FEAT_FILL_SOFT, alpha=0.90,
+        face_alpha=0.50, ls=(0, (2.4, 1.6)), stroke_lw=0.9,
+    ),
+    "partition": _FeatureStyle(
+        edge=_FEAT_LINE, lw=0.8, face=None, alpha=0.75,
+        ls=(0, (3.0, 2.0)), stroke_lw=1.0, centre_line="instead",
+    ),
+    "furniture": _FeatureStyle(
+        edge=_FEAT_LINE_SOFT, lw=0.7, face=_FEAT_FILL_SOFT, alpha=0.85,
+        face_alpha=0.45, stroke_lw=0.8,
+    ),
+    "room": _FeatureStyle(
+        edge=_FEAT_LINE, lw=1.0, face=_FEAT_FILL_ROOM, alpha=0.85,
+        face_alpha=0.55, stroke_lw=1.0, label=True,
+    ),
+    "divider": _FeatureStyle(
+        edge=_FEAT_LINE, lw=1.1, face=None, alpha=0.75,
+        ls=(0, (6.0, 4.0)), stroke_lw=1.2, centre_line="instead",
+    ),
+}
+
+#: An unrecognised `kind` still draws -- as generic structure, dotted so it is
+#: visibly "something the renderer did not recognise" rather than silently
+#: impersonating furniture. `validate.KNOWN_FEATURE_KINDS` already warns about
+#: it at load time, so this is the second half of a warning, not a new one.
+_FEATURE_STYLE_GENERIC = _FeatureStyle(
+    edge=_FEAT_LINE_SOFT, lw=0.8, face=_FEAT_FILL_SOFT, alpha=0.80,
+    face_alpha=0.45, ls=(0, (1.8, 1.8)), stroke_lw=0.8,
+)
+
+#: A box this much longer than it is wide is really a line: a hanging partition
+#: or a painted zone boundary, not an area you could stand in.
+_THIN_RATIO = 0.34
+
+
+def _thin_axis(pts: Sequence[Point]) -> tuple[Point, Point] | None:
+    """The long centre line of a thin box, or None if the shape has bulk."""
+    if len(pts) < 2:
+        return None
+    x0, y0, x1, y1 = _bbox(pts)
+    w, h = x1 - x0, y1 - y0
+    longest = max(w, h)
+    if longest <= 0.0:
+        return None
+    if min(w, h) > _THIN_RATIO * longest:
+        return None
+    if w < h:
+        mid = (x0 + x1) / 2.0
+        return ((mid, y0), (mid, y1))
+    mid = (y0 + y1) / 2.0
+    return ((x0, mid), (x1, mid))
+
+
+def _span_at_y(poly: Sequence[Point], y: float, x: float) -> tuple[float, float]:
+    """Horizontal extent of `poly` at height `y`, in the span containing `x`.
+
+    A rectangle returns its full width, so nothing changes for the ordinary
+    case. It matters for the shapes that do not fill their bounding box: the
+    triangular alcove in the senior office is half the width of its bbox where
+    its label sits, and sizing the label against the bbox would push the text
+    out through the diagonal wall.
+    """
+    x_lo, _, x_hi, _ = _bbox(poly)
+    xs: list[float] = []
+    n = len(poly)
+    for i in range(n):
+        x0, y0 = poly[i]
+        x1, y1 = poly[(i + 1) % n]
+        if (y0 > y) != (y1 > y) and y1 != y0:
+            xs.append(x0 + (y - y0) / (y1 - y0) * (x1 - x0))
+    xs.sort()
+    for i in range(0, len(xs) - 1, 2):
+        if xs[i] - 1e-9 <= x <= xs[i + 1] + 1e-9:
+            return (xs[i], xs[i + 1])
+    return (x_lo, x_hi)
+
+
+def _label_layout(
+    label: str, w_pt: float, h_pt: float, lo: float, hi: float
+) -> tuple[list[str], float]:
+    """Wrap `label` into the line count that lets it be drawn largest.
+
+    Deterministic: a fixed candidate list, `textwrap` on each, and a strict
+    improvement test so ties keep the fewest lines. Words are never split --
+    "Dept Storage" broken as "Dept S / torage" is worse than no label at all.
+    """
+    text = " ".join(label.split())
+    if not text:
+        return ([], lo)
+    best_lines = [text]
+    best_size = 0.0
+    for n_lines in (1, 2, 3):
+        wrap_at = max(1, math.ceil(len(text) / n_lines))
+        lines = textwrap.wrap(
+            text, width=wrap_at, break_long_words=False, break_on_hyphens=False
+        ) or [text]
+        size = _fit_font_size([(lines, w_pt, h_pt)], lo, hi)
+        if size > best_size + 1e-9:
+            best_size, best_lines = size, lines
+    return (best_lines, best_size)
+
+
+def _draw_feature_label(
+    ax: Axes, feature: Feature, pts: Sequence[Point], ppp: float
+) -> None:
+    """Name a room (or the room outline) inside its own shape.
+
+    The whole point of the exercise: with the floor-plan image missing, this
+    text is the only thing telling the reader that the box behind desk 23 is the
+    Quiet Grad Room. So it goes *inside* the shape, small and grey enough to
+    stay decoration, on a translucent plate so it survives whatever line art is
+    underneath it.
+    """
+    x0, y0, x1, y1 = _bbox(pts)
+    w_px, h_px = x1 - x0, y1 - y0
+    if w_px <= 0.0 or h_px <= 0.0:
+        return
+
+    if feature.kind == "outline":
+        # The centre of an outline is the middle of the desks. Tuck the name
+        # into the top-left corner instead, in the strip between the wall and
+        # the first row -- the one part of a room plan that is reliably empty.
+        lines, size = _label_layout(
+            feature.label, 0.45 * w_px * ppp, 0.085 * h_px * ppp, 5.5, 7.5
+        )
+        inset = 0.012 * max(w_px, h_px)
+        x, y = x0 + inset, y0 + inset
+        ha, va = "left", "top"
+    else:
+        x, y = label_anchor(pts)
+        span_lo, span_hi = _span_at_y(pts, y, x)
+        avail = min(w_px, max(0.0, span_hi - span_lo))
+        lines, size = _label_layout(
+            feature.label, 0.90 * avail * ppp, 0.60 * h_px * ppp, 4.6, 7.5
+        )
+        ha, va = "center", "center"
+    if not lines:
+        return
+
+    ax.text(
+        x, y, "\n".join(lines),
+        ha=ha, va=va, fontsize=size, color=_FEAT_TEXT,
+        linespacing=1.18, zorder=_Z_FEATURE_TEXT,
+        bbox=dict(boxstyle="round,pad=0.22", facecolor=_FEAT_TEXT_BG,
+                  edgecolor="none", alpha=0.70),
+    )
+
+
+def _draw_features(
+    ax: Axes,
+    *,
+    room: Room,
+    sx: float,
+    sy: float,
+    ppp: float,
+    notes: list[str],
+) -> int:
+    """Draw a room's structure under everything else. Returns how many landed.
+
+    Iterates `room.features` in rooms.json order — no sorting needed and no set
+    anywhere, so the draw order (and therefore the output bytes) is fixed by the
+    config file.
+    """
+    drawn = 0
+    unknown: list[str] = []
+    for feature in room.features:
+        raw, closed = _feature_points(feature)
+        if len(raw) < 2:
+            # A one-point polyline has nothing to draw. Not worth a note: the
+            # validator rejects it long before the figure is built.
+            continue
+        pts = _scaled(raw, sx, sy)
+        style = _FEATURE_STYLES.get(feature.kind)
+        if style is None:
+            style = _FEATURE_STYLE_GENERIC
+            if feature.kind not in unknown:
+                unknown.append(feature.kind)
+
+        axis = _thin_axis(pts) if style.centre_line != "none" else None
+        collapse = axis is not None and style.centre_line == "instead"
+
+        if closed and not collapse:
+            if style.face is not None:
+                ax.add_patch(
+                    MplPolygon(
+                        pts, closed=True, facecolor=style.face, edgecolor="none",
+                        alpha=style.face_alpha, zorder=_Z_FEATURE_FILL,
+                    )
+                )
+            ax.add_patch(
+                MplPolygon(
+                    pts, closed=True, facecolor="none", edgecolor=style.edge,
+                    linewidth=style.lw, linestyle=style.ls, alpha=style.alpha,
+                    joinstyle="round", zorder=_Z_FEATURE_LINE,
+                )
+            )
+        elif not closed:
+            ax.add_line(
+                Line2D(
+                    [p[0] for p in pts], [p[1] for p in pts],
+                    color=style.edge, linewidth=style.stroke_lw,
+                    linestyle=style.ls, alpha=style.alpha,
+                    solid_capstyle="round", zorder=_Z_FEATURE_LINE,
+                )
+            )
+
+        if axis is not None:
+            ax.add_line(
+                Line2D(
+                    [axis[0][0], axis[1][0]], [axis[0][1], axis[1][1]],
+                    color=style.edge, linewidth=style.stroke_lw,
+                    # A mullion is a real line on a real window; a collapsed
+                    # partition or zone boundary keeps the kind's dashes.
+                    linestyle=style.ls if collapse else "solid",
+                    alpha=style.alpha, solid_capstyle="butt",
+                    zorder=_Z_FEATURE_LINE,
+                )
+            )
+
+        if style.label and feature.label.strip():
+            _draw_feature_label(ax, feature, pts, ppp)
+        drawn += 1
+
+    if unknown:
+        notes.append(
+            f"{room.id}: feature kind(s) {', '.join(sorted(unknown))} are not "
+            f"recognised and were drawn as generic structure."
+        )
+    return drawn
+
+
 def _draw_room(
     ax: Axes,
     *,
@@ -1099,6 +1444,7 @@ def _draw_room(
     axes_width_in: float,
     patch_alpha: float,
     zone_tint: bool,
+    show_features: bool,
     annotate: bool,
     show_occupants: str,
     has_solution: bool,
@@ -1108,7 +1454,8 @@ def _draw_room(
 
     Returns the legend handles this room needs and the zone ids it contains,
     both in rooms.json order so a caller assembling a multi-room page can merge
-    them deterministically.
+    them deterministically. Structural features get no handle: see the module
+    docstring.
     """
     width_px = float(room.image_size[0]) or 1.0
     height_px = float(room.image_size[1]) or 1.0
@@ -1149,6 +1496,16 @@ def _draw_room(
         )
     if image.note:
         notes.append(image.note)
+
+    # Points of type per data unit. Needed by anything that has to fit text
+    # into a shape, which starts with the feature labels.
+    ppp = (axes_width_in * 72.0) / width_px if width_px else 1.0
+
+    # --- structure ------------------------------------------------------
+    # Under the zone tint, the zone halos and the desks: decoration first, so
+    # nothing structural can sit on top of a datum.
+    if show_features:
+        _draw_features(ax, room=room, sx=sx, sy=sy, ppp=ppp, notes=notes)
 
     # --- geometry -------------------------------------------------------
     polys: dict[DeskId, list[Point]] = {}
@@ -1229,7 +1586,6 @@ def _draw_room(
     # --- desks ----------------------------------------------------------
     by_id = stats.by_id
     text_entries: list[tuple[list[str], float, float]] = []
-    ppp = (axes_width_in * 72.0) / width_px if width_px else 1.0
     occ_mode = show_occupants if show_occupants in _OCCUPANT_FALLBACK else "none"
 
     def build_lines(stat: DeskStat | None, desk: Desk, mode: str) -> list[str]:
@@ -1479,6 +1835,7 @@ def desk_popularity_heatmap(
     vmax: float | None = None,
     cmap: str | mcolors.Colormap = DEFAULT_CMAP,
     zone_tint: bool | str = "auto",
+    show_features: bool = True,
     annotate: bool = True,
     patch_alpha: float = 0.86,
     image_fade: float = 0.55,
@@ -1527,9 +1884,22 @@ def desk_popularity_heatmap(
         achievable range is a small slice of the theoretical one — every desk
         would come out the same colour on a full scale — and the colorbar
         states the full range either way. `vmin`/`vmax` override both.
+
+        Either way the scale is computed **once, over every desk in the
+        department**, and not per room. `rooms=` narrows what is *drawn*, never
+        what the colours mean, so a reader flipping between the main office and
+        the senior office is comparing like with like. Two rooms on two
+        independently-stretched scales would make the least-wanted desk in a
+        popular room look exactly like the least-wanted desk in an ignored one.
+        The caption states which regime is in force.
     zone_tint
         ``"auto"`` tints each zone's region when the zones do not interleave,
         and falls back to the per-desk coloured outline when they do.
+    show_features
+        Draw the structural features from `rooms.json` — walls, doors, windows,
+        the room outline, named side-rooms. On by default. They are decoration:
+        grey, underneath every desk, and excluded from the metric, the colour
+        scale and the legend.
 
     Never raises on a missing floor-plan image; see the module docstring.
     """
@@ -1563,7 +1933,12 @@ def desk_popularity_heatmap(
         notes.append("No rooms to draw.")
         wanted = []
 
-    # --- colour scale, computed once across every room so pages compare ---
+    # --- colour scale ------------------------------------------------------
+    # Deliberately computed from `stats`, which covers every desk in every room
+    # in rooms.json, *not* from the subset in `wanted`. So the scale is shared:
+    # narrowing the drawing to one room does not restretch the colours, and one
+    # page of a multi-room report can be read against the next. The caption
+    # says so out loud, because a reader cannot tell by looking.
     k = stats.k
     cmap_obj = _build_cmap(cmap) if isinstance(cmap, str) else cmap
     rng = stats.value_range()
@@ -1591,16 +1966,38 @@ def desk_popularity_heatmap(
     # --- text -------------------------------------------------------------
     n_pool = len(stats.pool_desks)
     n_all = len(stats.desks)
+    # The same counts for the rooms actually on this page. They diverge from
+    # the department-wide totals whenever `rooms=` narrows the selection, which
+    # is every page of the report — it draws one room per page. Saying "40 of
+    # 41 desks" on a page showing 31 of them is just wrong.
+    drawn_ids = [r.id for r in wanted]
+    page_desks = [d for d in stats.desks if d.room_id in drawn_ids]
+    n_page_all = len(page_desks)
+    n_page_pool = sum(1 for d in page_desks if d.in_pool)
+    partial = n_page_all != n_all
+    n_rooms_cfg = len(rooms_cfg.rooms)
+    # English, not arithmetic: "all 2 rooms" is not a sentence. The count still
+    # comes from the config, so five rooms next year reads correctly too.
+    rooms_phrase = "both rooms" if n_rooms_cfg == 2 else f"all {n_rooms_cfg} rooms"
+    has_features = show_features and any(r.features for r in wanted)
+
     if title is None:
         if len(wanted) == 1:
             title = f"Desk popularity — {wanted[0].label}"
         else:
             title = "Desk popularity"
     if subtitle is None:
+        if partial:
+            desks_bit = (
+                f"{n_page_pool} of {n_page_all} desks on this page in the pool, "
+                f"{n_pool} of {n_all} across {rooms_phrase}"
+            )
+        else:
+            desks_bit = f"{n_pool} of {n_all} desks in the pool"
         subtitle = (
             f"mean rank received from {stats.n_people} "
             f"{'student' if stats.n_people == 1 else 'students'} in the pool  ·  "
-            f"K = {k} ranked choices each  ·  {n_pool} of {n_all} desks in the pool"
+            f"K = {k} ranked choices each  ·  {desks_bit}"
         )
         if norm is not None and (lo > 1.0 + 1e-9 or hi < k + 1 - 1e-9):
             subtitle += (
@@ -1632,6 +2029,24 @@ def desk_popularity_heatmap(
                     " The third line in each desk is who was assigned there and the "
                     "rank they received."
                 )
+        # Both branches: what the grey shapes are, and what a colour means
+        # across pages. Features get no legend swatch — the legend is a key to
+        # states a desk can be *in*, and a wall is not one of them — so this
+        # sentence is the only thing that names them.
+        if has_features:
+            caption += (
+                " Grey shapes are the structure of the room — walls, doors, "
+                "windows, partitions, furniture and named side-rooms, labelled "
+                "where they have a name. They are drawn from rooms.json for "
+                "orientation only: they are not desks, cannot be chosen, and "
+                "take no part in the shading."
+            )
+        if norm is not None and n_rooms_cfg > 1:
+            caption += (
+                f" One colour scale is shared by {rooms_phrase}, not stretched per "
+                f"room: the same shade means the same mean rank on every page, so "
+                f"the rooms can be read against each other."
+            )
     if footer is None:
         coord = rooms_cfg.coord_space
         img_bits = []
@@ -1711,6 +2126,7 @@ def desk_popularity_heatmap(
                 axes_width_in=page.axes_width_in[idx],
                 patch_alpha=patch_alpha,
                 zone_tint=tint_flag,
+                show_features=show_features,
                 annotate=annotate,
                 show_occupants=show_occupants,
                 has_solution=solution is not None,
@@ -1823,6 +2239,10 @@ def contested_desks_figure(
     Counts come from `problem.rank`, i.e. after choices for out-of-pool or
     ineligible desks have been dropped. Any such drops are stated in a footnote
     rather than quietly changing the totals.
+
+    Structural features never appear here in any form. Nothing in this function
+    reads `room.features`: every bar comes from a `DeskStat`, and `DeskStat`s
+    are made from desks. A wall cannot be anybody's first choice.
     """
     rooms_cfg = _rooms_of(config)
     if stats is None:

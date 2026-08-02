@@ -40,6 +40,7 @@ from deskmatch.types import Problem as SolveProblem
 from conftest import (
     CURVE_KINDS,
     REAL_CONFIG_EXPECTED,
+    expected_pool_size,
     assert_solution_invariants,
     assert_solutions_identical,
     build_problem_from_prefs,
@@ -331,7 +332,7 @@ def test_real_config_produces_the_recorded_answer(real_config, real_problem):
     if one of them moves, something in the solve moved with it.
     """
     assert real_problem.n_people == REAL_CONFIG_EXPECTED.n_people
-    assert real_problem.n_desks == REAL_CONFIG_EXPECTED.n_desks
+    assert real_problem.n_desks == expected_pool_size(real_config)
     assert real_problem.k == REAL_CONFIG_EXPECTED.k
     assert real_problem.k == len(real_config.scoring.curve()), "K must be derived, not declared"
     assert real_problem.scale == REAL_CONFIG_EXPECTED.scale

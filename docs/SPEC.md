@@ -15,7 +15,7 @@ These are correctness properties, asserted at runtime, not aspirations.
 
 | ID | Invariant |
 |----|-----------|
-| **I1** | No dimension of the problem is hard-coded. `n_people`, `n_desks`, `n_zones`, `n_rooms`, `K` are all derived from config/data at runtime. |
+| **I1** | No dimension of the problem is hard-coded. `n_people`, `n_desks`, `n_zones`, `n_rooms`, `n_features`, `K` are all derived from config/data at runtime. |
 | **I2** | The solver is a pure function of `(responses, config, seed)`. No I/O, no clock, no environment, no manual override path. |
 | **I3** | Same `(responses, config, seed)` ⇒ byte-identical `results.json`. Always, on any machine, any OS, any supported Python. |
 | **I4** | Every assigned desk is within that person's submitted top-K. Asserted post-solve. |
@@ -74,6 +74,16 @@ is `ConfigError`, never a `KeyError` / `TypeError` traceback.
       "label": "Main Grad Office (Room 406)",
       "image": "floorplans/main_office.png",   // relative to config/
       "image_size": [1212, 706],               // px; required, used to convert coords
+      "features": [                    // v2+, optional. Decoration only.
+        {
+          "id": "huddle_rm",
+          "kind": "room",              // outline|wall|door|window|partition|
+                                       // furniture|room|divider
+          "label": "Huddle Room",
+          "shape": { "rect": [0.477, 0.607, 0.172, 0.271] },
+          "note": ""                   // optional tooltip
+        }
+      ],
       "desks": [
         {
           "id": "D01",                  // stable, unique across ALL rooms
@@ -96,6 +106,13 @@ Rules enforced by the validator:
 - Every zone in `zones` is referenced by ≥1 desk (warning, not error — an empty
   zone is legal but is almost always a typo).
 - `shape.rect` = `[x, y, w, h]`, `shape.polygon` = `[[x,y], ...]` with ≥3 points.
+- **Features** (`schema_version` ≥ 2) are never selectable, have no zone, and
+  never enter the solve. They may additionally use `shape.polyline`
+  (`[[x,y], ...]`, ≥2 points) for walls. A *desk* may not: a polyline has no
+  interior, so the desk would be impossible to click — the validator rejects it.
+  Feature ids must be unique within a room and must not collide with any desk id.
+  An unrecognised `kind` is a warning; it still draws as generic structure.
+  Features may overlap anything, including each other, without complaint.
 - In `normalized` space all coordinates ∈ [0, 1]. In `pixels` space, ∈ image bounds.
 - `image` path must exist **or** produce a warning (the solver can render on a
   blank canvas; the frontend cannot).
@@ -180,8 +197,9 @@ Jocelyn Bell,jbell@umich.edu,5,candidate,yes,D07
   },
   "primary_curve": "linear_borda",
   "comparison_curves": ["convex", "concave"],
-  "tie_break_seed": "PUBLISH-ME-BEFORE-THE-FORM-OPENS",
-  "seed_committed_at": "2026-09-01T12:00:00-04:00",   // informational, for the audit trail
+  "seed_year": "auto",                 // "auto" | <int year>. Governs the seed.
+  "tie_break_seed": "...",             // used ONLY when seed_year is absent
+  "seed_committed_at": "2026-09-01T12:00:00-04:00",   // informational; not needed under seed_year
   "sensitivity_seeds": ["alt-seed-a", "alt-seed-b", "alt-seed-c"]
 }
 ```
@@ -194,6 +212,19 @@ Jocelyn Bell,jbell@umich.edu,5,candidate,yes,D07
 - Values may be decimals; they are exactly rationalised to integers internally
   (see §5.3). Non-terminating decimals are rejected at validation.
 - `primary_curve` and every `comparison_curves` entry must exist in `curves`.
+- **Seed resolution.** If `seed_year` is present it governs and the seed string is
+  the year as text (`"2026"`); `tie_break_seed` is then dead config and the
+  validator warns if both are set. `"auto"` means the calendar year, **resolved
+  once at config load** and written into `results.json`.
+
+  The clock is read at exactly one point, in `config._build_scoring`. Nothing
+  downstream reads it. This is load-bearing: if the solve resolved the year
+  itself, re-running the 2026 cycle in 2027 would produce a different assignment
+  and every published hash would stop verifying — breaking **I3**. `verify` uses
+  the seed *recorded in the results file*, never the current year, so
+  verification is correct in any later year. There is a test for this.
+
+  To re-run an old cycle deliberately, pin the year: `"seed_year": 2026`.
 
 ---
 
@@ -210,8 +241,8 @@ Component B must run from this CSV alone with **no Google dependency**.
 | `timestamp` | ISO-8601 with UTC offset | e.g. `2026-09-15T14:03:22-04:00` |
 | `email` | string | lower-cased on ingest; joins to roster |
 | `name` | string | as submitted; roster value wins on conflict |
-| `year` | int | as confirmed by the student; **overrides roster** (see §3.3) |
 | `candidacy` | string | as confirmed by the student; overrides roster |
+| `year` | int | **OPTIONAL.** No longer collected — candidacy alone decides zones. Read if present, recorded, never used for eligibility. An unparseable value is a warning. |
 | `choice_1` … `choice_K` | desk id | exactly K columns, contiguous from 1 |
 | `client_version` | string | frontend build id, for debugging |
 | `auth_method` | string | `google` \| `self_select` — audit only, never affects the solve |
@@ -231,8 +262,10 @@ If it disagrees with K from `scoring.json`, that is a `ResponseError`.
 
 The roster is stale by design (the coordinator says so). Resolution:
 
-- `year` / `candidacy`: **submission wins**, and the conflict is recorded in
-  `results.json:roster_conflicts` and printed as a warning. The coordinator sees
+- `candidacy`: **submission wins**, and the conflict is recorded in
+  `results.json:roster_conflicts` and printed as a warning. (`year` is no longer
+  collected by the form; when an older file carries it, it is recorded but never
+  affects eligibility, so it cannot produce a meaningful conflict.) The coordinator sees
   every one of them and can fix the roster and re-run.
 - Membership: an email not in the roster is an **error**, not a warning. Someone
   outside the department must not be able to enter the pool.

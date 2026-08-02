@@ -107,12 +107,15 @@
   var geom = null;            /* geometry of the room currently drawn */
   var deskNodes = {};         /* desk id -> node record, active room only */
   var deskOrder = [];         /* desk ids in the active room, config order */
+  var featureRecs = [];       /* drawn features, config order, active room only */
+  var featureLayer = null;    /* the <g> holding them */
   var focusDeskId = null;     /* roving tabindex owner */
   var linkedId = null;
   var builtFor = null;        /* room id the SVG currently shows */
   var pendingFocus = null;
   var tipEl = null;
   var tipFor = null;
+  var tipFeatureId = null;
   var drag = null;
   var lastTap = { t: 0, x: 0, y: 0 };
   var pinch = null;
@@ -143,10 +146,42 @@
     return out;
   }
 
-  /* Converts one desk shape into view-box units, whatever the config used.
+  /* Walks a list of [x,y] pairs into view-box units. Shared by polygon and
+     polyline so the two cannot drift apart. Returns null when fewer than
+     `minPts` of the pairs were usable. */
+  function pathGeom(list, sx, sy, minPts) {
+    var pts = [];
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    var cx = 0, cy = 0;
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      if (!isArr(p) || p.length < 2) { continue; }
+      var px = num(p[0]) * sx, py = num(p[1]) * sy;
+      if (isNaN(px) || isNaN(py)) { continue; }
+      pts.push([px, py]);
+      if (px < minX) { minX = px; }
+      if (py < minY) { minY = py; }
+      if (px > maxX) { maxX = px; }
+      if (py > maxY) { maxY = py; }
+      cx += px; cy += py;
+    }
+    if (pts.length < minPts) { return null; }
+    return {
+      points: pts,
+      bbox: { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
+      center: { x: cx / pts.length, y: cy / pts.length }
+    };
+  }
+
+  /* Converts one shape into view-box units, whatever the config used.
      Supports rect [x,y,w,h] and polygon [[x,y],...], in normalized or pixel
-     space. Returns null for a shape the config did not actually provide. */
-  function convertShape(shape, sx, sy) {
+     space, plus polyline [[x,y],...] when `allowOpen` is set.
+
+     Only features pass `allowOpen`. A polyline has no interior, so it can be
+     stroked but never filled and never tapped, which is exactly why it is not
+     a legal desk shape. Returns null for a shape the config did not actually
+     provide. */
+  function convertShape(shape, sx, sy, allowOpen) {
     if (!shape || typeof shape !== 'object') { return null; }
 
     if (isArr(shape.rect) && shape.rect.length >= 4) {
@@ -160,6 +195,7 @@
       if (h < 0) { y += h; h = -h; }
       return {
         kind: 'rect',
+        closed: true,
         rect: { x: x, y: y, w: w, h: h },
         points: [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
         bbox: { x: x, y: y, w: w, h: h },
@@ -168,28 +204,19 @@
     }
 
     if (isArr(shape.polygon) && shape.polygon.length >= 3) {
-      var pts = [];
-      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      var cx = 0, cy = 0;
-      for (var i = 0; i < shape.polygon.length; i++) {
-        var p = shape.polygon[i];
-        if (!isArr(p) || p.length < 2) { continue; }
-        var px = num(p[0]) * sx, py = num(p[1]) * sy;
-        if (isNaN(px) || isNaN(py)) { continue; }
-        pts.push([px, py]);
-        if (px < minX) { minX = px; }
-        if (py < minY) { minY = py; }
-        if (px > maxX) { maxX = px; }
-        if (py > maxY) { maxY = py; }
-        cx += px; cy += py;
-      }
-      if (pts.length < 3) { return null; }
-      return {
-        kind: 'poly',
-        points: pts,
-        bbox: { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
-        center: { x: cx / pts.length, y: cy / pts.length }
-      };
+      var poly = pathGeom(shape.polygon, sx, sy, 3);
+      if (!poly) { return null; }
+      poly.kind = 'poly';
+      poly.closed = true;
+      return poly;
+    }
+
+    if (allowOpen && isArr(shape.polyline) && shape.polyline.length >= 2) {
+      var line = pathGeom(shape.polyline, sx, sy, 2);
+      if (!line) { return null; }
+      line.kind = 'polyline';
+      line.closed = false;
+      return line;
     }
 
     return null;
@@ -209,20 +236,48 @@
 
     var desks = roomDesks(room);
     var shapes = {};
+    var deskBoxes = [];
     var bad = [];
     var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     var minMinor = Infinity;
+
+    function grow(b) {
+      if (b.x < minX) { minX = b.x; }
+      if (b.y < minY) { minY = b.y; }
+      if (b.x + b.w > maxX) { maxX = b.x + b.w; }
+      if (b.y + b.h > maxY) { maxY = b.y + b.h; }
+    }
 
     desks.forEach(function (d) {
       var s = convertShape(d.shape, sx, sy);
       if (!s) { bad.push(d.id); return; }
       shapes[d.id] = s;
-      if (s.bbox.x < minX) { minX = s.bbox.x; }
-      if (s.bbox.y < minY) { minY = s.bbox.y; }
-      if (s.bbox.x + s.bbox.w > maxX) { maxX = s.bbox.x + s.bbox.w; }
-      if (s.bbox.y + s.bbox.h > maxY) { maxY = s.bbox.y + s.bbox.h; }
+      deskBoxes.push(s.bbox);
+      grow(s.bbox);
       var minor = Math.min(s.bbox.w, s.bbox.h);
+      /* minMinor sizes the touch-target auto-zoom, so only desks count: a
+         hairline wall must never make the whole plan zoom in. */
       if (minor > 0 && minor < minMinor) { minMinor = minor; }
+    });
+
+    /* Structural decoration: walls, doors, rooms, windows, partitions,
+       furniture and the room outline. Never selectable, never in the solve,
+       so a feature this renderer cannot understand is skipped rather than
+       reported — losing a wall does not stop anyone ranking a desk. */
+    var featureList = (room && isArr(room.features)) ? room.features : [];
+    var features = [];
+    featureList.forEach(function (f, i) {
+      if (!f || typeof f !== 'object') { return; }
+      var s = convertShape(f.shape, sx, sy, true);
+      if (!s) { return; }
+      features.push({
+        id: String(f.id == null || f.id === '' ? ('feature-' + i) : f.id),
+        kind: String(f.kind == null ? '' : f.kind).toLowerCase().replace(/\s+/g, ''),
+        label: f.label == null ? '' : String(f.label),
+        note: f.note == null ? '' : String(f.note),
+        s: s
+      });
+      grow(s.bbox);
     });
 
     var vb;
@@ -246,6 +301,8 @@
       vb: vb,
       ratio: vb.h / vb.w,
       shapes: shapes,
+      deskBoxes: deskBoxes,
+      features: features,
       badShapes: bad,
       minMinor: isFinite(minMinor) ? minMinor : Math.min(vb.w, vb.h) * 0.05,
       unit: Math.max(vb.w, vb.h) / 200      /* one "hairline" in view units */
@@ -367,12 +424,355 @@
     return mk('path', { d: d + 'Z' });
   }
 
+  /* ----------------------------------------------------------------------
+     Structural features
+
+     Decoration, drawn beneath the desks: walls, doors, windows, partitions,
+     furniture, named rooms, the room outline and dividers. They exist so a
+     student can see which desk is by the window and which backs onto the
+     telecom closet.
+
+     Three rules hold for everything in here, and the rest of the file depends
+     on them: features are never clickable (the layer is pointer-events: none
+     both in CSS and inline, so no stylesheet accident can revive it), they
+     never enter the accessibility tree, and they never appear as a selectable
+     state. `kind` comes from the config and is not a closed set — an unknown
+     kind draws as generic structure rather than throwing.
+     ---------------------------------------------------------------------- */
+
+  /* Rough advance width of one character, in em, for a semibold sans face.
+     Only ever used to decide whether a label fits; being a little pessimistic
+     here means a label is skipped rather than spilling over its shape. */
+  var LABEL_EM = 0.56;
+
+  function geomNode(s, cls) {
+    var n;
+    if (s.kind === 'rect') {
+      n = mk('rect', { x: s.bbox.x, y: s.bbox.y, width: s.bbox.w, height: s.bbox.h });
+    } else {
+      var d = '';
+      for (var i = 0; i < s.points.length; i++) {
+        d += (i === 0 ? 'M' : 'L') + s.points[i][0] + ' ' + s.points[i][1] + ' ';
+      }
+      n = mk('path', { d: s.closed ? d + 'Z' : d });
+    }
+    n.setAttribute('class', cls);
+    return n;
+  }
+
+  /* The centre line of a box, along whichever side is longer. */
+  function centreLine(b) {
+    if (b.w >= b.h) {
+      var y = b.y + b.h / 2;
+      return [b.x, y, b.x + b.w, y];
+    }
+    var x = b.x + b.w / 2;
+    return [x, b.y, x, b.y + b.h];
+  }
+
+  /* Two rails inset along the long axis — how glazing is drawn on a plan. */
+  function windowRails(b) {
+    if (b.w >= b.h) {
+      return [
+        [b.x, b.y + b.h * 0.3, b.x + b.w, b.y + b.h * 0.3],
+        [b.x, b.y + b.h * 0.7, b.x + b.w, b.y + b.h * 0.7]
+      ];
+    }
+    return [
+      [b.x + b.w * 0.3, b.y, b.x + b.w * 0.3, b.y + b.h],
+      [b.x + b.w * 0.7, b.y, b.x + b.w * 0.7, b.y + b.h]
+    ];
+  }
+
+  function segNode(seg, cls) {
+    return mk('line', { class: cls, x1: seg[0], y1: seg[1], x2: seg[2], y2: seg[3] });
+  }
+
+  /* Leaf plus quarter-circle swing, hinged on the lower-left of the opening.
+     A hint, not a survey: rooms.json records where the door is, not which way
+     it actually swings. */
+  function doorSwing(b) {
+    var g = mk('g', { class: 'feature__door' });
+    var r = Math.min(b.w, b.h);
+    if (!(r > 0)) { return g; }
+    var hx = b.x, hy = b.y + b.h;
+    g.appendChild(mk('path', {
+      class: 'feature__line feature__line--hair',
+      d: 'M ' + hx + ' ' + (hy - r) + ' A ' + r + ' ' + r + ' 0 0 1 ' + (hx + r) + ' ' + hy
+    }));
+    g.appendChild(segNode([hx, hy, hx, hy - r], 'feature__leaf'));
+    return g;
+  }
+
+  function drawFeature(node, f) {
+    var s = f.s;
+
+    /* An open path has no interior, so it is stroked whatever the kind says. */
+    if (s.kind === 'polyline') {
+      node.appendChild(geomNode(s, 'feature__line'));
+      return;
+    }
+
+    switch (f.kind) {
+      case 'outline':
+      case 'wall':
+        node.appendChild(geomNode(s, 'feature__line'));
+        return;
+      case 'window':
+        node.appendChild(geomNode(s, 'feature__line feature__line--hair'));
+        windowRails(s.bbox).forEach(function (seg) {
+          node.appendChild(segNode(seg, 'feature__accent'));
+        });
+        return;
+      case 'door':
+        node.appendChild(doorSwing(s.bbox));
+        return;
+      case 'partition':
+        node.appendChild(geomNode(s, 'feature__bar'));
+        return;
+      case 'divider':
+        /* An annotation, not a wall — see the note on zone_divider. */
+        node.appendChild(segNode(centreLine(s.bbox), 'feature__dash'));
+        return;
+      case 'furniture':
+        node.appendChild(geomNode(s, 'feature__fill'));
+        node.appendChild(geomNode(s, 'feature__line feature__line--hair'));
+        return;
+      case 'room':
+        node.appendChild(geomNode(s, 'feature__wash'));
+        node.appendChild(geomNode(s, 'feature__line feature__line--hair'));
+        return;
+      default:
+        /* A kind this build has never heard of still reads as structure. */
+        node.appendChild(geomNode(s, 'feature__line'));
+    }
+  }
+
+  /* --- labels ----------------------------------------------------------- */
+
+  /* Smaller than a desk number, and derived from the desks in this room, so it
+     is right on a 1232px plan and on a 531px one without knowing either. */
+  function featureLabelSize(g) {
+    var minors = g.deskBoxes.map(function (b) { return Math.min(b.w, b.h); })
+                            .sort(function (a, b) { return a - b; });
+    if (!minors.length) { return g.unit * 2.4; }
+    var mid = minors[Math.floor(minors.length / 2)];
+    return clamp(g.unit * 1.6, mid * 0.2, g.unit * 6);
+  }
+
+  function labelBox(text, cx, cy, fs) {
+    var w = Math.max(1, String(text).length) * fs * LABEL_EM;
+    var h = fs * 1.15;
+    return { x: cx - w / 2, y: cy - h / 2, w: w, h: h };
+  }
+
+  function boxesOverlap(a, b, pad) {
+    return !(a.x + a.w + pad <= b.x || b.x + b.w + pad <= a.x ||
+             a.y + a.h + pad <= b.y || b.y + b.h + pad <= a.y);
+  }
+
+  /* Where this feature's label can go, or null for "nowhere it fits".
+     Skipping is the correct outcome: a name spilling over its own shape, or
+     sitting on top of a desk number, is worse than no name at all. `placed`
+     accumulates the boxes already taken, so labels do not stack either. */
+  function placeFeatureLabel(f, g, baseFs, placed) {
+    var text = f.label;
+    if (!text) { return null; }
+
+    var b = f.s.bbox;
+    var cx = f.s.center.x, cy = f.s.center.y;
+    var pad = g.unit * 0.5;
+
+    function free(box) {
+      if (box.x < g.vb.x || box.y < g.vb.y ||
+          box.x + box.w > g.vb.x + g.vb.w ||
+          box.y + box.h > g.vb.y + g.vb.h) { return false; }
+      /* Clear of every desk shape — which is stricter than "clear of the desk
+         number badge", and stays true whatever state the desk is painted in. */
+      for (var i = 0; i < g.deskBoxes.length; i++) {
+        if (boxesOverlap(box, g.deskBoxes[i], pad)) { return false; }
+      }
+      for (var j = 0; j < placed.length; j++) {
+        if (boxesOverlap(box, placed[j], pad)) { return false; }
+      }
+      return true;
+    }
+
+    function fitsInside(box) { return box.w <= b.w * 0.94 && box.h <= b.h * 0.9; }
+
+    /* A named room's label belongs inside the room, so it shrinks a little to
+       fit rather than wandering off somewhere meaningless. */
+    if (f.kind === 'room') {
+      for (var k = 0; k < 4; k++) {
+        var fs = baseFs * (1 - k * 0.12);
+        var box = labelBox(text, cx, cy, fs);
+        if (fitsInside(box) && free(box)) { return { x: cx, y: cy, fs: fs, box: box }; }
+      }
+      return null;
+    }
+
+    var lh = baseFs * 1.15;
+    var half = labelBox(text, 0, 0, baseFs).w / 2;
+    var cands = (f.kind === 'outline')
+      /* The outline is the whole room: its name goes just inside the top edge,
+         where the plan is emptiest, never across the middle of the desks. */
+      ? [[cx, b.y + lh * 0.85], [cx, b.y + b.h + lh * 0.85], [cx, b.y - lh * 0.85]]
+      : [[cx, cy],
+         [cx, b.y + b.h + lh * 0.8],
+         [cx, b.y - lh * 0.8],
+         [b.x + b.w + half + g.unit, cy],
+         [b.x - half - g.unit, cy]];
+
+    for (var c = 0; c < cands.length; c++) {
+      var cand = labelBox(text, cands[c][0], cands[c][1], baseFs);
+      if (c === 0) {
+        /* The first candidate is the one inside the shape. Only take it if the
+           shape is actually big enough to hold the text. */
+        if (f.kind === 'outline' ? cand.w > b.w * 0.94 : !fitsInside(cand)) { continue; }
+      }
+      if (free(cand)) { return { x: cands[c][0], y: cands[c][1], fs: baseFs, box: cand }; }
+    }
+    return null;
+  }
+
+  function buildFeatures(g) {
+    var layer = mk('g', { class: 'feature-layer' });
+    /* Inline as well as in Style.html: this is the guarantee that a feature can
+       never swallow a tap meant for a desk, and it should not depend on a
+       stylesheet loading. */
+    layer.style.pointerEvents = 'none';
+    layer.setAttribute('aria-hidden', 'true');
+
+    featureRecs = [];
+    if (!g.features.length) { return layer; }
+
+    var baseFs = featureLabelSize(g);
+    var placed = [];
+
+    g.features.forEach(function (f) {
+      var node = mk('g', { class: 'feature feature--' + (f.kind || 'unknown') });
+      node.setAttribute('data-feature-kind', f.kind || 'unknown');
+      drawFeature(node, f);
+
+      var lab = placeFeatureLabel(f, g, baseFs, placed);
+      if (lab) {
+        var t = mk('text', { class: 'feature__label', x: lab.x, y: lab.y, text: f.label });
+        t.style.fontSize = lab.fs + 'px';
+        node.appendChild(t);
+        placed.push(lab.box);
+      }
+
+      layer.appendChild(node);
+      featureRecs.push({
+        id: f.id, kind: f.kind, label: f.label, note: f.note, s: f.s, node: node
+      });
+    });
+
+    return layer;
+  }
+
+  /* Lowers the whole layer over a real floor plan drawing, which already has
+     its own walls printed on it. On the blank fallback it stays at full
+     strength, because there the features are the only thing giving the desks
+     a room to sit in. */
+  function setFeaturesOverImage(on) {
+    if (featureLayer) { featureLayer.classList.toggle('is-over-image', !!on); }
+  }
+
+  function anyRoomHasFeatures() {
+    var list = roomsList();
+    for (var i = 0; i < list.length; i++) {
+      if (isArr(list[i].features) && list[i].features.length) { return true; }
+    }
+    return false;
+  }
+
+  /* --- geometric hit testing -------------------------------------------
+     Features take no pointer events at all, so hovering one is resolved
+     against the geometry instead of the DOM. That keeps the no-interception
+     guarantee absolute while still letting a note surface on hover.
+     ---------------------------------------------------------------------- */
+
+  function clientToView(cx, cy) {
+    var svg = $('map-svg');
+    if (!svg || !geom) { return null; }
+    try {
+      var m = svg.getScreenCTM();
+      if (m && svg.createSVGPoint) {
+        var p = svg.createSVGPoint();
+        p.x = cx; p.y = cy;
+        var q = p.matrixTransform(m.inverse());
+        return { x: q.x, y: q.y };
+      }
+    } catch (e) { /* fall through to the box-relative mapping */ }
+    var r = svg.getBoundingClientRect();
+    if (!r.width || !r.height) { return null; }
+    return {
+      x: geom.vb.x + ((cx - r.left) / r.width) * geom.vb.w,
+      y: geom.vb.y + ((cy - r.top) / r.height) * geom.vb.h
+    };
+  }
+
+  function pointInPoly(pts, x, y) {
+    var inside = false;
+    for (var i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      var xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1];
+      if ((yi > y) !== (yj > y) &&
+          x < ((xj - xi) * (y - yi)) / ((yj - yi) || 1e-9) + xi) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  function nearPath(pts, x, y, tol) {
+    for (var i = 1; i < pts.length; i++) {
+      var ax = pts[i - 1][0], ay = pts[i - 1][1];
+      var bx = pts[i][0], by = pts[i][1];
+      var dx = bx - ax, dy = by - ay;
+      var len2 = dx * dx + dy * dy;
+      var t = len2 ? clamp(0, ((x - ax) * dx + (y - ay) * dy) / len2, 1) : 0;
+      var px = ax + t * dx - x, py = ay + t * dy - y;
+      if (Math.sqrt(px * px + py * py) <= tol) { return true; }
+    }
+    return false;
+  }
+
+  function hitShape(s, x, y, tol) {
+    if (s.kind === 'polyline') { return nearPath(s.points, x, y, tol); }
+    var b = s.bbox;
+    if (x < b.x - tol || x > b.x + b.w + tol ||
+        y < b.y - tol || y > b.y + b.h + tol) { return false; }
+    if (s.kind === 'rect') { return true; }
+    return pointInPoly(s.points, x, y) ||
+           nearPath(s.points.concat([s.points[0]]), x, y, tol);
+  }
+
+  /* Topmost note-bearing feature under the pointer, or null. Features without
+     a note say nothing a tooltip could usefully add, so they are not probed. */
+  function featureAt(clientX, clientY) {
+    if (!featureRecs.length || !geom) { return null; }
+    var p = clientToView(clientX, clientY);
+    if (!p) { return null; }
+    var tol = geom.unit * 1.6;
+    for (var i = featureRecs.length - 1; i >= 0; i--) {
+      var rec = featureRecs[i];
+      if (!rec.note) { continue; }
+      if (hitShape(rec.s, p.x, p.y, tol)) { return rec; }
+    }
+    return null;
+  }
+
   function buildRoom(roomId) {
     var svg = $('map-svg');
     var ratioBox = $('map-ratio');
     var img = $('map-img');
     var note = $('map-note');
     if (!svg || !ratioBox) { return; }
+
+    featureRecs = [];
+    featureLayer = null;
+    tipFeatureId = null;
 
     var room = roomById(roomId) || roomsList()[0];
     if (!room) {
@@ -420,6 +820,10 @@
     }));
     svg.appendChild(bg);
 
+    /* Structure, beneath the desks and above the plan image. */
+    featureLayer = buildFeatures(geom);
+    svg.appendChild(featureLayer);
+
     /* Desks. */
     var layer = mk('g', { class: 'desk-layer' });
     roomDesks(room).forEach(function (desk) {
@@ -440,10 +844,15 @@
       img.onload = null;
       img.onerror = null;
       if (src) {
-        img.onload = function () { img.hidden = false; svgShow(bg, false); };
+        img.onload = function () {
+          img.hidden = false;
+          svgShow(bg, false);
+          setFeaturesOverImage(true);
+        };
         img.onerror = function () {
           img.hidden = true;
           svgShow(bg, true);
+          setFeaturesOverImage(false);
           addNote('The floor plan drawing for ' + (room.label || room.id) +
                   ' could not be loaded, so the desks are shown as shapes on a blank ' +
                   'plan. Desk positions and everything else on this page still work.');
@@ -454,6 +863,7 @@
         img.removeAttribute('src');
         img.hidden = true;
         svgShow(bg, true);
+        setFeaturesOverImage(false);
         addNote('No floor plan drawing is available for ' + (room.label || room.id) +
                 ' in this deployment, so the desks are shown as shapes on a blank plan. ' +
                 'Desk numbers, positions and zones are still correct. ' +
@@ -627,6 +1037,21 @@
            '" stroke="' + stroke + '" stroke-width="1.4"' + dash + '/>' + extra + '</svg>';
   }
 
+  /* One sample standing in for all of the structure: an enclosing wall, a soft
+     block of furniture and a pane of glazing. */
+  function featureSampleSvg() {
+    return '<svg class="map-legend__sample" viewBox="0 0 24 16" aria-hidden="true">' +
+      '<rect x="1" y="1.6" width="22" height="12.8" fill="none" stroke="var(--ink-3)" ' +
+        'stroke-opacity="0.75" stroke-width="1.6"/>' +
+      '<rect x="3.4" y="4.4" width="7.2" height="7" fill="var(--ink-3)" fill-opacity="0.16" ' +
+        'stroke="var(--ink-3)" stroke-opacity="0.45" stroke-width="0.8"/>' +
+      '<path d="M14.5 3.2 h6.5 M14.5 5.2 h6.5" stroke="var(--ink-3)" stroke-opacity="0.85" ' +
+        'stroke-width="0.9"/>' +
+      '<path d="M14.5 12 a4.5 4.5 0 0 0 4.5 -4.5" fill="none" stroke="var(--ink-3)" ' +
+        'stroke-opacity="0.5" stroke-width="0.9"/>' +
+      '</svg>';
+  }
+
   function renderLegend() {
     var host = $('map-legend');
     if (!host) { return; }
@@ -656,8 +1081,18 @@
       '<span class="map-legend__item">' + sampleSvg('available') + '<span>Available &mdash; tap to rank</span></span>' +
       '<span class="map-legend__item">' + sampleSvg('picked') + '<span>Ranked by you &mdash; the number is its rank</span></span>' +
       '<span class="map-legend__item">' + sampleSvg('locked') + '<span>Kept &mdash; someone is staying at this desk (hatched, padlock)</span></span>' +
-      '<span class="map-legend__item">' + sampleSvg('ineligible') + '<span>Not open to you &mdash; wrong area for your year (dotted, crossed)</span></span>' +
+      '<span class="map-legend__item">' + sampleSvg('ineligible') + '<span>Not open to you &mdash; wrong area for you (dotted, crossed)</span></span>' +
       '</div>';
+
+    /* One muted line for all of the structure, deliberately outside the desk
+       states: none of it is a state a desk can be in, and none of it can be
+       picked. Listing every kind would be a legend of things you cannot do. */
+    if (anyRoomHasFeatures()) {
+      html += '<div class="map-legend__group"><p class="map-legend__title">The room itself</p>' +
+        '<span class="map-legend__item map-legend__item--muted">' + featureSampleSvg() +
+        '<span class="map-legend__note">Grey &mdash; walls, doors, windows and fixed ' +
+        'furniture. Not selectable.</span></span></div>';
+    }
 
     host.innerHTML = html;
 
@@ -868,6 +1303,19 @@
     return tipEl;
   }
 
+  /* Anchors the tip above `r` (a client rect), flipping below when there is no
+     room, and never letting it leave the viewport. */
+  function placeTip(el, r) {
+    var t = el.getBoundingClientRect();
+    var vw = doc.documentElement.clientWidth;
+    var vh = doc.documentElement.clientHeight;
+    var left = clamp(8, r.left + r.width / 2 - t.width / 2, Math.max(8, vw - t.width - 8));
+    var top = r.top - t.height - 8;
+    if (top < 8) { top = Math.min(r.bottom + 8, vh - t.height - 8); }
+    el.style.left = left + 'px';
+    el.style.top = Math.max(8, top) + 'px';
+  }
+
   function showTipFor(id) {
     var rec = deskNodes[id];
     if (!rec) { return; }
@@ -887,22 +1335,32 @@
     }
     el.innerHTML = html;
     el.classList.add('is-open');
-
-    var r = rec.shape.getBoundingClientRect();
-    var t = el.getBoundingClientRect();
-    var vw = doc.documentElement.clientWidth;
-    var vh = doc.documentElement.clientHeight;
-    var left = clamp(8, r.left + r.width / 2 - t.width / 2, Math.max(8, vw - t.width - 8));
-    var top = r.top - t.height - 8;
-    if (top < 8) { top = Math.min(r.bottom + 8, vh - t.height - 8); }
-    el.style.left = left + 'px';
-    el.style.top = Math.max(8, top) + 'px';
+    placeTip(el, rec.shape.getBoundingClientRect());
     tipFor = id;
+    tipFeatureId = null;
+  }
+
+  /* Same tooltip, for a piece of structure. Reached only through the geometric
+     hit test, because the features themselves take no pointer events. */
+  function showFeatureTip(rec) {
+    if (tipFeatureId === rec.id) { return; }
+    var el = ensureTip();
+    var title = rec.label ||
+      (rec.kind ? rec.kind.charAt(0).toUpperCase() + rec.kind.slice(1) : 'Floor plan');
+    var html = '<span class="tip__title">' + esc(title) + '</span>';
+    if (rec.note) { html += '<span class="tip__row">' + esc(rec.note) + '</span>'; }
+    html += '<span class="tip__reason">Part of the room, not a desk.</span>';
+    el.innerHTML = html;
+    el.classList.add('is-open');
+    placeTip(el, rec.node.getBoundingClientRect());
+    tipFor = null;
+    tipFeatureId = rec.id;
   }
 
   function hideTip() {
     if (tipEl) { tipEl.classList.remove('is-open'); }
     tipFor = null;
+    tipFeatureId = null;
   }
 
   /* ----------------------------------------------------------------------
@@ -1574,6 +2032,20 @@
       var to = e.relatedTarget ? closest(e.relatedTarget, '[data-desk-id]') : null;
       if (id && (!to || to.getAttribute('data-desk-id') !== id)) { setLinked(null); hideTip(); }
     });
+
+    /* Structure notes on hover. The features are pointer-events: none, so the
+       pointer is resolved against their geometry rather than against the DOM —
+       the desks keep every event they would otherwise have received. */
+    svg.addEventListener('mousemove', function (e) {
+      if (drag || pinch) { return; }
+      if (deskIdFrom(e.target)) { return; }      /* the desk handlers own this */
+      var rec = featureAt(e.clientX, e.clientY);
+      if (rec) { showFeatureTip(rec); }
+      else if (tipFeatureId) { hideTip(); }
+    });
+    svg.addEventListener('mouseleave', function () {
+      if (tipFeatureId) { hideTip(); }
+    });
     svg.addEventListener('focusin', function (e) {
       var id = deskIdFrom(e.target);
       if (id) { setFocusDesk(id, false); setLinked(id); showTipFor(id); }
@@ -1582,6 +2054,7 @@
 
     stage.addEventListener('scroll', function () {
       if (tipFor) { showTipFor(tipFor); }
+      else if (tipFeatureId) { hideTip(); }
     }, { passive: true });
 
     /* Zoom buttons. */

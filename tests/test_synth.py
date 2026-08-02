@@ -237,7 +237,9 @@ class TestRealLoaderAcceptance:
             roster_rows=roster_rows, seed="reuse-real",
         )
         assert world.n_people == len(roster_rows)
-        assert world.n_desks == len(rooms["rooms"][0]["desks"])
+        # Sum across every room: the real config has more than one, and
+        # counting only the first silently under-tests the multi-room path.
+        assert world.n_desks == sum(len(r["desks"]) for r in rooms["rooms"])
         assert world.k == len(scoring["curves"][scoring["primary_curve"]])
 
         config_dir, responses_path = world.write(tmp_path)

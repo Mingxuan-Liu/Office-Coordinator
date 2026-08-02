@@ -489,17 +489,37 @@ from deskmatch import matching, scoring  # noqa: E402
 from deskmatch.types import Problem as SolveProblem  # noqa: E402
 from deskmatch.types import Solution  # noqa: E402
 
-#: What the shipped config + shipped response export must produce. Written down
-#: so that a change which silently moves the department's real answer cannot
-#: pass; every number here is *derived* by the assertions, never assumed.
+#: What the shipped config + shipped response export must produce.
+#:
+#: The ANSWER is pinned: a change that silently moves the department's real
+#: result must fail here. The POOL SIZE is not, because it is a fact about the
+#: office rather than about the solver -- adding a room used to break this test
+#: for no reason, which trains people to update the number without reading it.
+#: `expected_pool_size()` re-derives it from the config the same way SPEC §3.4
+#: says the pool is formed, so the assertion still checks pool construction; it
+#: just does not hard-code how many desks the department owns.
 REAL_CONFIG_EXPECTED = SimpleNamespace(
     n_people=9,
-    n_desks=30,
     k=5,
     rank_histogram=(7, 1, 1, 0, 0),
     total_points_scaled=42,
     scale=1,
 )
+
+
+def expected_pool_size(config) -> int:
+    """Desks in the pool per SPEC §3.4: all desks, minus those held by people
+    keeping their seat, minus any marked unavailable."""
+    kept = {
+        person.current_desk
+        for person in config.roster.people
+        if person.keeps_desk and person.current_desk
+    }
+    return sum(
+        1
+        for desk in config.rooms.all_desks
+        if desk.available and desk.id not in kept
+    )
 
 
 # --------------------------------------------------------------------------

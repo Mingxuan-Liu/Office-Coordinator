@@ -982,7 +982,9 @@ def test_k_disagreement_is_caught_again_when_the_problem_is_built(
 
 
 @pytest.mark.parametrize("k", SMALL_K)
-@pytest.mark.parametrize("column", ("submission_id", "timestamp", "email", "year", "candidacy"))
+# `year` is deliberately absent from this list: it is optional now (candidacy
+# alone decides zones), and test_an_absent_year_column_is_accepted covers it.
+@pytest.mark.parametrize("column", ("submission_id", "timestamp", "email", "candidacy"))
 def test_a_missing_required_column_is_reported_once_against_the_header(
     k, column, response_file
 ):
@@ -1045,9 +1047,16 @@ def test_a_blank_desk_id_is_an_error_naming_the_column(k, blank_rank, response_f
 
 
 @pytest.mark.parametrize("k", SMALL_K)
-@pytest.mark.parametrize("year", ("third", "", "3.5", "N/A"))
-def test_a_non_integer_year_is_an_error_naming_the_row(k, year, response_file):
-    """`year` overrides the roster and drives eligibility, so it cannot be guessed."""
+@pytest.mark.parametrize("year", ("third", "3.5", "N/A"))
+def test_a_non_integer_year_is_a_warning_not_an_error(k, year, response_file):
+    """`year` is informational now, so a bad one must not stop the run.
+
+    Candidacy alone decides zones and the form no longer asks for a year, so an
+    unparseable value in a legacy export cannot change anyone's assignment.
+    Refusing to seat the whole department over a field that cannot affect the
+    outcome would be the wrong trade -- but silently swallowing it would leave
+    the coordinator with a mystery, so it warns and quotes the value.
+    """
     desks = [f"D{i + 1:02d}" for i in range(k)]
     rows = [
         submission_row(
@@ -1058,10 +1067,43 @@ def test_a_non_integer_year_is_an_error_naming_the_row(k, year, response_file):
             year=year,
         )
     ]
-    problems = rejected_response_file(response_file(rows, k=k), k)
-    complaint = find_problem(problems, where="year@umich.edu", what="'year' is")
-    assert "not an integer" in complaint.what
-    assert repr(year) in complaint.what, "quote the value back so it can be found"
+    loaded = responses_mod.load_responses(response_file(rows, k=k), k)
+    assert len(loaded.latest) == 1, "the row must still load"
+    assert loaded.latest["year@umich.edu"].year == 0, "an unusable year records as 0"
+    blob = " ".join(loaded.warnings)
+    assert "year" in blob and repr(year) in blob, (
+        f"the warning must quote the offending value; got: {loaded.warnings}"
+    )
+
+
+@pytest.mark.parametrize("k", SMALL_K)
+def test_an_absent_year_column_is_accepted(k, response_file):
+    """The current form does not send `year` at all."""
+    desks = [f"D{i + 1:02d}" for i in range(k)]
+    rows = [
+        submission_row(
+            submission_id="noyear",
+            timestamp="2026-09-15T09:00:00-04:00",
+            email="noyear@umich.edu",
+            choices=desks,
+        )
+    ]
+    path = response_file(rows, k=k)
+    text = path.read_text(encoding="utf-8")
+    header, *body = text.splitlines()
+    cols = header.split(",")
+    if "year" in cols:
+        drop = cols.index("year")
+        keep = lambda row: ",".join(
+            v for i, v in enumerate(row.split(",")) if i != drop
+        )
+        path.write_text(
+            "\n".join([keep(header), *(keep(r) for r in body)]) + "\n",
+            encoding="utf-8",
+        )
+    loaded = responses_mod.load_responses(path, k)
+    assert len(loaded.latest) == 1
+    assert loaded.latest["noyear@umich.edu"].year == 0
 
 
 @pytest.mark.parametrize("k", SMALL_K)

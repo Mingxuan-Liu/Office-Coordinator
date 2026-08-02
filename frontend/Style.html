@@ -1156,6 +1156,94 @@ body[data-booted] .boot { display: none; }
   overflow: visible;
 }
 
+/* Structural features — walls, doors, windows, partitions, furniture, named
+   rooms, the room outline, dividers. Decoration only: drawn beneath the desks,
+   always grey, and inert.
+
+   pointer-events is stated on the layer AND on every descendant. JsMap also
+   sets it inline, so the "a wall can never take a tap meant for a desk"
+   guarantee survives this stylesheet failing to load, and survives any later
+   rule that tries to make a feature interactive.
+
+   Kinds come from rooms.json and are not a closed set: the base .feature__*
+   classes carry the generic look, and each kind only adds to it, so an
+   unrecognised kind still draws as plain structure. */
+.feature-layer,
+.feature-layer * { pointer-events: none; }
+
+/* Over a real floor plan drawing the walls are already printed on the image,
+   so the overlay steps back. On the blank fallback it stays at full strength. */
+.feature-layer.is-over-image { opacity: 0.6; }
+
+.feature__line {
+  fill: none;
+  stroke: var(--ink-3);
+  stroke-opacity: 0.6;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+.feature__line--hair { stroke-width: 1; stroke-opacity: 0.45; }
+
+/* Soft block: furniture. */
+.feature__fill { fill: var(--ink-3); fill-opacity: 0.1; stroke: none; }
+/* Lighter wash: a named room, which also carries a label. */
+.feature__wash { fill: var(--ink-3); fill-opacity: 0.055; stroke: none; }
+/* Solid bar: a partition. */
+.feature__bar { fill: var(--ink-3); fill-opacity: 0.34; stroke: none; }
+
+/* Glazing: two thin rails along the opening, the only doubled line on the
+   plan, so a window never reads as a wall. */
+.feature__accent {
+  fill: none;
+  stroke: var(--ink-3);
+  stroke-opacity: 0.9;
+  stroke-width: 1.1;
+  vector-effect: non-scaling-stroke;
+}
+/* A door leaf, kept light: the swing arc is a hint, not a survey. */
+.feature__leaf {
+  fill: none;
+  stroke: var(--ink-3);
+  stroke-opacity: 0.6;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+/* A divider is an annotation, not a wall, so it is dashed and never solid. */
+.feature__dash {
+  fill: none;
+  stroke: var(--ink-3);
+  stroke-opacity: 0.55;
+  stroke-width: 1.6;
+  stroke-dasharray: 7 6;
+  stroke-linecap: butt;
+  vector-effect: non-scaling-stroke;
+}
+
+.feature--outline .feature__line { stroke-width: 2.25; stroke-opacity: 0.7; }
+.feature--wall .feature__line { stroke-width: 4; stroke-opacity: 0.8; }
+
+/* Lighter than a desk number in both size and weight, with a halo so it stays
+   readable over a printed floor plan. JsMap sets the size per label and skips
+   any label that cannot be placed without covering a desk. */
+.feature__label {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  fill: var(--ink-3);
+  text-anchor: middle;
+  dominant-baseline: central;
+  paint-order: stroke fill;
+  stroke: var(--surface);
+  stroke-width: 3;
+  stroke-opacity: 0.8;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  user-select: none;
+}
+
 /* Desk shapes. JsMap sets --zone / --zone-rgb per shape. */
 .desk {
   fill: rgba(var(--zone-rgb, 106, 118, 132), var(--zone-alpha-fill));
@@ -1207,6 +1295,7 @@ body[data-booted] .boot { display: none; }
   font-size: var(--fs-sm);
 }
 .map-legend__item { display: inline-flex; align-items: center; gap: var(--s-2); }
+.map-legend__item--muted { color: var(--ink-3); }
 
 .map-hint {
   padding: var(--s-2) var(--s-3);

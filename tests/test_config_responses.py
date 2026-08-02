@@ -1751,15 +1751,31 @@ class TestResponseHeaderAndRows:
         path = response_file(rows, k=k)
         find_problem(load_response_problems(path, k), "line", "was already used at line")
 
-    def test_bad_year_and_bad_timestamp_are_reported_per_row(self, response_file):
+    def test_bad_candidacy_and_bad_timestamp_are_reported_per_row(self, response_file):
+        """A bad timestamp stops the run; a bad year no longer does.
+
+        The timestamp decides which re-submission wins, so it cannot be guessed.
+        `year` is informational since candidacy alone drives eligibility, so it
+        degrades to a warning that still names the row and quotes the value.
+        """
         k = 3
         rows = people_rows(3, k)
         rows[0]["year"] = "third"
         rows[1]["timestamp"] = "whenever"
         path = response_file(rows, k=k)
         problems = load_response_problems(path, k)
-        find_problem(problems, rows[0]["email"], "'year' is 'third', which is not an integer")
         find_problem(problems, rows[1]["email"], "is not a recognisable timestamp")
+        assert not [p for p in problems if "year" in p.what], (
+            "an unparseable year must not be a hard error any more"
+        )
+
+        # And with only the year broken, the file must load, warning about it.
+        ok_rows = people_rows(3, k)
+        ok_rows[0]["year"] = "third"
+        loaded = responses_mod.load_responses(response_file(ok_rows, k=k), k)
+        assert len(loaded.latest) == 3
+        blob = " ".join(loaded.warnings)
+        assert "'third'" in blob and "year" in blob, loaded.warnings
 
     def test_every_bad_row_is_reported_in_one_pass(self, response_file):
         """§3: eleven bad rows must produce eleven messages, not eleven runs."""

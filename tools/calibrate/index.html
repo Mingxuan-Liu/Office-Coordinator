@@ -149,6 +149,18 @@ details.sec>summary:hover{color:var(--txt)}
 .eye:hover{background:var(--panel2);border-color:var(--line2)}
 .empty{padding:12px;color:var(--dim2);text-align:center;font-size:12px}
 
+/* ---------- features (decoration; never selectable by a student) ---------- */
+.li .kd{
+  font-family:var(--mono);font-size:10.5px;color:var(--dim2);flex:0 0 auto;
+  background:#1b222c;border:1px solid #26303c;border-radius:3px;padding:0 5px;line-height:16px;
+}
+.li .sw.feat{border-radius:2px;border-style:dashed;border-color:rgba(255,255,255,.35)}
+.krow{display:flex;align-items:center;gap:7px;padding:4px 7px;border-bottom:1px solid #1d242e;min-height:34px}
+.krow:last-child{border-bottom:none}
+.krow .knm{flex:1 1 auto;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.krow .ct{color:var(--dim2);font-family:var(--mono);font-size:11px;flex:0 0 auto}
+.krow.off .knm,.krow.off .ct{opacity:.42}
+
 /* ---------- validation ---------- */
 .vitem{
   display:flex;gap:7px;padding:7px 8px;border-bottom:1px solid #1d242e;
@@ -177,10 +189,14 @@ details.sec>summary:hover{color:var(--txt)}
   box-shadow:0 6px 22px rgba(0,0,0,.45);
 }
 #legend h4{margin:0 0 6px;font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--dim)}
+#legend h4.sub{margin-top:9px;padding-top:8px;border-top:1px solid var(--line2)}
+#legend h4 em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--dim2)}
 #legend .lg{display:flex;align-items:center;gap:7px;min-height:30px;cursor:pointer;font-size:12px}
 #legend .lg.off{opacity:.4}
 #legend .sw{width:13px;height:13px;border-radius:3px;border:1px solid rgba(255,255,255,.3);flex:0 0 auto}
+#legend .sw.feat{border-style:dashed;border-radius:2px}
 #legend .ct{margin-left:auto;color:var(--dim2);font-family:var(--mono);font-size:11px}
+#legend .scrollpart{max-height:34vh;overflow-y:auto;scrollbar-width:thin}
 #modebadge{
   right:10px;top:10px;background:rgba(16,20,26,.93);border:1px solid var(--line2);
   border-radius:var(--r);padding:5px 10px;font-size:11.5px;color:var(--dim);
@@ -293,10 +309,15 @@ kbd{
 
   <header id="topbar">
     <div class="brand"><span class="logo">▦</span><span>deskmatch <small>· calibrate</small></span></div>
+    <div class="bargroup" role="group" aria-label="Edit layer">
+      <button class="layer" data-layer="desks" title="Edit desks — the selectable regions students rank (F switches)">Desks</button>
+      <button class="layer" data-layer="features" title="Edit features — walls, doors, rooms, windows. Decoration only: never selectable, never in the solve (F switches)">Features</button>
+    </div>
     <div class="bargroup scroll" role="toolbar" aria-label="Drawing tools">
       <button class="tool" data-tool="select" title="Select and edit regions (V)">Select</button>
       <button class="tool" data-tool="rect" title="Drag a rectangle (R)">Rect</button>
       <button class="tool" data-tool="poly" title="Click points, Enter or double-click to close (P)">Polygon</button>
+      <button class="tool" data-tool="line" title="Polyline — features only, e.g. a wall run (N)">Line</button>
       <button class="tool" data-tool="pan" title="Pan the view (H, or hold Space)">Pan</button>
     </div>
     <div class="spacer"></div>
@@ -390,9 +411,9 @@ kbd{
         </div>
       </details>
 
-      <!-- ============ REGIONS ============ -->
+      <!-- ============ DESKS ============ -->
       <details class="sec" open>
-        <summary>Regions <span class="badge" id="badgeDesks">0</span></summary>
+        <summary>Desks <span class="badge" id="badgeDesks">0</span></summary>
         <div class="secbody">
           <input type="search" id="deskSearch" placeholder="Filter by id, label or zone…" spellcheck="false">
           <div style="height:6px"></div>
@@ -402,6 +423,33 @@ kbd{
             <button id="btnSelNone" class="mini grow">Deselect</button>
             <button id="btnRenumber" class="mini grow" title="Rewrite every id in this room in reading order using the id pattern below">Renumber</button>
           </div>
+        </div>
+      </details>
+
+      <!-- ============ FEATURES ============ -->
+      <details class="sec" open id="secFeat">
+        <summary>Features <span class="badge" id="badgeFeats">0</span></summary>
+        <div class="secbody">
+          <p class="hint">Walls, doors, rooms, windows, partitions and furniture. Drawn grey beneath the
+            desks, <b>never clickable, never in the solve</b>. They exist so a student can see which desk is
+            by the window and which backs onto the telecom closet.</p>
+          <div class="row">
+            <label class="ck grow"><input type="checkbox" id="ckFeat" checked> Show features</label>
+            <label class="ck grow"><input type="checkbox" id="ckFeatLab" checked> Their labels</label>
+          </div>
+          <div class="list" id="kindList"></div>
+          <div class="sep"></div>
+          <div class="row">
+            <label class="fld grow" style="margin:0"><span>New feature kind</span>
+              <select id="featKindNew"></select>
+            </label>
+          </div>
+          <div class="row">
+            <button id="btnFeatDraw" class="prim grow">Draw a feature…</button>
+          </div>
+          <p class="hint" id="featDrawNote"></p>
+          <div class="sep"></div>
+          <div class="list scroll" id="featList"></div>
         </div>
       </details>
 
@@ -499,7 +547,8 @@ kbd{
         <summary>Keyboard shortcuts</summary>
         <div class="secbody">
           <table class="keys">
-            <tr><td><kbd>V</kbd> <kbd>R</kbd> <kbd>P</kbd> <kbd>H</kbd></td><td>Select / Rectangle / Polygon / Pan tool</td></tr>
+            <tr><td><kbd>V</kbd> <kbd>R</kbd> <kbd>P</kbd> <kbd>N</kbd> <kbd>H</kbd></td><td>Select / Rectangle / Polygon / Polyline / Pan tool</td></tr>
+            <tr><td><kbd>F</kbd></td><td>Switch the edit layer: desks ↔ features</td></tr>
             <tr><td><kbd>Space</kbd>-drag, middle-drag</td><td>Pan the view</td></tr>
             <tr><td>Wheel, pinch</td><td>Zoom at the cursor</td></tr>
             <tr><td><kbd>⇧</kbd>+wheel</td><td>Pan horizontally</td></tr>
@@ -654,6 +703,40 @@ function contrastInk(hex){
   return lum > 0.58 ? '#10151c' : '#ffffff';
 }
 
+/* ----------------------------------------------------------- features */
+/* Features are DECORATION: walls, doors, rooms, windows, partitions,
+ * furniture and the room outline.  They are never selectable, never enter a
+ * legend of selectable states, and never enter the solve.  They live in their
+ * own id namespace, parallel to desks.
+ *
+ * This list mirrors deskmatch.validate.KNOWN_FEATURE_KINDS.  It is a closed
+ * vocabulary, not a problem dimension: an unrecognised kind is a warning, not
+ * an error, and still draws (as generic structure).  Nothing anywhere counts
+ * how many kinds there are — the visibility panel derives its rows from the
+ * kinds actually present in the document, unioned with this list. */
+var FEATURE_KINDS = ['outline', 'wall', 'door', 'window', 'partition', 'furniture', 'room', 'divider'];
+
+/* Muted grey per-kind styling.  Everything is grey on purpose: a feature must
+ * never read as something you can pick.  `fillA: 0` means outline only. */
+var FEATURE_STYLE = {
+  outline:   { fill:'#6e7681', fillA:0,    stroke:'#4c545e', strokeA:0.95, width:2.4, dash:null },
+  wall:      { fill:'#59616b', fillA:0.55, stroke:'#454d57', strokeA:0.95, width:1.6, dash:null },
+  room:      { fill:'#6e7681', fillA:0.13, stroke:'#5f6771', strokeA:0.85, width:1.6, dash:null },
+  window:    { fill:'#78838f', fillA:0.40, stroke:'#5a636d', strokeA:0.95, width:1.4, dash:null },
+  door:      { fill:'#8c949e', fillA:0.16, stroke:'#767e88', strokeA:0.90, width:1.4, dash:[4, 3] },
+  partition: { fill:'#7a828c', fillA:0.26, stroke:'#6a727c', strokeA:0.90, width:1.2, dash:[6, 3] },
+  furniture: { fill:'#828a94', fillA:0.20, stroke:'#727a84', strokeA:0.85, width:1.2, dash:null },
+  divider:   { fill:'#8a929c', fillA:0.18, stroke:'#7c848e', strokeA:0.95, width:1.8, dash:[9, 5] }
+};
+/* Any kind this renderer has never heard of still draws, as generic structure. */
+var FEATURE_STYLE_FALLBACK =
+  { fill:'#7d858f', fillA:0.16, stroke:'#6d757f', strokeA:0.85, width:1.3, dash:[3, 3] };
+function featureStyle(kind){
+  return Object.prototype.hasOwnProperty.call(FEATURE_STYLE, kind)
+    ? FEATURE_STYLE[kind] : FEATURE_STYLE_FALLBACK;
+}
+function knownFeatureKind(k){ return FEATURE_KINDS.indexOf(k) >= 0; }
+
 /* ------------------------------------------------------------ data model */
 /* Internal coordinates are ALWAYS normalized 0..1 against the room's
  * image_size, whatever space the file on disk used.  Export converts. */
@@ -664,6 +747,9 @@ function newRoom(id, label){
   return {
     id: id, label: label,
     image: '', imageSize: DEFAULT_CANVAS.slice(),
+    /* `hasFeatures` records whether the source file carried a "features" key at
+     * all, so a file without one does not gain an empty array on export. */
+    features: [], hasFeatures: false,
     desks: [], extraKeys: [], extra: {}
   };
 }
@@ -675,6 +761,29 @@ function newDesk(id, label, zone, shape){
     uid: uid(), id:id, label:label, zone:zone, shape:shape,
     notes:'', hasNotes:false, extraKeys:[], extra:{}
   };
+}
+function newFeature(id, kind, label, shape){
+  return {
+    uid: uid(), id:id, kind:kind, label:label, hasLabel:true,
+    note:'', hasNote:false, shape:shape,
+    keyOrder:[], extraKeys:[], extra:{}
+  };
+}
+/* Which known keys a feature emits, and in what order.  The source order is
+ * honoured when there was one, so a hand-authored file comes back out the way
+ * it went in; anything the file did not carry is appended in canonical order. */
+function featureKeyOrder(ft){
+  var want = { id:1, kind:1, shape:1 };
+  if (ft.hasLabel || (ft.label && ft.label.length)) want.label = 1;
+  if (ft.hasNote || (ft.note && ft.note.length)) want.note = 1;
+  var out = [], seen = Object.create(null);
+  (ft.keyOrder || []).forEach(function(k){
+    if (want[k] && !seen[k]) { seen[k] = 1; out.push(k); }
+  });
+  ['id', 'kind', 'label', 'shape', 'note'].forEach(function(k){
+    if (want[k] && !seen[k]) { seen[k] = 1; out.push(k); }
+  });
+  return out;
 }
 
 /* A starter document: one room, one zone.  Both are placeholders the
@@ -691,12 +800,43 @@ function allDesks(d){
   d.rooms.forEach(function(r){ r.desks.forEach(function(dk){ out.push({ room:r, desk:dk }); }); });
   return out;
 }
+function allFeatures(d){
+  var out = [];
+  d.rooms.forEach(function(r){
+    (r.features || []).forEach(function(f){ out.push({ room:r, feature:f }); });
+  });
+  return out;
+}
 function findDesk(d, u){
   for (var i = 0; i < d.rooms.length; i++) {
     var ds = d.rooms[i].desks;
     for (var j = 0; j < ds.length; j++) if (ds[j].uid === u) return { room: d.rooms[i], desk: ds[j], ri: i, di: j };
   }
   return null;
+}
+/* Either namespace, for "jump to the thing this validation row is about". */
+function findAny(d, u){
+  var hit = findDesk(d, u);
+  if (hit) return { room:hit.room, item:hit.desk, ri:hit.ri, layer:'desks' };
+  for (var i = 0; i < d.rooms.length; i++) {
+    var fs = d.rooms[i].features || [];
+    for (var j = 0; j < fs.length; j++) {
+      if (fs[j].uid === u) return { room:d.rooms[i], item:fs[j], ri:i, layer:'features' };
+    }
+  }
+  return null;
+}
+/* Feature ids are unique within a room and must not collide with any desk id.
+ * The seed is the kind, so a new wall is `wall_1`; nothing counts anything. */
+function nextFeatureId(d, r, kind){
+  var used = Object.create(null);
+  (r.features || []).forEach(function(f){ used[f.id] = true; });
+  allDesks(d).forEach(function(e){ used[e.desk.id] = true; });
+  var base = String(kind || 'feature').replace(/[^A-Za-z0-9_-]+/g, '_') || 'feature';
+  for (var n = 1; ; n++) {
+    var cand = base + '_' + n;
+    if (!used[cand]) return cand;
+  }
 }
 function zoneById(d, id){
   for (var i = 0; i < d.zones.length; i++) if (d.zones[i].id === id) return d.zones[i];
@@ -902,13 +1042,89 @@ function importRooms(src){
     }
     room.imageSize = [W, H];
 
+    /* `features` is first-class only when it is an array we can actually edit.
+     * Anything else is kept verbatim as an unknown key so nothing is lost. */
+    var featEditable = Array.isArray(r.features);
+    room.hasFeatures = featEditable;
     var RKN = { id:1, label:1, image:1, image_size:1, desks:1 };
     Object.keys(r).forEach(function(k){
-      if (!RKN[k]) { room.extraKeys.push(k); room.extra[k] = clone(r[k]); }
+      if (RKN[k]) return;
+      if (k === 'features' && featEditable) return;
+      room.extraKeys.push(k); room.extra[k] = clone(r[k]);
     });
+    if ('features' in r && !featEditable) {
+      warn.push('rooms.json: rooms[' + ri + '] ("' + rid + '"): "features" is not an array, so it ' +
+                'cannot be edited here. It is preserved verbatim on export.');
+    }
 
     var sx = space === 'pixels' ? 1 / W : 1;
     var sy = space === 'pixels' ? 1 / H : 1;
+
+    (featEditable ? r.features : []).forEach(function(f, fi){
+      f = f || {};
+      var fid = f.id !== undefined && f.id !== null ? String(f.id) : '';
+      var where = 'rooms[' + ri + '].features[' + fi + '] ("' + fid + '")';
+      var sh = f.shape || {};
+      var hasR = Array.isArray(sh.rect), hasP = Array.isArray(sh.polygon), hasL = Array.isArray(sh.polyline);
+      var picked = (hasR ? 1 : 0) + (hasP ? 1 : 0) + (hasL ? 1 : 0);
+      if (picked > 1) {
+        warn.push('rooms.json: ' + where + ': shape defines more than one of rect / polygon / ' +
+                  'polyline; SPEC 2.1 allows exactly one. Kept ' +
+                  (hasR ? '"rect"' : '"polygon"') + '.');
+      }
+      var shape;
+      if (hasR) {
+        if (sh.rect.length !== 4 || !sh.rect.every(function(v){ return isFinite(v); })) {
+          warn.push('rooms.json: ' + where + ': shape.rect must be four finite numbers [x, y, w, h]; got ' +
+                    JSON.stringify(sh.rect) + '. Substituted a placeholder.');
+          shape = { kind:'rect', x:0, y:0, w:0.05, h:0.05 };
+        } else {
+          shape = { kind:'rect',
+                    x:Number(sh.rect[0]) * sx, y:Number(sh.rect[1]) * sy,
+                    w:Number(sh.rect[2]) * sx, h:Number(sh.rect[3]) * sy };
+        }
+      } else if (hasP || hasL) {
+        var raw = hasP ? sh.polygon : sh.polyline;
+        var need = hasP ? 3 : 2;
+        var pts = raw.filter(function(p){
+          return Array.isArray(p) && p.length >= 2 && isFinite(p[0]) && isFinite(p[1]);
+        }).map(function(p){ return [Number(p[0]) * sx, Number(p[1]) * sy]; });
+        if (pts.length !== raw.length) {
+          warn.push('rooms.json: ' + where + ': dropped ' + (raw.length - pts.length) +
+                    ' malformed point(s).');
+        }
+        if (pts.length < need) {
+          warn.push('rooms.json: ' + where + ': shape.' + (hasP ? 'polygon' : 'polyline') +
+                    ' needs at least ' + need + ' points, has ' + pts.length + '.');
+        }
+        shape = { kind: hasP ? 'poly' : 'line', pts: pts };
+      } else {
+        warn.push('rooms.json: ' + where + ': shape has none of "rect", "polygon" or "polyline". ' +
+                  'Substituted a placeholder rectangle.');
+        shape = { kind:'rect', x:0, y:0, w:0.05, h:0.05 };
+      }
+
+      var ft = newFeature(fid,
+                          f.kind !== undefined && f.kind !== null ? String(f.kind) : '',
+                          f.label !== undefined && f.label !== null ? String(f.label) : '',
+                          shape);
+      ft.hasLabel = ('label' in f);
+      if ('note' in f) { ft.hasNote = true; ft.note = f.note === null ? '' : String(f.note); }
+      var FKN = { id:1, kind:1, label:1, shape:1, note:1 };
+      Object.keys(f).forEach(function(k){
+        if (FKN[k]) { ft.keyOrder.push(k); return; }
+        ft.extraKeys.push(k); ft.extra[k] = clone(f[k]);
+      });
+      var FSKN = { rect:1, polygon:1, polyline:1 };
+      var fshExtra = Object.keys(sh).filter(function(k){ return !FSKN[k]; });
+      if (fshExtra.length) {
+        ft.shapeExtraKeys = fshExtra;
+        ft.shapeExtra = {};
+        fshExtra.forEach(function(k){ ft.shapeExtra[k] = clone(sh[k]); });
+      }
+      room.features.push(ft);
+    });
+
     var dsrc = Array.isArray(r.desks) ? r.desks : [];
     if (!Array.isArray(r.desks)) warn.push('rooms.json: rooms[' + ri + '] ("' + rid + '"): "desks" is missing or not an array.');
 
@@ -1002,6 +1218,33 @@ function buildExport(d, space, opts){
     var fx = space === 'pixels' ? W : 1, fy = space === 'pixels' ? H : 1;
     var ro = { id:r.id, label:r.label, image:r.image, image_size:[W, H] };
     r.extraKeys.forEach(function(k){ ro[k] = clone(r.extra[k]); });
+    var feats = r.features || [];
+    if (r.hasFeatures || feats.length) {
+      ro.features = feats.map(function(ft){
+        var o = {};
+        featureKeyOrder(ft).forEach(function(k){
+          if (k === 'shape') {
+            var fs = {};
+            if (ft.shape.kind === 'rect') {
+              var fb = shapeBBox(ft.shape);
+              fs.rect = [round(fb.x * fx, dp), round(fb.y * fy, dp),
+                         round(fb.w * fx, dp), round(fb.h * fy, dp)];
+            } else {
+              var key = ft.shape.kind === 'line' ? 'polyline' : 'polygon';
+              fs[key] = ft.shape.pts.map(function(p){
+                return [round(p[0] * fx, dp), round(p[1] * fy, dp)];
+              });
+            }
+            if (ft.shapeExtraKeys) ft.shapeExtraKeys.forEach(function(k2){ fs[k2] = clone(ft.shapeExtra[k2]); });
+            o.shape = fs;
+          } else {
+            o[k] = ft[k];
+          }
+        });
+        ft.extraKeys.forEach(function(k){ o[k] = clone(ft.extra[k]); });
+        return o;
+      });
+    }
     ro.desks = r.desks.map(function(dk){
       var o = { id:dk.id, label:dk.label, zone:dk.zone };
       var sh = {};
@@ -1052,6 +1295,20 @@ function validate(d){
   var seenDesk = Object.create(null);
   var zoneUse = Object.create(null);
 
+  /* Desk ids, resolved up front.  Features have their own namespace and take no
+   * part in desk-id uniqueness, but a feature id that IS a desk id makes the map
+   * ambiguous about what a click means, so it has to be caught.  Building the
+   * table before the room walk means the collision is found whichever file order
+   * the two happen to appear in. */
+  var deskIdAt = Object.create(null);
+  d.rooms.forEach(function(r, ri){
+    r.desks.forEach(function(dk, di){
+      if (dk.id.length && !deskIdAt[dk.id]) {
+        deskIdAt[dk.id] = 'rooms[' + ri + '].desks[' + di + '] ("' + dk.id + '")';
+      }
+    });
+  });
+
   d.rooms.forEach(function(r, ri){
     var at = 'rooms[' + ri + '] ("' + r.id + '")';
     if (!r.id.length) errors.push({ msg:'rooms.json: rooms[' + ri + ']: room id is empty.', roomIdx:ri });
@@ -1068,6 +1325,66 @@ function validate(d){
     if (!r.desks.length) {
       warnings.push({ msg:'rooms.json: ' + at + ': has no desks.', roomIdx:ri });
     }
+
+    /* ---- features: decoration, own namespace, looser rules than desks ----
+     * A feature may overlap anything and may sit outside the room outline; it
+     * needs no zone.  What it must not do is collide with the desk namespace. */
+    var seenFeat = Object.create(null);
+    (r.features || []).forEach(function(ft, fi){
+      var fwhere = 'rooms[' + ri + '].features[' + fi + '] ("' + ft.id + '")';
+      if (!ft.id.length) {
+        errors.push({ msg:'rooms.json: rooms[' + ri + '].features[' + fi + ']: missing required key ' +
+                          '\'id\' (a non-empty string, unique within the room).',
+                      roomIdx:ri, uid:ft.uid, feature:true });
+      } else {
+        if (seenFeat[ft.id] !== undefined) {
+          errors.push({ msg:'rooms.json: ' + fwhere + ': duplicate feature id \'' + ft.id +
+                            '\'; already used at features[' + seenFeat[ft.id] + '] in this room.',
+                        roomIdx:ri, uid:ft.uid, feature:true });
+        } else {
+          seenFeat[ft.id] = fi;
+        }
+        if (deskIdAt[ft.id]) {
+          errors.push({ msg:'rooms.json: ' + fwhere + ': feature id \'' + ft.id + '\' is also a desk id ' +
+                            '(defined at ' + deskIdAt[ft.id] + '). Desks are selectable and features are ' +
+                            'not, so the two namespaces must not overlap.',
+                        roomIdx:ri, uid:ft.uid, feature:true });
+        }
+      }
+
+      if (!ft.kind.length) {
+        errors.push({ msg:'rooms.json: ' + fwhere + ': missing required key \'kind\'. One of: ' +
+                          FEATURE_KINDS.join(', ') + '.', roomIdx:ri, uid:ft.uid, feature:true });
+      } else if (!knownFeatureKind(ft.kind)) {
+        warnings.push({ msg:'rooms.json: ' + fwhere + ': \'kind\' is \'' + ft.kind + '\', which the ' +
+                            'renderers do not have a specific style for; it will be drawn as generic ' +
+                            'structure. One of: ' + FEATURE_KINDS.join(', ') + '.',
+                        roomIdx:ri, uid:ft.uid, feature:true });
+      }
+
+      if (ft.shape.kind === 'poly' && ft.shape.pts.length < 3) {
+        errors.push({ msg:'rooms.json: ' + fwhere + ': shape.polygon has ' + ft.shape.pts.length +
+                          ' point(s); a polygon needs at least 3.', roomIdx:ri, uid:ft.uid, feature:true });
+      }
+      if (ft.shape.kind === 'line' && ft.shape.pts.length < 2) {
+        errors.push({ msg:'rooms.json: ' + fwhere + ': shape.polyline has ' + ft.shape.pts.length +
+                          ' point(s); a polyline needs at least 2.', roomIdx:ri, uid:ft.uid, feature:true });
+      }
+      var fb = shapeBBox(ft.shape);
+      /* A polyline legitimately has zero extent across its own axis — a wall
+       * run is a straight line — so the positive-extent rule is for rects. */
+      if (ft.shape.kind === 'rect' && (fb.w <= 0 || fb.h <= 0)) {
+        errors.push({ msg:'rooms.json: ' + fwhere + ': shape.rect has zero width or height.',
+                      roomIdx:ri, uid:ft.uid, feature:true });
+      }
+      var feps = 1e-9;
+      if (fb.x < -feps || fb.y < -feps || fb.x1 > 1 + feps || fb.y1 > 1 + feps) {
+        errors.push({ msg:'rooms.json: ' + fwhere + ': shape falls outside the image bounds ' +
+                          '(normalized x ' + fb.x.toFixed(4) + '…' + fb.x1.toFixed(4) +
+                          ', y ' + fb.y.toFixed(4) + '…' + fb.y1.toFixed(4) + ').',
+                      roomIdx:ri, uid:ft.uid, feature:true });
+      }
+    });
 
     r.desks.forEach(function(dk, di){
       var where = 'rooms[' + ri + '].desks[' + di + '] ("' + dk.id + '")';
@@ -1154,7 +1471,8 @@ function replicateOffsets(shape, room, count, dir, mode, valuePx){
 }
 function translateShape(sh, dx, dy){
   if (sh.kind === 'rect') return { kind:'rect', x:sh.x + dx, y:sh.y + dy, w:sh.w, h:sh.h };
-  return { kind:'poly', pts: sh.pts.map(function(p){ return [p[0] + dx, p[1] + dy]; }) };
+  /* keep 'poly' vs 'line' — a translated wall is still a wall, not a polygon */
+  return { kind: sh.kind, pts: sh.pts.map(function(p){ return [p[0] + dx, p[1] + dy]; }) };
 }
 
 /* --------------------------------------------------- assist: suggest rects */
@@ -1271,15 +1589,20 @@ var IMAGES = Object.create(null);          /* roomId -> {img, dataUrl, w, h, nam
 
 var UI = {
   roomIdx: 0,
+  layer: 'desks',                          /* 'desks' | 'features' — what the tools act on */
   tool: 'select',
   preview: false,
   labelMode: 'label',                      /* label | id | both | none */
   showGrid: false,
   snap: false,
   gridPx: 10,
-  sel: [],                                 /* desk uids, current room only */
+  sel: [],                                 /* uids in the ACTIVE layer, current room only */
+  selStash: { desks: [], features: [] },   /* the other layer's selection, parked */
   hover: null,
   hiddenZones: Object.create(null),
+  showFeatures: true,
+  featureLabels: true,
+  hiddenKinds: Object.create(null),
   suggestions: Object.create(null),        /* roomId -> [{x,y,w,h,state}] */
   suggHover: -1,
   filter: '',
@@ -1322,7 +1645,7 @@ function afterRestore(what){
   /* UI.sel is deliberately NOT pruned here.  uids are never reused, so a uid
    * that vanished on undo is inert, and keeping it means redo brings the
    * selection back with the region instead of silently dropping it.  Every
-   * consumer resolves uids through selDesks(), which ignores dead ones. */
+   * consumer resolves uids through selItems(), which ignores dead ones. */
   afterChange();
   renderAll();
   toast(what);
@@ -1336,14 +1659,54 @@ function afterChange(){
 /* ------------------------------------------------------------- accessors */
 function room(){ return DOC.rooms[UI.roomIdx] || null; }
 function roomImage(){ var r = room(); return r ? IMAGES[r.id] || null : null; }
-function selDesks(){
+function isFeatureLayer(){ return UI.layer === 'features'; }
+/* The array the drawing and selection tools currently act on.  Desks and
+ * features share a geometry representation, so every geometric operation —
+ * move, resize, vertex edit, marquee, nudge, replicate — is written once. */
+function curList(){
   var r = room(); if (!r) return [];
+  return isFeatureLayer() ? (r.features || []) : r.desks;
+}
+function selItems(){
+  var list = curList();
   return UI.sel.map(function(u){
-    for (var i = 0; i < r.desks.length; i++) if (r.desks[i].uid === u) return r.desks[i];
+    for (var i = 0; i < list.length; i++) if (list[i].uid === u) return list[i];
     return null;
   }).filter(Boolean);
 }
+/* Desks only, whatever layer is active — for the places that genuinely mean
+ * "a desk" (renumbering, the zone assignment controls). */
+function selDesksOnly(){ return isFeatureLayer() ? [] : selItems(); }
 function zoneVisible(z){ return !UI.hiddenZones[z]; }
+function kindVisible(k){ return UI.showFeatures && !UI.hiddenKinds[k]; }
+function itemVisible(it){
+  return isFeatureLayer() ? kindVisible(it.kind) : zoneVisible(it.zone);
+}
+/* Kinds present in the document, sorted, for the visibility panel and the
+ * legend.  Derived, never a fixed list of rows. */
+function docKinds(){
+  var seen = Object.create(null), out = [];
+  allFeatures(DOC).forEach(function(e){
+    if (!seen[e.feature.kind]) { seen[e.feature.kind] = true; out.push(e.feature.kind); }
+  });
+  out.sort();
+  return out;
+}
+function setLayer(l){
+  if (UI.layer === l) return;
+  UI.selStash[UI.layer] = UI.sel.slice();
+  UI.layer = l;
+  UI.sel = (UI.selStash[l] || []).slice();
+  UI.hover = null;
+  PENDING = null;
+  GHOSTS = null;
+  UI.preview = false;
+  /* the polyline tool has no meaning on desks — a desk drawn as one is
+   * unclickable, which is exactly the failure nobody notices until a student
+   * cannot pick a seat */
+  if (l === 'desks' && UI.tool === 'line') UI.tool = 'poly';
+  renderAll();
+}
 
 /* ------------------------------------------------------------- view math */
 function view(){
@@ -1492,6 +1855,9 @@ function draw(){
   var selSet = Object.create(null);
   UI.sel.forEach(function(u){ selSet[u] = true; });
 
+  /* features — decoration, beneath everything selectable */
+  drawFeatures(selSet);
+
   /* regions */
   r.desks.forEach(function(dk){
     if (!zoneVisible(dk.zone)) return;
@@ -1561,7 +1927,84 @@ function draw(){
     ctx.setLineDash([]);
   }
 
+  drawFeatureLabels();
   drawLabels(zmap);
+}
+
+/* Features are drawn first and grey, so they read as the room the desks sit in
+ * rather than as anything a student could pick.  Same per-kind styling the
+ * student map uses. */
+function drawFeatures(selSet){
+  var r = room();
+  if (!r || !UI.showFeatures) return;
+  var feats = r.features || [];
+  if (!feats.length) return;
+  var editing = isFeatureLayer() && !UI.preview;
+  ctx.save();
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  feats.forEach(function(ft){
+    if (!kindVisible(ft.kind)) return;
+    var st = featureStyle(ft.kind);
+    var openPath = ft.shape.kind === 'line';
+    var src = openPath ? ft.shape.pts : shapePoly(ft.shape);
+    if (!src || src.length < 2) return;
+    var pts = src.map(function(p){ return n2s(p[0], p[1]); });
+    var isSel = editing && !!selSet[ft.uid];
+    var isHot = editing && UI.hover === ft.uid;
+
+    ctx.beginPath();
+    pts.forEach(function(p, i){ if (i) ctx.lineTo(p[0], p[1]); else ctx.moveTo(p[0], p[1]); });
+    if (!openPath) ctx.closePath();
+    if (!openPath && st.fillA > 0) { ctx.fillStyle = rgba(st.fill, st.fillA); ctx.fill(); }
+
+    ctx.setLineDash(st.dash || []);
+    ctx.strokeStyle = isSel ? '#ffffff' : rgba(st.stroke, isHot ? 1 : st.strokeA);
+    ctx.lineWidth = isSel ? st.width + 1.4 : (isHot ? st.width + 0.8 : st.width);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (isSel) { ctx.strokeStyle = 'rgba(20,25,32,.85)'; ctx.lineWidth = 1; ctx.stroke(); }
+  });
+  ctx.restore();
+}
+
+/* Feature labels: grey chips, under the desk labels, skipped when the shape is
+ * too small on screen to hold one. */
+function drawFeatureLabels(){
+  var r = room();
+  if (!r || !UI.showFeatures || !UI.featureLabels) return;
+  var feats = r.features || [];
+  if (!feats.length) return;
+  var fs = coarse() ? 11 : 10.5;
+  ctx.save();
+  ctx.textBaseline = 'middle';
+  ctx.font = '600 ' + fs + 'px ' + uiFont();
+  feats.forEach(function(ft){
+    if (!kindVisible(ft.kind)) return;
+    var txt = ft.label;
+    if (!txt || !txt.length) return;
+    var b = shapeBBox(ft.shape);
+    var a = n2s(b.x, b.y), c = n2s(b.x1, b.y1);
+    var wpx = c[0] - a[0], hpx = c[1] - a[1];
+    if (wpx < 24 || hpx < 9) return;
+    var m = ctx.measureText(txt);
+    var w = Math.min(m.width + 8, Math.max(20, wpx - 2)), h = fs + 5;
+    /* An outline wraps the whole room, so its centre is where the desks are.
+     * Park it against the top edge instead. */
+    var top = ft.kind === 'outline';
+    var cx = top ? a[0] + w / 2 + 3 : (a[0] + c[0]) / 2;
+    var cy = top ? a[1] + h / 2 + 2 : (a[1] + c[1]) / 2;
+    ctx.fillStyle = 'rgba(72,80,90,.86)';
+    roundRect(cx - w / 2, cy - h / 2, w, h, 3);
+    ctx.fill();
+    ctx.fillStyle = '#e9edf2';
+    ctx.save();
+    ctx.beginPath(); ctx.rect(cx - w / 2, cy - h / 2, w, h); ctx.clip();
+    ctx.textAlign = 'center';
+    ctx.fillText(txt, cx, cy + 0.5);
+    ctx.restore();
+  });
+  ctx.restore();
 }
 
 function uiFont(){
@@ -1572,6 +2015,20 @@ function badId(dk){
   var c = 0;
   allDesks(DOC).forEach(function(e){ if (e.desk.id === dk.id) c++; });
   return c > 1;
+}
+/* Feature ids live in their own namespace: unique within the room, and never
+ * equal to a desk id. */
+function badFeatureId(ft){
+  if (!ft.id.length) return true;
+  var r = room();
+  if (r) {
+    var c = 0;
+    (r.features || []).forEach(function(f){ if (f.id === ft.id) c++; });
+    if (c > 1) return true;
+  }
+  var clash = false;
+  allDesks(DOC).forEach(function(e){ if (e.desk.id === ft.id) clash = true; });
+  return clash;
 }
 function hatch(pts, color){
   var b = { x:Infinity, y:Infinity, x1:-Infinity, y1:-Infinity };
@@ -1626,7 +2083,7 @@ function drawPending(){
     }
     ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.8; ctx.setLineDash([5, 3]);
     ctx.stroke(); ctx.setLineDash([]);
-    if (pts.length > 1) {
+    if (pts.length > 1 && !PENDING.open) {
       ctx.beginPath();
       pts.forEach(function(p, i){ if (i) ctx.lineTo(p[0], p[1]); else ctx.moveTo(p[0], p[1]); });
       ctx.closePath();
@@ -1656,7 +2113,7 @@ function drawGhosts(){
   ctx.restore();
 }
 function drawHandles(){
-  var ds = selDesks();
+  var ds = selItems();
   if (ds.length !== 1) return;
   var dk = ds[0];
   var R = handleR();
@@ -1753,7 +2210,7 @@ function pointerCount(){ return Object.keys(POINTERS).length; }
 
 /* ------------------------------------------------------------ hit tests */
 function hitHandle(sx, sy){
-  var ds = selDesks();
+  var ds = selItems();
   if (ds.length !== 1 || UI.preview) return null;
   var dk = ds[0], R = handleR() + 4;
   if (dk.shape.kind === 'rect') {
@@ -1761,31 +2218,45 @@ function hitHandle(sx, sy){
     for (var i = 0; i < hs.length; i++) {
       var p = n2s(hs[i].nx, hs[i].ny);
       if (Math.abs(p[0] - sx) <= R && Math.abs(p[1] - sy) <= R) {
-        return { type:'resize', desk:dk, h:hs[i].id };
+        return { type:'resize', item:dk, h:hs[i].id };
       }
     }
   } else {
     for (var j = 0; j < dk.shape.pts.length; j++) {
       var q = n2s(dk.shape.pts[j][0], dk.shape.pts[j][1]);
       if (Math.abs(q[0] - sx) <= R && Math.abs(q[1] - sy) <= R) {
-        return { type:'vertex', desk:dk, i:j };
+        return { type:'vertex', item:dk, i:j };
       }
     }
   }
   return null;
 }
-function hitDesk(sx, sy){
-  var r = room(); if (!r) return null;
+/* Hit test the ACTIVE layer only.  On the desks layer a feature can never be
+ * returned, which is what makes "features are never selectable as desks" a
+ * property of the code rather than a convention. */
+function hitItem(sx, sy){
+  var list = curList();
+  if (!list.length) return null;
   var n = s2n(sx, sy);
-  for (var i = r.desks.length - 1; i >= 0; i--) {
-    var dk = r.desks[i];
-    if (!zoneVisible(dk.zone)) continue;
-    if (pointInPoly(n[0], n[1], shapePoly(dk.shape))) return dk;
+  var tol = handleR() + 4;
+  for (var i = list.length - 1; i >= 0; i--) {
+    var it = list[i];
+    if (!itemVisible(it)) continue;
+    if (it.shape.kind === 'line') {
+      /* a polyline has no interior; hit it near the line itself */
+      var pts = it.shape.pts.map(function(p){ return n2s(p[0], p[1]); });
+      for (var j = 0; j + 1 < pts.length; j++) {
+        if (distToSeg(sx, sy, pts[j], pts[j + 1]).d <= tol) return it;
+      }
+      continue;
+    }
+    if (pointInPoly(n[0], n[1], shapePoly(it.shape))) return it;
   }
   return null;
 }
 function hitSuggestion(sx, sy){
   var r = room(); if (!r) return -1;
+  if (isFeatureLayer()) return -1;      /* suggestions produce desks, not features */
   var list = UI.suggestions[r.id] || [];
   var n = s2n(sx, sy);
   for (var i = list.length - 1; i >= 0; i--) {
@@ -1795,26 +2266,50 @@ function hitSuggestion(sx, sy){
   }
   return -1;
 }
-/* Nearest edge of the single selected polygon, for vertex insertion. */
+/* Nearest edge of the single selected polygon or polyline, for vertex insertion. */
 function hitPolyEdge(sx, sy){
-  var ds = selDesks();
-  if (ds.length !== 1 || ds[0].shape.kind !== 'poly') return null;
-  var pts = ds[0].shape.pts, best = null;
-  for (var i = 0; i < pts.length; i++) {
+  var ds = selItems();
+  if (ds.length !== 1) return null;
+  var sh = ds[0].shape;
+  if (sh.kind !== 'poly' && sh.kind !== 'line') return null;
+  var pts = sh.pts, best = null;
+  /* a polyline has no closing edge back to the first point */
+  var segs = sh.kind === 'line' ? pts.length - 1 : pts.length;
+  for (var i = 0; i < segs; i++) {
     var a = n2s(pts[i][0], pts[i][1]);
-    var b = n2s(pts[(i + 1) % pts.length][0], pts[(i + 1) % pts.length][1]);
+    var q = pts[(i + 1) % pts.length];
+    var b = n2s(q[0], q[1]);
     var d = distToSeg(sx, sy, a, b);
-    if (d.d <= handleR() + 6 && (!best || d.d < best.d)) best = { d:d.d, i:i, desk:ds[0] };
+    if (d.d <= handleR() + 6 && (!best || d.d < best.d)) best = { d:d.d, i:i, item:ds[0] };
   }
   return best;
 }
+/* Minimum vertex count for a shape to remain valid. */
+function minPts(sh){ return sh.kind === 'line' ? 2 : 3; }
 
 /* ------------------------------------------------------------ operations */
-function addDeskFromRect(x0, y0, x1, y1){
+function addItemFromRect(x0, y0, x1, y1){
   var r = room(); if (!r) return null;
   var x = Math.min(x0, x1), y = Math.min(y0, y1);
   var w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
-  return addDesk(r, { kind:'rect', x:x, y:y, w:w, h:h });
+  return addItem(r, { kind:'rect', x:x, y:y, w:w, h:h });
+}
+/* One entry point; the active layer decides what gets created. */
+function addItem(r, shape){
+  return isFeatureLayer() ? addFeature(r, shape) : addDesk(r, shape);
+}
+function addFeature(r, shape){
+  var kind = currentFeatureKind();
+  var ft = newFeature(nextFeatureId(DOC, r, kind), kind, '', shape);
+  if (!r.features) r.features = [];
+  r.features.push(ft);
+  r.hasFeatures = true;
+  UI.sel = [ft.uid];
+  LAST_KIND = kind;
+  commit();
+  renderAll();
+  focusIdField();
+  return ft;
 }
 function addDesk(r, shape){
   if (!DOC.zones.length) {
@@ -1843,35 +2338,68 @@ function currentZoneId(){
   }
   return DOC.zones.length ? DOC.zones[0].id : '';
 }
+/* Kind for a newly drawn feature: whatever the dropdown says, falling back to
+ * the last one used, then to the last feature in the room. */
+var LAST_KIND = null;
+function currentFeatureKind(){
+  var sel = $('featKindNew');
+  if (sel && sel.value) return sel.value;
+  if (LAST_KIND) return LAST_KIND;
+  var r = room();
+  if (r && r.features && r.features.length) return r.features[r.features.length - 1].kind;
+  return FEATURE_KINDS[0];
+}
 function deleteSelected(){
   var r = room(); if (!r || !UI.sel.length) return;
   var kill = Object.create(null);
   UI.sel.forEach(function(u){ kill[u] = true; });
-  var n = r.desks.length;
-  r.desks = r.desks.filter(function(d){ return !kill[d.uid]; });
+  var noun = isFeatureLayer() ? 'feature' : 'region';
+  var n, left;
+  if (isFeatureLayer()) {
+    n = (r.features || []).length;
+    r.features = (r.features || []).filter(function(f){ return !kill[f.uid]; });
+    left = r.features.length;
+  } else {
+    n = r.desks.length;
+    r.desks = r.desks.filter(function(d){ return !kill[d.uid]; });
+    left = r.desks.length;
+  }
   UI.sel = [];
   commit(); renderAll();
-  toast('Deleted ' + (n - r.desks.length) + ' region(s)');
+  toast('Deleted ' + (n - left) + ' ' + noun + '(s)');
 }
 function duplicateSelected(){
   var r = room(); if (!r || !UI.sel.length) return;
   var offN = i2n(8, 8);
   var made = [];
-  selDesks().forEach(function(dk){
-    var id = nextDeskId(DOC);
-    var nd = newDesk(id, labelFromId(id), dk.zone, translateShape(dk.shape, offN[0], offN[1]));
-    nd.notes = dk.notes; nd.hasNotes = dk.hasNotes;
-    nd.extraKeys = dk.extraKeys.slice(); nd.extra = clone(dk.extra);
-    r.desks.push(nd); made.push(nd.uid);
-  });
+  if (isFeatureLayer()) {
+    selItems().forEach(function(ft){
+      var nf = newFeature(nextFeatureId(DOC, r, ft.kind), ft.kind, ft.label,
+                          translateShape(ft.shape, offN[0], offN[1]));
+      nf.hasLabel = ft.hasLabel;
+      nf.note = ft.note; nf.hasNote = ft.hasNote;
+      nf.keyOrder = ft.keyOrder.slice();
+      nf.extraKeys = ft.extraKeys.slice(); nf.extra = clone(ft.extra);
+      if (ft.shapeExtraKeys) { nf.shapeExtraKeys = ft.shapeExtraKeys.slice(); nf.shapeExtra = clone(ft.shapeExtra); }
+      r.features.push(nf); made.push(nf.uid);
+    });
+  } else {
+    selItems().forEach(function(dk){
+      var id = nextDeskId(DOC);
+      var nd = newDesk(id, labelFromId(id), dk.zone, translateShape(dk.shape, offN[0], offN[1]));
+      nd.notes = dk.notes; nd.hasNotes = dk.hasNotes;
+      nd.extraKeys = dk.extraKeys.slice(); nd.extra = clone(dk.extra);
+      r.desks.push(nd); made.push(nd.uid);
+    });
+  }
   UI.sel = made;
   commit(); renderAll();
-  toast('Duplicated ' + made.length + ' region(s)');
+  toast('Duplicated ' + made.length + (isFeatureLayer() ? ' feature(s)' : ' region(s)'));
 }
 function nudge(dxPx, dyPx){
   if (!UI.sel.length) return;
   var d = i2n(dxPx, dyPx);
-  selDesks().forEach(function(dk){
+  selItems().forEach(function(dk){
     var s = translateShape(dk.shape, d[0], d[1]);
     dk.shape = s;
   });
@@ -1893,9 +2421,19 @@ function rectToPoly(dk){
   commit(); renderAll();
 }
 function polyToRect(dk){
-  if (dk.shape.kind !== 'poly') return;
+  if (dk.shape.kind === 'rect') return;
   var b = shapeBBox(dk.shape);
   dk.shape = { kind:'rect', x:b.x, y:b.y, w:b.w, h:b.h };
+  commit(); renderAll();
+}
+/* Features only: an area and a run of line segments are different things, and
+ * which one a wall should be is a judgement call made at the plan, not here. */
+function togglePolyLine(ft){
+  if (ft.shape.kind === 'poly') { ft.shape = { kind:'line', pts: ft.shape.pts }; }
+  else if (ft.shape.kind === 'line') {
+    if (ft.shape.pts.length < 3) { toast('A polygon needs at least 3 points', 'err'); return; }
+    ft.shape = { kind:'poly', pts: ft.shape.pts };
+  } else return;
   commit(); renderAll();
 }
 
@@ -1940,7 +2478,7 @@ function onPointerDown(e){
     requestDraw();
     return;
   }
-  if (UI.tool === 'poly') {
+  if (UI.tool === 'poly' || UI.tool === 'line') {
     e.preventDefault();
     DRAG = { mode:'polytap', sx:p[0], sy:p[1], id:e.pointerId, moved:false };
     return;
@@ -1951,19 +2489,21 @@ function onPointerDown(e){
   if (hh) {
     e.preventDefault();
     if (hh.type === 'vertex' && e.altKey) {
-      if (hh.desk.shape.pts.length > 3) {
-        hh.desk.shape.pts.splice(hh.i, 1);
+      var floor = minPts(hh.item.shape);
+      if (hh.item.shape.pts.length > floor) {
+        hh.item.shape.pts.splice(hh.i, 1);
         commit(); renderAll();
-      } else toast('A polygon needs at least 3 points', 'err');
+      } else toast('A ' + (floor === 2 ? 'polyline needs at least 2' : 'polygon needs at least 3') +
+                   ' points', 'err');
       return;
     }
     DRAG = (hh.type === 'resize')
-      ? { mode:'resize', desk:hh.desk, h:hh.h, id:e.pointerId, moved:false, sx:p[0], sy:p[1] }
-      : { mode:'vertex', desk:hh.desk, i:hh.i, id:e.pointerId, moved:false, sx:p[0], sy:p[1] };
+      ? { mode:'resize', item:hh.item, h:hh.h, id:e.pointerId, moved:false, sx:p[0], sy:p[1] }
+      : { mode:'vertex', item:hh.item, i:hh.i, id:e.pointerId, moved:false, sx:p[0], sy:p[1] };
     return;
   }
 
-  var dk = hitDesk(p[0], p[1]);
+  var dk = hitItem(p[0], p[1]);
   if (dk) {
     e.preventDefault();
     if (e.shiftKey) {
@@ -1973,11 +2513,11 @@ function onPointerDown(e){
       if (UI.sel.indexOf(dk.uid) < 0) return;
     } else if (UI.sel.indexOf(dk.uid) < 0) {
       UI.sel = [dk.uid];
-      LAST_ZONE = dk.zone;
+      if (isFeatureLayer()) LAST_KIND = dk.kind; else LAST_ZONE = dk.zone;
       renderAll();
     }
     var start = {};
-    selDesks().forEach(function(d){ start[d.uid] = clone(d.shape); });
+    selItems().forEach(function(d){ start[d.uid] = clone(d.shape); });
     DRAG = { mode:'move', sx:p[0], sy:p[1], id:e.pointerId, start:start, moved:false };
     return;
   }
@@ -1998,10 +2538,10 @@ function onPointerMove(e){
   if (!DRAG) {
     if (UI.preview) { cv.style.cursor = 'grab'; return; }
     var prevH = UI.hover, prevS = UI.suggHover;
-    var d = hitDesk(p[0], p[1]);
+    var d = hitItem(p[0], p[1]);
     UI.hover = d ? d.uid : null;
     UI.suggHover = d ? -1 : hitSuggestion(p[0], p[1]);
-    if (UI.tool === 'poly' && PENDING && PENDING.kind === 'poly') {
+    if (PENDING && PENDING.kind === 'poly') {
       PENDING.cursor = snapPointN.apply(null, s2n(p[0], p[1]));
       requestDraw();
     }
@@ -2036,7 +2576,7 @@ function onPointerMove(e){
     var dn = i2n(dx / view().k, dy / view().k);
     var sxn = dn[0], syn = dn[1];
     if (UI.snap) {
-      var first = selDesks()[0];
+      var first = selItems()[0];
       if (first) {
         var b0 = shapeBBox(DRAG.start[first.uid]);
         var tgt = n2i(b0.x + sxn, b0.y + syn);
@@ -2044,7 +2584,7 @@ function onPointerMove(e){
         sxn = snapped[0] - b0.x; syn = snapped[1] - b0.y;
       }
     }
-    selDesks().forEach(function(d){
+    selItems().forEach(function(d){
       var st = DRAG.start[d.uid];
       if (st) d.shape = translateShape(st, sxn, syn);
     });
@@ -2053,13 +2593,13 @@ function onPointerMove(e){
   }
   if (DRAG.mode === 'resize') {
     var nr = snapPointN.apply(null, s2n(p[0], p[1]));
-    applyResize(DRAG.desk, DRAG.h, nr[0], nr[1]);
+    applyResize(DRAG.item, DRAG.h, nr[0], nr[1]);
     afterChangeLite(); requestDraw();
     return;
   }
   if (DRAG.mode === 'vertex') {
     var nv = snapPointN.apply(null, s2n(p[0], p[1]));
-    DRAG.desk.shape.pts[DRAG.i] = [nv[0], nv[1]];
+    DRAG.item.shape.pts[DRAG.i] = [nv[0], nv[1]];
     afterChangeLite(); requestDraw();
     return;
   }
@@ -2091,7 +2631,7 @@ function onPointerUp(e){
     var a = n2s(PENDING.x0, PENDING.y0), b = n2s(PENDING.x1, PENDING.y1);
     var okSize = Math.abs(b[0] - a[0]) >= 4 && Math.abs(b[1] - a[1]) >= 4;
     var pd = PENDING; PENDING = null;
-    if (okSize) addDeskFromRect(pd.x0, pd.y0, pd.x1, pd.y1);
+    if (okSize) addItemFromRect(pd.x0, pd.y0, pd.x1, pd.y1);
     else { requestDraw(); }
     return;
   }
@@ -2105,10 +2645,13 @@ function onPointerUp(e){
     var x1 = Math.max(d.sx, d.cx), y1 = Math.max(d.sy, d.cy);
     var na = s2n(x0, y0), nb = s2n(x1, y1);
     var box = { x:na[0], y:na[1], w:nb[0] - na[0], h:nb[1] - na[1] };
-    var r = room(), picked = d.add ? d.base.slice() : [];
-    r.desks.forEach(function(dk){
-      if (!zoneVisible(dk.zone)) return;
+    var picked = d.add ? d.base.slice() : [];
+    curList().forEach(function(dk){
+      if (!itemVisible(dk)) return;
       var bb = shapeBBox(dk.shape);
+      /* a horizontal wall has zero-height bbox; grow it so it can be lassoed */
+      if (bb.w === 0) { bb = { x:bb.x - 1e-6, y:bb.y, w:2e-6, h:bb.h }; }
+      if (bb.h === 0) { bb = { x:bb.x, y:bb.y - 1e-6, w:bb.w, h:2e-6 }; }
       if (rectOverlapArea(bb, box) > 0 && picked.indexOf(dk.uid) < 0) picked.push(dk.uid);
     });
     UI.sel = picked;
@@ -2129,11 +2672,12 @@ function onPointerCancel(e){
 
 function polyTap(sx, sy){
   var n = snapPointN.apply(null, s2n(sx, sy));
+  var openPath = UI.tool === 'line';
   if (!PENDING || PENDING.kind !== 'poly') {
-    PENDING = { kind:'poly', pts:[[n[0], n[1]]], cursor:[n[0], n[1]] };
+    PENDING = { kind:'poly', open:openPath, pts:[[n[0], n[1]]], cursor:[n[0], n[1]] };
   } else {
     var first = n2s(PENDING.pts[0][0], PENDING.pts[0][1]);
-    if (PENDING.pts.length >= 3 &&
+    if (!PENDING.open && PENDING.pts.length >= 3 &&
         Math.abs(first[0] - sx) <= handleR() + 6 && Math.abs(first[1] - sy) <= handleR() + 6) {
       closePolygon();
       return;
@@ -2145,11 +2689,17 @@ function polyTap(sx, sy){
 }
 function closePolygon(){
   if (!PENDING || PENDING.kind !== 'poly') return;
-  if (PENDING.pts.length < 3) { toast('A polygon needs at least 3 points', 'err'); return; }
+  var need = PENDING.open ? 2 : 3;
+  if (PENDING.pts.length < need) {
+    toast('A ' + (PENDING.open ? 'polyline needs at least 2' : 'polygon needs at least 3') +
+          ' points', 'err');
+    return;
+  }
   var pts = PENDING.pts.map(function(p){ return [p[0], p[1]]; });
+  var openPath = PENDING.open;
   PENDING = null;
   updateDrawHint();
-  addDesk(room(), { kind:'poly', pts:pts });
+  addItem(room(), { kind: openPath ? 'line' : 'poly', pts:pts });
 }
 function cancelPending(){
   if (!PENDING) return false;
@@ -2203,16 +2753,16 @@ function onWheel(e){
 function onDblClick(e){
   if (UI.preview) return;
   var p = localPt(e);
-  if (UI.tool === 'poly' && PENDING) { closePolygon(); return; }
+  if ((UI.tool === 'poly' || UI.tool === 'line') && PENDING) { closePolygon(); return; }
   var edge = hitPolyEdge(p[0], p[1]);
   if (edge) {
     var n = s2n(p[0], p[1]);
-    edge.desk.shape.pts.splice(edge.i + 1, 0, [n[0], n[1]]);
+    edge.item.shape.pts.splice(edge.i + 1, 0, [n[0], n[1]]);
     commit(); renderAll();
     toast('Vertex inserted');
     return;
   }
-  var dk = hitDesk(p[0], p[1]);
+  var dk = hitItem(p[0], p[1]);
   if (dk) { UI.sel = [dk.uid]; renderAll(); focusIdField(); }
 }
 
@@ -2311,6 +2861,7 @@ function renderAll(){
   renderRooms();
   renderZones();
   renderDeskList();
+  renderFeaturePanel();
   renderInspector();
   renderValidation();
   renderLegend();
@@ -2323,20 +2874,27 @@ function renderAll(){
 
 function renderToolbar(){
   Array.prototype.forEach.call(document.querySelectorAll('.tool'), function(b){
-    b.classList.toggle('on', b.getAttribute('data-tool') === UI.tool && !UI.preview);
+    var t = b.getAttribute('data-tool');
+    b.classList.toggle('on', t === UI.tool && !UI.preview);
+    /* polyline is a features-only shape: a desk with no interior cannot be
+     * clicked, and that failure is invisible until a student cannot pick it */
+    b.disabled = (t === 'line' && !isFeatureLayer());
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('.layer'), function(b){
+    b.classList.toggle('on', b.getAttribute('data-layer') === UI.layer && !UI.preview);
   });
   $('btnPreview').classList.toggle('on', UI.preview);
   $('btnUndo').disabled = HI <= 0;
   $('btnRedo').disabled = HI >= HIST.length - 1;
   var mb = $('modebadge');
   mb.textContent = UI.preview
-    ? 'PREVIEW · ' + labelModeName() + ' · click a legend row to hide a zone'
-    : toolName() + ' · ' + labelModeName();
+    ? 'PREVIEW · ' + labelModeName() + ' · click a legend row to hide a zone or a feature kind'
+    : (isFeatureLayer() ? 'FEATURES · ' : 'DESKS · ') + toolName() + ' · ' + labelModeName();
   updateDrawHint();
 }
 function toolName(){
   return UI.tool === 'select' ? 'Select' : UI.tool === 'rect' ? 'Rectangle'
-       : UI.tool === 'poly' ? 'Polygon' : 'Pan';
+       : UI.tool === 'poly' ? 'Polygon' : UI.tool === 'line' ? 'Polyline' : 'Pan';
 }
 function labelModeName(){
   return UI.labelMode === 'id' ? 'ids' : UI.labelMode === 'label' ? 'labels'
@@ -2344,16 +2902,23 @@ function labelModeName(){
 }
 function updateDrawHint(){
   var h = $('drawhint');
+  var what = isFeatureLayer() ? 'feature (' + currentFeatureKind() + ')' : 'desk';
   if (PENDING && PENDING.kind === 'poly') {
     h.style.display = '';
-    h.textContent = PENDING.pts.length + ' point(s) · click to add · Enter, double-click, or click the ' +
-                    'blue first point to close · Backspace removes the last · Esc cancels';
+    h.textContent = PENDING.pts.length + ' point(s) · click to add · ' +
+                    (PENDING.open
+                      ? 'Enter or double-click to finish the run'
+                      : 'Enter, double-click, or click the blue first point to close') +
+                    ' · Backspace removes the last · Esc cancels';
   } else if (UI.tool === 'poly' && !UI.preview) {
     h.style.display = '';
-    h.textContent = 'Polygon: click to place the first point';
+    h.textContent = 'Polygon → new ' + what + ': click to place the first point';
+  } else if (UI.tool === 'line' && !UI.preview) {
+    h.style.display = '';
+    h.textContent = 'Polyline → new ' + what + ': click to place the first point';
   } else if (UI.tool === 'rect' && !UI.preview) {
     h.style.display = '';
-    h.textContent = 'Rectangle: drag to draw';
+    h.textContent = 'Rectangle → new ' + what + ': drag to draw';
   } else {
     h.style.display = 'none';
   }
@@ -2537,7 +3102,7 @@ function renderDeskList(){
 function renderInspector(){
   var box = $('inspBody');
   clear(box);
-  var ds = selDesks();
+  var ds = selItems();
   $('badgeSel').textContent = ds.length === 0 ? 'none' : (ds.length === 1 ? ds[0].id || '(no id)' : ds.length + ' selected');
   updateRepNote();
 
@@ -2658,7 +3223,7 @@ function idNote(dk){
 function renderInspectorCoords(){
   var node = $('inspCoords');
   if (!node) return;
-  var ds = selDesks();
+  var ds = selItems();
   if (ds.length !== 1) { node.textContent = ''; return; }
   var dk = ds[0], r = room();
   var b = shapeBBox(dk.shape);
@@ -2759,7 +3324,7 @@ function updateStatus(){
   updateStatusVal();
 }
 function updateStatusZoom(){ $('stZoom').textContent = 'zoom ' + Math.round(view().k * 100) + '%'; }
-function updateStatusSel(){ $('stSel').textContent = 'sel ' + selDesks().length; }
+function updateStatusSel(){ $('stSel').textContent = 'sel ' + selItems().length; }
 function updateStatusVal(){
   var n = $('stVal');
   var ne = VAL.errors.length, nw = VAL.warnings.length;
@@ -3070,7 +3635,7 @@ function isMac(){ return /Mac|iPhone|iPad/.test(navigator.platform || navigator.
 
 /* ------------------------------------------------------------- replicate */
 function updateRepNote(){
-  var ds = selDesks();
+  var ds = selItems();
   var n = $('repNote');
   $('btnRepApply').disabled = ds.length < 1;
   if (!ds.length) { n.textContent = 'Select a region to replicate it along a row or column.'; GHOSTS = null; return; }
@@ -3091,7 +3656,7 @@ function repParams(){
   };
 }
 function updateGhosts(){
-  var ds = selDesks();
+  var ds = selItems();
   var panelOpen = $('secRep') && $('secRep').open;
   /* The ghost outlines are a preview of the Replicate button. Showing them
    * while that panel is shut just litters the plan with rectangles the
@@ -3103,7 +3668,7 @@ function updateGhosts(){
   requestDraw();
 }
 function deriveSpacing(){
-  var ds = selDesks();
+  var ds = selItems();
   if (!ds.length) return;
   var r = room(), p = repParams();
   var horiz = (p.dir === 'right' || p.dir === 'left');
@@ -3126,7 +3691,7 @@ function deriveSpacing(){
   toast('Pitch set to the source size: ' + round(size, 2) + ' px (edge to edge, no gap)');
 }
 function applyReplicate(){
-  var ds = selDesks();
+  var ds = selItems();
   if (!ds.length) return;
   var src = ds[0], r = room(), p = repParams();
   var offs = replicateOffsets(src.shape, r, p.count, p.dir, p.mode, p.val);

@@ -48,9 +48,15 @@ REQUIRED_COLUMNS: tuple[str, ...] = (
     "timestamp",
     "email",
     "name",
-    "year",
     "candidacy",
 )
+
+#: `year` used to be required. It is now OPTIONAL, because candidacy alone
+#: decides which zones a person may sit in and the form no longer asks for the
+#: year. Files that still carry the column are read (older exports, and the
+#: coordinator may find it handy in the coordinator report), but the value is
+#: recorded and never used for eligibility. A missing year becomes 0.
+OPTIONAL_COLUMNS: tuple[str, ...] = ("year",)
 
 #: Columns SPEC §3.1 lists but which are audit-only and "never affect the solve".
 #: `types.Submission` gives both of them a default of "", which is the data model
@@ -90,6 +96,7 @@ def canonical_header(k: int) -> tuple[str, ...]:
     """The canonical column order for a response file with K choices (SPEC §3.1)."""
     return (
         *REQUIRED_COLUMNS,
+        *OPTIONAL_COLUMNS,
         *(f"choice_{i}" for i in range(1, k + 1)),
         *AUDIT_COLUMNS,
     )
@@ -467,7 +474,7 @@ def _validate_header(
                 f"the audit trail is thinner than SPEC §3.1 expects."
             )
 
-    known = set(REQUIRED_COLUMNS) | set(AUDIT_COLUMNS)
+    known = set(REQUIRED_COLUMNS) | set(OPTIONAL_COLUMNS) | set(AUDIT_COLUMNS)
     extras = tuple(
         sorted(
             column
@@ -581,18 +588,20 @@ def _build_submission(
             )
         ok = False
 
+    # `year` is optional and informational only (see OPTIONAL_COLUMNS). An
+    # unparseable value is a warning rather than an error: refusing to run the
+    # whole department's assignment over a field that cannot affect the outcome
+    # would be the wrong trade.
     year = 0
-    try:
-        year = _parse_year(cells.get("year", ""))
-    except ValueError:
-        if "year" not in absent_columns:
-            problems.append(
-                Complaint(
-                    where=where,
-                    what=f"'year' is {cells.get('year', '')!r}, which is not an integer",
-                )
+    raw_year = cells.get("year", "").strip()
+    if raw_year:
+        try:
+            year = _parse_year(raw_year)
+        except ValueError:
+            warnings.append(
+                f"{where}: 'year' is {raw_year!r}, which is not an integer. It is "
+                f"recorded as 0 and ignored -- eligibility is decided by candidacy."
             )
-        ok = False
 
     candidacy = cells.get("candidacy", "").strip()
     if not candidacy and "candidacy" not in absent_columns:
@@ -949,20 +958,31 @@ def canonical_rows(
     header = (*canonical_header(responses.k), *extra_columns)
     out: list[tuple[str, ...]] = [header]
     for submission in responses.submissions:
-        row = [
-            submission.submission_id,
-            submission.timestamp,
-            submission.email,
-            submission.name,
-            str(submission.year),
-            submission.candidacy,
-            *submission.choices,
-            submission.client_version,
-            submission.auth_method,
-        ]
-        if extra_columns:
-            values = (extras or {}).get(submission.submission_id, {})
-            row.extend(values.get(column, "") for column in extra_columns)
+        # Keyed by column name, then emitted in header order. This used to be a
+        # positional list, which silently wrote every value one column out of
+        # place the moment the header order changed -- the round-trip came back
+        # with the year in the candidacy field. Deriving the order from the
+        # header makes that failure impossible rather than merely fixed.
+        cells: dict[str, str] = {
+            "submission_id": submission.submission_id,
+            "timestamp": submission.timestamp,
+            "email": submission.email,
+            "name": submission.name,
+            "year": str(submission.year),
+            "candidacy": submission.candidacy,
+            "client_version": submission.client_version,
+            "auth_method": submission.auth_method,
+        }
+        for rank, desk in enumerate(submission.choices, start=1):
+            cells[f"choice_{rank}"] = desk
+        values = (extras or {}).get(submission.submission_id, {})
+
+        row: list[str] = []
+        for column in header:
+            if column in cells:
+                row.append(cells[column])
+            else:
+                row.append(values.get(column, ""))
         out.append(tuple(row))
     return tuple(out)
 

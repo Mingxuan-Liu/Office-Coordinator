@@ -37,6 +37,7 @@ from typing import Any, Mapping, Sequence, TextIO
 
 from .errors import ConfigError, DeskMatchError, Problem
 from .types import (
+    Feature,
     Config,
     Desk,
     Eligibility,
@@ -391,6 +392,19 @@ def _build_rooms(doc: Mapping[str, Any]) -> Rooms:
             )
             for desk in room["desks"]
         )
+        # Features are decoration (walls, doors, rooms). Absent in schema v1,
+        # so default to none rather than requiring the key.
+        features = tuple(
+            Feature(
+                id=str(f["id"]),
+                kind=str(f.get("kind", "")),
+                label=str(f.get("label", "")),
+                shape_kind=_shape_kind(f["shape"]),
+                shape=_shape_value(f["shape"]),
+                note=str(f.get("note", "")),
+            )
+            for f in room.get("features", ())
+        )
         width, height = room["image_size"]
         rooms.append(
             Room(
@@ -399,6 +413,7 @@ def _build_rooms(doc: Mapping[str, Any]) -> Rooms:
                 image=str(room.get("image", "")),
                 image_size=(int(width), int(height)),
                 desks=desks,
+                features=features,
             )
         )
 
@@ -411,11 +426,10 @@ def _build_rooms(doc: Mapping[str, Any]) -> Rooms:
 
 
 def _shape_kind(shape: Mapping[str, Any]) -> str:
-    if "rect" in shape:
-        return "rect"
-    if "polygon" in shape:
-        return "polygon"
-    return _impossible("desk shape has neither 'rect' nor 'polygon'")
+    for kind in ("rect", "polygon", "polyline"):
+        if kind in shape:
+            return kind
+    return _impossible("shape has none of 'rect', 'polygon', 'polyline'")
 
 
 def _shape_value(
@@ -423,7 +437,8 @@ def _shape_value(
 ) -> tuple[float, ...] | tuple[tuple[float, float], ...]:
     if "rect" in shape:
         return tuple(float(v) for v in shape["rect"])
-    return tuple((float(p[0]), float(p[1])) for p in shape["polygon"])
+    points = shape.get("polygon", shape.get("polyline"))
+    return tuple((float(p[0]), float(p[1])) for p in points)
 
 
 def _build_eligibility(doc: Mapping[str, Any]) -> Eligibility:
@@ -483,12 +498,30 @@ def _build_scoring(doc: Mapping[str, Any]) -> Scoring:
         if not str(name).startswith("_")
     }
     committed = doc.get("seed_committed_at")
+
+    # seed_year resolution. "auto" means "the calendar year of this run", and it
+    # is pinned HERE, once, at load time -- never read again deeper in the
+    # pipeline. Everything downstream sees a fixed integer, so the solve stays a
+    # pure function of its inputs (invariant I2) and re-running next January
+    # still reproduces this year's published hash (I3).
+    raw_year = doc.get("seed_year")
+    seed_year: int | None = None
+    from_clock = False
+    if isinstance(raw_year, str) and raw_year.strip().casefold() == "auto":
+        from datetime import datetime
+        seed_year = datetime.now().year
+        from_clock = True
+    elif raw_year is not None:
+        seed_year = int(raw_year)
+
     return Scoring(
         schema_version=int(doc["schema_version"]),
         curves=curves,
         primary_curve=str(doc["primary_curve"]),
         comparison_curves=tuple(doc.get("comparison_curves", ()) or ()),
-        tie_break_seed=str(doc["tie_break_seed"]),
+        tie_break_seed=str(doc.get("tie_break_seed", "")),
         seed_committed_at=str(committed) if committed is not None else None,
         sensitivity_seeds=tuple(doc.get("sensitivity_seeds", ()) or ()),
+        seed_year=seed_year,
+        seed_year_from_clock=from_clock,
     )

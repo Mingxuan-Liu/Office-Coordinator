@@ -46,7 +46,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from conftest import REPO_ROOT, SOLVER_DIR, TESTS_DIR
+from conftest import (
+    REAL_CONFIG_EXPECTED,
+    REPO_ROOT,
+    SOLVER_DIR,
+    TESTS_DIR,
+    expected_pool_size,
+)
 from deskmatch import provenance
 from pipeline import (
     PINNABLE_PROVENANCE_KEYS,
@@ -149,11 +155,12 @@ class TestSamePipelineTwice:
         assert first["results_bytes_sha256"] == second["results_bytes_sha256"]
 
     def test_the_real_configs_answer_is_the_expected_one(
-        self, tmp_path, real_config_dir, real_responses_csv
+        self, tmp_path, real_config_dir, real_responses_csv, real_config
     ):
         """A guard on the fixture itself: if the shipped inputs change, say so."""
         summary = run_pipeline(real_config_dir, real_responses_csv, tmp_path)
-        assert (summary["n_people"], summary["n_desks"]) == (9, 30)
+        assert summary["n_people"] == REAL_CONFIG_EXPECTED.n_people
+        assert summary["n_desks"] == expected_pool_size(real_config)
         assert summary["rank_histogram"] == [7, 1, 1, 0, 0]
         assert summary["total_points_scaled"] == 42
 

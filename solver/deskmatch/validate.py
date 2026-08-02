@@ -50,7 +50,14 @@ SCORING_FILE = "scoring.json"
 #: The files `load_config` reads, in the order it reports on them.
 CONFIG_FILES: tuple[str, ...] = (ROOMS_FILE, ELIGIBILITY_FILE, ROSTER_FILE, SCORING_FILE)
 
-SUPPORTED_SCHEMA_VERSIONS: tuple[int, ...] = (1,)
+SUPPORTED_SCHEMA_VERSIONS: tuple[int, ...] = (1, 2)
+
+#: Feature `kind` values the renderers know how to draw. An unrecognised kind is
+#: a warning, not an error: it still draws (as generic structure), and refusing
+#: to run because someone invented "bookshelf" would be obstructive.
+KNOWN_FEATURE_KINDS: tuple[str, ...] = (
+    "outline", "wall", "door", "window", "partition", "furniture", "room", "divider",
+)
 
 COORD_SPACES: tuple[str, ...] = ("normalized", "pixels")
 
@@ -645,7 +652,8 @@ def validate_rooms(doc: Any, config_dir: str | Path | None = None) -> Validation
             )
 
         _check_unknown_keys(
-            ctx, room_where, room, ("id", "label", "image", "image_size", "desks")
+            ctx, room_where, room,
+            ("id", "label", "image", "image_size", "desks", "features"),
         )
         if "label" not in room:
             ctx.warn(
@@ -660,6 +668,7 @@ def validate_rooms(doc: Any, config_dir: str | Path | None = None) -> Validation
 
         image_size = _validate_image_size(ctx, room_where, room)
         _validate_image_path(ctx, room_where, room, config_dir)
+        _validate_features(ctx, room_where, room, coord_space, image_size, seen_desks)
 
         desks = _require(ctx, room_where, room, "desks", _is_list, "an array of desk objects")
         if desks is None:
@@ -921,20 +930,133 @@ def _validate_image_path(
         )
 
 
+def _validate_features(
+    ctx: ValidationContext,
+    room_where: str,
+    room: Mapping[str, Any],
+    coord_space: str | None,
+    image_size: tuple[int, int] | None,
+    seen_desks: Mapping[str, str],
+) -> None:
+    """Validate a room's decorative `features` (schema v2+).
+
+    Features are walls, doors, rooms, windows, partitions and furniture. They are
+    drawn grey and are never selectable, so the rules are looser than for desks:
+    a feature may overlap anything, may sit outside the room outline, and needs
+    no zone. What it must not do is collide with the desk namespace, because a
+    feature id that matches a desk id makes the map ambiguous about what a click
+    means.
+    """
+    if "features" not in room:
+        return
+    features = room["features"]
+    if not _is_list(features):
+        ctx.error(
+            f"{room_where}.features",
+            f"is {_a_typename(features)} ({_fmt(features)}); expected an array of "
+            f"feature objects.",
+            'Features are optional decoration: [{"id": ..., "kind": "wall", '
+            '"label": ..., "shape": {...}}]. See docs/SPEC.md §2.1.',
+        )
+        return
+
+    seen: dict[str, int] = {}
+    for f_index, feature in enumerate(features):
+        where = f"{room_where}.features[{f_index}]"
+        if not _is_mapping(feature):
+            ctx.error(where, f"expected an object, got {_a_typename(feature)}.")
+            continue
+
+        fid = feature.get("id")
+        if _is_str(fid) and fid.strip():
+            where = f'{where} ("{fid}")'
+            if fid in seen:
+                ctx.error(
+                    where,
+                    f"duplicate feature id '{fid}'; already used at "
+                    f"features[{seen[fid]}] in this room.",
+                )
+            else:
+                seen[fid] = f_index
+            if fid in seen_desks:
+                ctx.error(
+                    where,
+                    f"feature id '{fid}' is also a desk id (defined at "
+                    f"{seen_desks[fid]}).",
+                    "Desks are selectable and features are not, so the two "
+                    "namespaces must not overlap.",
+                )
+        else:
+            ctx.error(
+                where,
+                "missing required key 'id' (a non-empty string, unique within the room)."
+                if fid is None
+                else f"'id' is {_a_typename(fid)} ({_fmt(fid)}); expected a non-empty string.",
+            )
+
+        _check_unknown_keys(ctx, where, feature, ("id", "kind", "label", "shape", "note"))
+
+        kind = feature.get("kind")
+        if kind is None:
+            ctx.error(
+                where,
+                "missing required key 'kind'.",
+                f"One of: {', '.join(KNOWN_FEATURE_KINDS)}.",
+            )
+        elif not _is_str(kind):
+            ctx.error(where, f"'kind' is {_a_typename(kind)} ({_fmt(kind)}); expected a string.")
+        elif kind not in KNOWN_FEATURE_KINDS:
+            ctx.warn(
+                where,
+                f"'kind' is '{kind}', which the renderers do not have a specific "
+                f"style for; it will be drawn as generic structure.",
+                closed_set_hint(kind, KNOWN_FEATURE_KINDS, "kind"),
+            )
+
+        if "label" in feature and not _is_str(feature["label"]):
+            ctx.error(
+                where,
+                f"'label' is {_a_typename(feature['label'])} ({_fmt(feature['label'])}); "
+                f"expected a string.",
+            )
+        if "note" in feature and not _is_str(feature["note"]):
+            ctx.error(
+                where,
+                f"'note' is {_a_typename(feature['note'])} ({_fmt(feature['note'])}); "
+                f"expected a string.",
+            )
+
+        _validate_shape(
+            ctx, where, feature, coord_space, image_size, allow_polyline=True
+        )
+
+
 def _validate_shape(
     ctx: ValidationContext,
     desk_where: str,
     desk: Mapping[str, Any],
     coord_space: str | None,
     image_size: tuple[int, int] | None,
+    allow_polyline: bool = False,
 ) -> tuple[str | None, Sequence[Any] | None]:
+    """Validate a `shape` block.
+
+    `allow_polyline` is set only for features. A polyline has no interior, so a
+    desk drawn as one would be unclickable -- which is exactly the kind of
+    failure that is invisible until a student cannot select a desk. Walls, on
+    the other hand, are naturally lines.
+    """
+    allowed = ("rect", "polygon", "polyline") if allow_polyline else ("rect", "polygon")
+    options = 'Exactly one of {"rect": [x, y, w, h]} or {"polygon": [[x, y], ...]}'
+    if allow_polyline:
+        options += ' or {"polyline": [[x, y], ...]}'
+
     where = f"{desk_where}.shape"
     if "shape" not in desk:
         ctx.error(
             where,
             "missing required key 'shape'.",
-            'Exactly one of {"rect": [x, y, w, h]} or {"polygon": [[x, y], ...]}.'
-            " tools/calibrate/ produces these by clicking on the floor plan.",
+            options + ". tools/calibrate/ produces these by clicking on the floor plan.",
         )
         return (None, None)
     shape = desk["shape"]
@@ -942,19 +1064,35 @@ def _validate_shape(
         ctx.error(where, f"is {_a_typename(shape)} ({_fmt(shape)}); expected an object.")
         return (None, None)
 
-    kinds = [k for k in ("rect", "polygon") if k in shape]
-    _check_unknown_keys(ctx, where, shape, ("rect", "polygon"))
-    if not kinds:
+    kinds = [k for k in allowed if k in shape]
+    if not allow_polyline and "polyline" in shape:
         ctx.error(
             where,
-            "defines neither 'rect' nor 'polygon'.",
-            'Exactly one of {"rect": [x, y, w, h]} or {"polygon": [[x, y], ...]}.',
+            "uses 'polyline', which is only valid for features, not desks.",
+            "A polyline has no interior, so the desk would be impossible to "
+            "click. Use 'rect' or 'polygon'.",
         )
         return (None, None)
+    _check_unknown_keys(ctx, where, shape, allowed)
+    if not kinds:
+        # Phrase the 2-option case as "neither X nor Y", which reads better than
+        # a degenerate list, and fall back to a list once there are three.
+        missing = (
+            f"neither {allowed[0]!r} nor {allowed[1]!r}"
+            if len(allowed) == 2
+            else "none of " + ", ".join(repr(k) for k in allowed[:-1]) + f" or {allowed[-1]!r}"
+        )
+        ctx.error(where, f"defines {missing}.", options + ".")
+        return (None, None)
     if len(kinds) > 1:
+        found = (
+            f"both {kinds[0]!r} and {kinds[1]!r}"
+            if len(kinds) == 2
+            else ", ".join(repr(k) for k in kinds)
+        )
         ctx.error(
             where,
-            "defines both 'rect' and 'polygon'; a desk has exactly one shape.",
+            f"defines {found}; there is exactly one shape.",
             "Delete whichever one is stale.",
         )
         return (None, None)
@@ -963,6 +1101,10 @@ def _validate_shape(
     value = shape[kind]
     if kind == "rect":
         return ("rect", _validate_rect(ctx, where, value, coord_space, image_size))
+    if kind == "polyline":
+        return ("polyline", _validate_polygon(
+            ctx, where, value, coord_space, image_size, min_points=2, noun="polyline"
+        ))
     return ("polygon", _validate_polygon(ctx, where, value, coord_space, image_size))
 
 
@@ -1050,16 +1192,20 @@ def _validate_polygon(
     value: Any,
     coord_space: str | None,
     image_size: tuple[int, int] | None,
+    min_points: int = 3,
+    noun: str = "polygon",
 ) -> Sequence[Any] | None:
-    where = f"{shape_where}.polygon"
+    where = f"{shape_where}.{noun}"
     if not _is_list(value):
         ctx.error(where, f"is {_a_typename(value)} ({_fmt(value)}); expected an array of [x, y] points.")
         return None
-    if len(value) < 3:
+    if len(value) < min_points:
         ctx.error(
             where,
-            f"has {len(value)} point(s); a polygon needs at least 3.",
-            "Use a 'rect' instead if the desk is a plain rectangle.",
+            f"has {len(value)} point(s); a {noun} needs at least {min_points}.",
+            "Use a 'rect' instead if the shape is a plain rectangle."
+            if noun == "polygon"
+            else "A polyline is a run of connected line segments, e.g. a wall.",
         )
         return None
     bounds = _bounds_for(coord_space, image_size)
@@ -1709,6 +1855,7 @@ def validate_scoring(doc: Any) -> ValidationContext:
             "tie_break_seed",
             "seed_committed_at",
             "sensitivity_seeds",
+            "seed_year",
         ),
     )
 
@@ -1956,15 +2103,73 @@ def _validate_comparison_curves(
             )
 
 
+def _validate_seed_year(ctx: ValidationContext, doc: Mapping[str, Any]) -> bool:
+    """Validate `seed_year`. Returns True when it governs (so tie_break_seed is
+    then optional and unused).
+
+    `seed_year` may be an integer year, or the string "auto" meaning "the
+    calendar year at run time, pinned once at config load". Either way the
+    resolved value is recorded in results.json, so a re-run in a later year
+    still reproduces the published result.
+    """
+    where = f"{SCORING_FILE}: seed_year"
+    if "seed_year" not in doc:
+        return False
+    value = doc["seed_year"]
+    if value is None:
+        return False
+    if _is_str(value):
+        if value.strip().casefold() == "auto":
+            return True
+        ctx.error(
+            where,
+            f"is {_fmt(value)}; the only string accepted is \"auto\".",
+            'Use "auto" for "the year this is run", or an integer like 2026 to '
+            "pin it. Pinning is what you want when re-running an old cycle.",
+        )
+        return False
+    if not _is_int(value):
+        ctx.error(
+            where,
+            f"is {_a_typename(value)} ({_fmt(value)}); expected an integer year "
+            f'or the string "auto".',
+        )
+        return False
+    year = int(value)
+    if not 1900 <= year <= 2999:
+        ctx.error(
+            where, f"is {year}, which is not a plausible calendar year.",
+            'Use a four-digit year such as 2026, or "auto".',
+        )
+        return False
+    return True
+
+
 def _validate_seeds(ctx: ValidationContext, doc: Mapping[str, Any]) -> None:
+    year_governs = _validate_seed_year(ctx, doc)
+
     where = f"{SCORING_FILE}: tie_break_seed"
     seed = doc.get("tie_break_seed")
-    if "tie_break_seed" not in doc:
+    if year_governs:
+        # The year is the seed. A leftover tie_break_seed is dead config, and
+        # dead config that looks live is how someone concludes the wrong value
+        # was used. Note this only skips the tie_break_seed checks -- the
+        # sensitivity seeds and seed_committed_at below still apply.
+        if seed not in (None, ""):
+            ctx.warn(
+                where,
+                f"is set ({_fmt(seed)}) but is IGNORED, because seed_year governs "
+                f"the tie-break.",
+                "Delete 'tie_break_seed', or remove 'seed_year' if the string seed "
+                "is the one you meant to use.",
+            )
+    elif "tie_break_seed" not in doc:
         ctx.error(
             where,
             "missing required key 'tie_break_seed'.",
-            "Tie-breaking is seeded so it is reproducible and publishable. Choose a"
-            " string, announce it before the form opens, and record when in"
+            "Tie-breaking is seeded so it is reproducible and publishable. Either"
+            ' set "seed_year": "auto" to use the cycle year, or choose a string,'
+            " announce it before the form opens, and record when in"
             " 'seed_committed_at' (SPEC §5.4, §8).",
         )
     elif not _is_str(seed):
@@ -1995,14 +2200,18 @@ def _validate_seeds(ctx: ValidationContext, doc: Mapping[str, Any]) -> None:
     committed = doc.get("seed_committed_at")
     committed_where = f"{SCORING_FILE}: seed_committed_at"
     if committed is None:
-        ctx.warn(
-            committed_where,
-            "is not set, so the audit trail has no record of when the tie-break seed"
-            " was announced.",
-            "Set it to the ISO-8601 timestamp of the announcement, e.g."
-            ' "2026-09-01T12:00:00-04:00". It is informational only and never affects'
-            " the solve.",
-        )
+        # Only worth nagging about when a human chose the seed. With seed_year
+        # there is nothing to announce: the seed is the calendar year, which is
+        # public knowledge and not the coordinator's to pick.
+        if not year_governs:
+            ctx.warn(
+                committed_where,
+                "is not set, so the audit trail has no record of when the tie-break"
+                " seed was announced.",
+                "Set it to the ISO-8601 timestamp of the announcement, e.g."
+                ' "2026-09-01T12:00:00-04:00". It is informational only and never'
+                " affects the solve.",
+            )
     elif not _is_str(committed):
         ctx.error(
             committed_where,

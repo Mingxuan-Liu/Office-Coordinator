@@ -2328,6 +2328,18 @@ def _page_index(full: bool) -> list[tuple[str, str]]:
     return index
 
 
+def _resolved_seed_of(config) -> str:
+    """The seed actually used, tolerating a config object that predates
+    seed_year (the report is also driven from tests with stub configs)."""
+    scoring = getattr(config, "scoring", None)
+    if scoring is None:
+        return ""
+    resolver = getattr(scoring, "resolved_seed", None)
+    if callable(resolver):
+        return str(resolver())
+    return str(getattr(scoring, "tie_break_seed", ""))
+
+
 def build_report(
     path: str | os.PathLike[str],
     config: Any,
@@ -2805,7 +2817,7 @@ def _diagnostic_provenance_page(
                     f"(exit code 2)"),
         ("tie-break seed",
          repr(diagnosis.seed_string
-              or getattr(getattr(config, "scoring", None), "tie_break_seed", ""))),
+              or _resolved_seed_of(config))),
         ("responses sha256",
          str(provenance.get("responses_sha256")
              or getattr(responses, "sha256", None) or "not supplied to the report")),

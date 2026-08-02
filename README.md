@@ -18,7 +18,7 @@ code, go straight to **[The runbook](#the-runbook)**. It is written for you.
 
 | path | what it is |
 |---|---|
-| `config/` | Everything problem-specific. Desks, zones, roster, scoring curve, seed. |
+| `config/` | Everything problem-specific. Desks, structures, zones, roster, scoring curve, seed. |
 | `solver/` | The Python package (Component B). Runs offline from a CSV. |
 | `frontend/` | Google Apps Script web app (Component A) that collects the rankings. |
 | `tools/` | Floor-plan calibration tool, and the config→frontend sync script. |
@@ -92,6 +92,8 @@ Jocelyn Bell,jbell@umich.edu,6,candidate,yes,D07
 ```
 
 - `email` is the key. It must match their UMich email exactly.
+- `candidacy` is the only field that affects seating. `year` is kept as
+  informational metadata; the form no longer asks for it.
 - `keeps_desk` = `yes` means they are staying where they are: **they and their
   desk are both removed from the pool.** `current_desk` is then required.
 - `candidacy` drives which zones they may sit in. The values you use here must
@@ -129,21 +131,29 @@ student-facing map, the validator, and the heatmap in the report.
 > 29–31 along the lower-left wall assigned to the upper-years side. **Confirm
 > that 29–31 assignment is what the department intends** before your first run.
 
-### 3. Publish the seed — *before the form opens. Do not skip this.*
+### 3. The seed — *nothing to do, but know what it is*
 
-Pick a seed string and put it in `config/scoring.json`:
+`config/scoring.json` ships with:
 
 ```json
-"tie_break_seed": "astro-desks-2026-<something-you-just-made-up>",
-"seed_committed_at": "2026-09-01T12:00:00-04:00"
+"seed_year": "auto"
 ```
 
-**Commit it, then announce it on Discord**, with the commit link.
+The tie-break seed is **the calendar year of the run** — `2026` for the 2026
+cycle. It changes every year, and nobody picks it, so it cannot be shopped for a
+favourable outcome. That is a stronger guarantee than the old "announce a string
+on Discord first", and it is one less thing for you to remember.
 
-This is what makes you trustworthy. Several different assignments can tie for the
-same optimal total; the seed picks among them. Announcing it before you have seen
-anyone's preferences is what proves you did not shop for a favourable one. It
-costs thirty seconds and it is the whole basis for the process being believed.
+The year is resolved **once**, when the config loads, and written into
+`results.json`. It is never read from the clock during the solve. That is what
+lets someone re-run the 2026 cycle in 2028 and still reproduce your published
+hash — `verify` uses the seed recorded in the results file, not today's year.
+
+To deliberately re-run an old cycle, pin it:
+
+```json
+"seed_year": 2026
+```
 
 There is deliberately **no `--seed` flag** on the solver. Changing the seed means
 editing a tracked file.
@@ -248,8 +258,8 @@ replaced as long as this holds.
 | `timestamp` | ISO-8601 with UTC offset | `2026-09-15T14:03:22-04:00` |
 | `email` | string | lower-cased on ingest; joins to the roster |
 | `name` | string | roster value wins on conflict |
-| `year` | int | as confirmed by the student — **overrides the roster** |
 | `candidacy` | string | as confirmed by the student — **overrides the roster** |
+| `year` | int | *optional.* No longer collected; candidacy alone decides zones |
 | `choice_1` … `choice_K` | desk id | exactly K columns, contiguous from 1 |
 | `client_version` | string | frontend build id, for debugging |
 | `auth_method` | `google` \| `self_select` | audit only; never affects the solve |
