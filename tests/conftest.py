@@ -426,28 +426,42 @@ REAL_RESPONSES_PREFERRED: tuple[str, ...] = (
 )
 
 
-def find_real_responses_csv(data_dir: Path) -> Path:
-    """Locate the shipped response export in `data/`, deterministically.
+#: Where a response export may live. `examples/` holds the shipped demo;
+#: `data/` is where README step 6 tells the coordinator to commit the real
+#: export each year. Searched in this order so a real run's data never silently
+#: displaces the demo the golden tests are pinned against.
+RESPONSES_SEARCH_DIRS: tuple[str, ...] = ("examples", "data")
 
-    Preferred names first, then the sole `*.csv` if there is exactly one. Sorted
-    at every step, so the answer never depends on directory order (SPEC §5.5).
-    Returns a non-existent path rather than raising: `real_build` skips on a
-    missing export, and a fixture that raised here would turn "the demo data is
-    not checked out" into a hard error in every test that touches it.
+
+def find_real_responses_csv(*dirs: Path) -> Path:
+    """Locate the shipped response export, deterministically.
+
+    Preferred names first, then the sole `*.csv` if a directory has exactly one.
+    Sorted at every step, so the answer never depends on directory order
+    (SPEC §5.5). Returns a non-existent path rather than raising: `real_build`
+    skips on a missing export, and a fixture that raised here would turn "the
+    demo data is not checked out" into a hard error in every test that touches
+    it.
     """
+    search = [d for d in dirs if d.is_dir()]
     for name in REAL_RESPONSES_PREFERRED:
-        candidate = data_dir / name
-        if candidate.is_file():
-            return candidate
-    found = sorted(p for p in data_dir.glob("*.csv") if p.is_file())
-    if len(found) == 1:
-        return found[0]
-    return data_dir / REAL_RESPONSES_PREFERRED[0]
+        for directory in search:
+            candidate = directory / name
+            if candidate.is_file():
+                return candidate
+    for directory in search:
+        found = sorted(p for p in directory.glob("*.csv") if p.is_file())
+        if len(found) == 1:
+            return found[0]
+    fallback = search[0] if search else (dirs[0] if dirs else REPO_ROOT)
+    return fallback / REAL_RESPONSES_PREFERRED[0]
 
 
 @pytest.fixture(scope="session")
 def real_responses_csv() -> Path:
-    return find_real_responses_csv(REPO_ROOT / "data")
+    return find_real_responses_csv(
+        *(REPO_ROOT / name for name in RESPONSES_SEARCH_DIRS)
+    )
 
 
 @pytest.fixture(scope="session")
