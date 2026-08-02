@@ -157,6 +157,8 @@ details.sec>summary:hover{color:var(--txt)}
 .li .sw.feat{border-radius:2px;border-style:dashed;border-color:rgba(255,255,255,.35)}
 .krow{display:flex;align-items:center;gap:7px;padding:4px 7px;border-bottom:1px solid #1d242e;min-height:34px}
 .krow:last-child{border-bottom:none}
+.krow .sw{width:12px;height:12px;border-radius:2px;flex:0 0 auto;
+  border:1px dashed rgba(255,255,255,.35)}
 .krow .knm{flex:1 1 auto;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .krow .ct{color:var(--dim2);font-family:var(--mono);font-size:11px;flex:0 0 auto}
 .krow.off .knm,.krow.off .ct{opacity:.42}
@@ -187,16 +189,29 @@ details.sec>summary:hover{color:var(--txt)}
   left:10px;bottom:10px;background:rgba(16,20,26,.93);border:1px solid var(--line2);
   border-radius:var(--r);padding:8px 10px;max-width:min(300px,60vw);pointer-events:auto;
   box-shadow:0 6px 22px rgba(0,0,0,.45);
+  /* the kind rows are derived from the data, so the list has no fixed length;
+     cap it and scroll rather than let it swallow the plan */
+  max-height:min(58dvh,58vh);overflow-y:auto;scrollbar-width:thin;
 }
 #legend h4{margin:0 0 6px;font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--dim)}
-#legend h4.sub{margin-top:9px;padding-top:8px;border-top:1px solid var(--line2)}
-#legend h4 em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--dim2)}
+#legend em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--dim2)}
+#legend details.feat{margin-top:9px;padding-top:8px;border-top:1px solid var(--line2)}
+#legend details.feat>summary{
+  list-style:none;cursor:pointer;user-select:none;min-height:30px;display:flex;align-items:center;gap:6px;
+  font-size:11px;letter-spacing:.2px;color:var(--dim);
+}
+#legend details.feat>summary b{font-weight:700;letter-spacing:.5px;text-transform:uppercase;font-size:10.5px}
+#legend details.feat>summary::-webkit-details-marker{display:none}
+#legend details.feat>summary::before{content:"▸";color:var(--dim2);font-size:10px;transition:transform .12s}
+#legend details.feat[open]>summary::before{transform:rotate(90deg)}
+#legend details.feat>summary .ct{margin-left:auto;font-family:var(--mono);color:var(--dim2)}
 #legend .lg{display:flex;align-items:center;gap:7px;min-height:30px;cursor:pointer;font-size:12px}
 #legend .lg.off{opacity:.4}
 #legend .sw{width:13px;height:13px;border-radius:3px;border:1px solid rgba(255,255,255,.3);flex:0 0 auto}
 #legend .sw.feat{border-style:dashed;border-radius:2px}
 #legend .ct{margin-left:auto;color:var(--dim2);font-family:var(--mono);font-size:11px}
-#legend .scrollpart{max-height:34vh;overflow-y:auto;scrollbar-width:thin}
+#legend h4:first-child{position:sticky;top:-8px;background:rgba(16,20,26,.97);
+  margin:-2px 0 6px;padding:2px 0 4px;z-index:1}
 #modebadge{
   right:10px;top:10px;background:rgba(16,20,26,.93);border:1px solid var(--line2);
   border-radius:var(--r);padding:5px 10px;font-size:11.5px;color:var(--dim);
@@ -1603,6 +1618,7 @@ var UI = {
   showFeatures: true,
   featureLabels: true,
   hiddenKinds: Object.create(null),
+  legendFeatOpen: true,                    /* set from the pointer type at boot */
   suggestions: Object.create(null),        /* roomId -> [{x,y,w,h,state}] */
   suggHover: -1,
   filter: '',
@@ -2300,6 +2316,10 @@ function addItem(r, shape){
 }
 function addFeature(r, shape){
   var kind = currentFeatureKind();
+  /* Never create something the operator cannot see. Drawing into a hidden
+   * layer or a hidden kind would leave a selected, invisible object. */
+  if (!UI.showFeatures) { UI.showFeatures = true; $('ckFeat').checked = true; }
+  if (UI.hiddenKinds[kind]) delete UI.hiddenKinds[kind];
   var ft = newFeature(nextFeatureId(DOC, r, kind), kind, '', shape);
   if (!r.features) r.features = [];
   r.features.push(ft);
@@ -2948,7 +2968,8 @@ function renderRooms(){
     : 'No bitmap loaded. Coordinates are normalized, so you can still edit — but set image_size to the ' +
       'real pixel dimensions of ' + (r.image || 'the plan') + ' before exporting.';
   $('btnDropImage').disabled = !im;
-  $('badgeDoc').textContent = DOC.rooms.length + ' room / ' + allDesks(DOC).length + ' desk';
+  $('badgeDoc').textContent = DOC.rooms.length + ' room / ' + allDesks(DOC).length + ' desk / ' +
+                              allFeatures(DOC).length + ' feat';
   setVal('docSchema', DOC.schemaVersion);
 }
 function setVal(id, v){
@@ -3004,10 +3025,14 @@ function toggleZone(id){
   pruneHiddenSelection();
   renderZones(); renderLegend(); requestDraw();
 }
+function selectAllInLayer(){
+  UI.sel = curList().filter(itemVisible).map(function(it){ return it.uid; });
+  renderAll();
+}
 function pruneHiddenSelection(){
-  var r = room(); if (!r) return;
+  var list = curList();
   UI.sel = UI.sel.filter(function(u){
-    for (var i = 0; i < r.desks.length; i++) if (r.desks[i].uid === u) return zoneVisible(r.desks[i].zone);
+    for (var i = 0; i < list.length; i++) if (list[i].uid === u) return itemVisible(list[i]);
     return false;
   });
 }
@@ -3080,8 +3105,11 @@ function renderDeskList(){
     ];
     if (badId(dk) || !z) kids.push(el('span', { cls:'dot err', title:'invalid id or zone' }));
     else if (VAL.overlapping[dk.uid]) kids.push(el('span', { cls:'dot warn', title:'overlaps another region' }));
-    var row = el('div', { cls:'li' + (UI.sel.indexOf(dk.uid) >= 0 ? ' sel' : '') }, kids);
+    var picked = !isFeatureLayer() && UI.sel.indexOf(dk.uid) >= 0;
+    var row = el('div', { cls:'li' + (picked ? ' sel' : '') }, kids);
     row.addEventListener('click', function(ev){
+      /* clicking a desk means "edit desks", whatever layer was active */
+      if (isFeatureLayer()) setLayer('desks');
       if (ev.shiftKey) {
         var at = UI.sel.indexOf(dk.uid);
         if (at >= 0) UI.sel.splice(at, 1); else UI.sel.push(dk.uid);
@@ -3098,6 +3126,111 @@ function renderDeskList(){
   if (!shown) list.appendChild(el('div', { cls:'empty', text:'Nothing matches "' + q + '".' }));
 }
 
+/* ------------------------------------------------------- features panel */
+/* Rows are derived from the kinds actually in the document, unioned with the
+ * vocabulary the renderers know.  Nothing here counts kinds, rooms or
+ * features. */
+function kindPalette(){
+  var out = [], seen = Object.create(null);
+  docKinds().concat(FEATURE_KINDS).forEach(function(k){
+    if (!k.length || seen[k]) return;
+    seen[k] = true; out.push(k);
+  });
+  return out;
+}
+function renderFeaturePanel(){
+  var r = room();
+  var feats = r ? (r.features || []) : [];
+  $('badgeFeats').textContent = String(feats.length);
+  $('ckFeat').checked = UI.showFeatures;
+  $('ckFeatLab').checked = UI.featureLabels;
+  $('ckFeatLab').disabled = !UI.showFeatures;
+
+  /* --- per-kind visibility --- */
+  var kl = $('kindList');
+  clear(kl);
+  var counts = Object.create(null);
+  feats.forEach(function(f){ counts[f.kind] = (counts[f.kind] || 0) + 1; });
+  var kinds = docKinds();
+  if (!kinds.length) {
+    kl.appendChild(el('div', { cls:'empty', text:'No features in this document yet.' }));
+  } else {
+    kinds.forEach(function(k){
+      var st = featureStyle(k);
+      var sw = el('span', { cls:'sw feat', style:'background:' + rgba(st.fill, Math.max(0.28, st.fillA)) +
+                                                 ';border-color:' + rgba(st.stroke, 0.9) });
+      var on = !UI.hiddenKinds[k];
+      var row = el('div', { cls:'krow' + (on ? '' : ' off') }, [
+        sw,
+        el('span', { cls:'knm', text: (k || '(no kind)') +
+          (knownFeatureKind(k) ? '' : (k ? '  (unknown kind)' : '')) }),
+        el('span', { cls:'ct', text:String(counts[k] || 0) }),
+        el('button', { cls:'eye' + (on ? ' on' : ''), text: on ? '◉' : '◎',
+          title:'Show / hide ' + k + ' features', 'aria-label':'Toggle visibility of ' + k,
+          onclick:function(){ toggleKind(k); } })
+      ]);
+      kl.appendChild(row);
+    });
+  }
+
+  /* --- the kind dropdown for newly drawn features --- */
+  var sel = $('featKindNew');
+  var keep = sel.value;
+  clear(sel);
+  kindPalette().forEach(function(k){ sel.appendChild(el('option', { value:k, text:k })); });
+  sel.value = (keep && kindPalette().indexOf(keep) >= 0) ? keep
+            : (LAST_KIND && kindPalette().indexOf(LAST_KIND) >= 0 ? LAST_KIND : FEATURE_KINDS[0]);
+  $('featDrawNote').textContent = isFeatureLayer()
+    ? 'Drawing on the FEATURES layer: Rect, Polygon or Polyline creates a ' + sel.value +
+      '. Desks are not selectable while this layer is active.'
+    : 'Currently editing desks. "Draw a feature…" switches the layer; press F to switch back.';
+
+  /* --- the feature list for this room --- */
+  var list = $('featList');
+  clear(list);
+  if (!feats.length) {
+    list.appendChild(el('div', { cls:'empty',
+      text:'No features in this room. Pick a kind above and press "Draw a feature…".' }));
+    return;
+  }
+  feats.forEach(function(ft){
+    var st = featureStyle(ft.kind);
+    var kids = [
+      el('span', { cls:'sw feat', style:'background:' + rgba(st.fill, Math.max(0.28, st.fillA)) +
+                                        ';border-color:' + rgba(st.stroke, 0.9) }),
+      el('span', { cls:'id', text: ft.id || '(no id)' }),
+      el('span', { cls:'nm', text: ft.label || '—' }),
+      el('span', { cls:'kd', text: ft.kind || '(no kind)' })
+    ];
+    if (badFeatureId(ft) || !ft.kind.length) {
+      kids.push(el('span', { cls:'dot err', title:'invalid id or missing kind' }));
+    } else if (!knownFeatureKind(ft.kind)) {
+      kids.push(el('span', { cls:'dot warn', title:'kind has no specific style' }));
+    }
+    var picked = isFeatureLayer() && UI.sel.indexOf(ft.uid) >= 0;
+    var row = el('div', { cls:'li' + (picked ? ' sel' : '') }, kids);
+    row.addEventListener('click', function(ev){
+      if (!isFeatureLayer()) setLayer('features');
+      if (ev.shiftKey) {
+        var at = UI.sel.indexOf(ft.uid);
+        if (at >= 0) UI.sel.splice(at, 1); else UI.sel.push(ft.uid);
+      } else {
+        UI.sel = [ft.uid];
+        LAST_KIND = ft.kind;
+        var c = shapeCentroid(ft.shape);
+        centerOn(c[0], c[1]);
+      }
+      renderAll();
+    });
+    list.appendChild(row);
+  });
+}
+function toggleKind(k){
+  if (UI.hiddenKinds[k]) delete UI.hiddenKinds[k]; else UI.hiddenKinds[k] = true;
+  if (isFeatureLayer()) pruneHiddenSelection();
+  renderFeaturePanel(); renderLegend(); renderInspector(); requestDraw();
+}
+
 /* ---------------------------------------------------------- inspector */
 function renderInspector(){
   var box = $('inspBody');
@@ -3108,10 +3241,14 @@ function renderInspector(){
 
   if (!ds.length) {
     box.appendChild(el('p', { cls:'hint',
-      text:'Nothing selected. Click a region on the plan or in the list above. ' +
-           'Shift-click or drag a marquee to select several.' }));
+      text: isFeatureLayer()
+        ? 'Nothing selected. Click a feature on the plan or in the Features list. Desks are not ' +
+          'selectable while this layer is active — press F to go back to them.'
+        : 'Nothing selected. Click a region on the plan or in the list above. ' +
+          'Shift-click or drag a marquee to select several.' }));
     return;
   }
+  if (isFeatureLayer()) { renderFeatureInspector(box, ds); return; }
   if (ds.length > 1) {
     box.appendChild(el('p', { cls:'hint', text:ds.length + ' regions selected: ' +
       ds.map(function(d){ return d.id; }).join(', ') }));
@@ -3214,6 +3351,127 @@ function renderInspector(){
     el('button', { cls:'mini danger grow', text:'Delete', onclick:deleteSelected })
   ]));
 }
+/* Feature inspector.  Deliberately smaller than the desk one: a feature has no
+ * zone, no availability and no part in the solve. */
+function renderFeatureInspector(box, ds){
+  var r = room();
+  if (ds.length > 1) {
+    box.appendChild(el('p', { cls:'hint', text: ds.length + ' features selected: ' +
+      ds.map(function(f){ return f.id; }).join(', ') }));
+    var ksel = el('select', {});
+    ksel.appendChild(el('option', { value:'', text:'— set kind on all —' }));
+    kindPalette().forEach(function(k){ ksel.appendChild(el('option', { value:k, text:k })); });
+    ksel.addEventListener('change', function(){
+      if (!ksel.value) return;
+      ds.forEach(function(f){ f.kind = ksel.value; });
+      LAST_KIND = ksel.value;
+      commit(); renderAll();
+    });
+    box.appendChild(el('label', { cls:'fld' }, [el('span', { text:'feature.kind' }), ksel]));
+    box.appendChild(el('div', { cls:'row' }, [
+      el('button', { cls:'grow', text:'Duplicate', onclick:duplicateSelected }),
+      el('button', { cls:'danger grow', text:'Delete', onclick:deleteSelected })
+    ]));
+    return;
+  }
+
+  var ft = ds[0];
+  var dup = badFeatureId(ft);
+
+  var idIn = el('input', { type:'text', id:'inspId', value:ft.id, spellcheck:'false' });
+  if (dup) idIn.classList.add('bad');
+  var idMsg = el('p', { cls:'hint', text:featureIdNote(ft) });
+  if (dup) idMsg.style.color = 'var(--danger)';
+  idIn.addEventListener('input', function(){
+    ft.id = idIn.value.trim();
+    afterChange();
+    var bad = badFeatureId(ft);
+    idIn.classList.toggle('bad', bad);
+    idMsg.textContent = featureIdNote(ft);
+    idMsg.style.color = bad ? 'var(--danger)' : 'var(--dim2)';
+    renderFeaturePanel(); updateStatusVal(); renderValidation(); requestDraw();
+  });
+  idIn.addEventListener('change', commit);
+
+  var ksel2 = el('select', {});
+  kindPalette().forEach(function(k){ ksel2.appendChild(el('option', { value:k, text:k })); });
+  if (!ft.kind.length) {
+    ksel2.appendChild(el('option', { value:'', text:'(no kind)  ← REQUIRED' }));
+    ksel2.classList.add('bad');
+  }
+  ksel2.value = ft.kind;
+  ksel2.addEventListener('change', function(){
+    ft.kind = ksel2.value; LAST_KIND = ft.kind; commit(); renderAll();
+  });
+  var kindMsg = el('p', { cls:'hint', text: knownFeatureKind(ft.kind)
+    ? 'Drawn in the ' + ft.kind + ' style, grey, beneath the desks.'
+    : 'This kind has no specific style; it will be drawn as generic structure. Known kinds: ' +
+      FEATURE_KINDS.join(', ') + '.' });
+  if (ft.kind.length && !knownFeatureKind(ft.kind)) kindMsg.style.color = 'var(--warn)';
+
+  var labIn = el('input', { type:'text', value:ft.label, placeholder:'Blank = no label drawn' });
+  labIn.addEventListener('input', function(){
+    ft.label = labIn.value;
+    ft.hasLabel = ft.hasLabel || labIn.value.length > 0;
+    afterChange(); renderFeaturePanel(); requestDraw();
+  });
+  labIn.addEventListener('change', commit);
+
+  var note = el('textarea', { rows:'2', placeholder:'Why this matters — "backs onto the telecom closet"' });
+  note.value = ft.note;
+  note.addEventListener('input', function(){
+    ft.note = note.value;
+    ft.hasNote = ft.hasNote || note.value.length > 0;
+    afterChange();
+  });
+  note.addEventListener('change', commit);
+
+  box.appendChild(el('label', { cls:'fld' }, [el('span', { text:'feature.id  (unique within this room)' }), idIn]));
+  box.appendChild(idMsg);
+  box.appendChild(el('label', { cls:'fld' }, [el('span', { text:'feature.kind' }), ksel2]));
+  box.appendChild(kindMsg);
+  box.appendChild(el('label', { cls:'fld' }, [el('span', { text:'feature.label  (drawn on the plan)' }), labIn]));
+  box.appendChild(el('label', { cls:'fld' }, [el('span', { text:'feature.note  (optional, for humans)' }), note]));
+  box.appendChild(el('p', { cls:'hint', text:'Features are decoration: never clickable, never in a legend ' +
+    'of selectable states, never in the solve.' }));
+  box.appendChild(el('div', { cls:'sep' }));
+
+  box.appendChild(el('div', { cls:'fld' }, [
+    el('span', { text:'Geometry' }),
+    el('div', { id:'inspCoords', style:'font-family:var(--mono);font-size:11px;color:var(--dim);line-height:1.6' })
+  ]));
+  renderInspectorCoords();
+
+  box.appendChild(el('div', { cls:'row' }, [
+    el('button', { cls:'mini grow', text: ft.shape.kind === 'rect' ? 'Convert to polygon' : 'Convert to rect (bbox)',
+      onclick:function(){ if (ft.shape.kind === 'rect') rectToPoly(ft); else polyToRect(ft); } }),
+    el('button', { cls:'mini grow', disabled: ft.shape.kind === 'rect' ? '' : null,
+      text: ft.shape.kind === 'line' ? 'Close into polygon' : 'Open into polyline',
+      onclick:function(){ togglePolyLine(ft); } })
+  ]));
+  box.appendChild(el('div', { cls:'row' }, [
+    el('button', { cls:'mini grow', text:'Centre view', onclick:function(){
+      var c = shapeCentroid(ft.shape); centerOn(c[0], c[1]); } }),
+    el('button', { cls:'mini grow', text:'Duplicate', onclick:duplicateSelected })
+  ]));
+  box.appendChild(el('div', { cls:'row' }, [
+    el('button', { cls:'mini danger grow', text:'Delete feature', onclick:deleteSelected })
+  ]));
+}
+function featureIdNote(ft){
+  var r = room();
+  var next = r ? nextFeatureId(DOC, r, ft.kind || 'feature') : '';
+  if (!ft.id.length) return 'An id is required. Suggested: ' + next + '.';
+  if (badFeatureId(ft)) {
+    var clash = false;
+    allDesks(DOC).forEach(function(e){ if (e.desk.id === ft.id) clash = true; });
+    return clash
+      ? 'COLLIDES WITH A DESK ID — "' + ft.id + '" is a desk. Features and desks are separate ' +
+        'namespaces and must not overlap. Free: ' + next + '.'
+      : 'DUPLICATE — "' + ft.id + '" is already used by another feature in this room. Free: ' + next + '.';
+  }
+  return 'Unique in this room, and not a desk id.';
+}
 function idNote(dk){
   if (!dk.id.length) return 'An id is required. Suggested next: ' + nextDeskId(DOC) + '.';
   if (badId(dk)) return 'DUPLICATE — "' + dk.id + '" is already used by another region. ' +
@@ -3233,7 +3491,8 @@ function renderInspectorCoords(){
     node.appendChild(el('div', { text:'rect  norm  [' + [b.x, b.y, b.w, b.h].map(function(v){ return round(v, 4); }).join(', ') + ']' }));
     node.appendChild(el('div', { text:'rect  px    [' + [b.x * W, b.y * H, b.w * W, b.h * H].map(function(v){ return round(v, 1); }).join(', ') + ']' }));
   } else {
-    node.appendChild(el('div', { text:'polygon · ' + dk.shape.pts.length + ' points' }));
+    node.appendChild(el('div', { text:(dk.shape.kind === 'line' ? 'polyline · ' : 'polygon · ') +
+                                      dk.shape.pts.length + ' points' }));
     node.appendChild(el('div', { text:'bbox norm [' + [b.x, b.y, b.w, b.h].map(function(v){ return round(v, 4); }).join(', ') + ']' }));
     node.appendChild(el('div', { text:'bbox px   [' + [b.x * W, b.y * H, b.w * W, b.h * H].map(function(v){ return round(v, 1); }).join(', ') + ']' }));
   }
@@ -3269,9 +3528,10 @@ function renderValidation(){
 function jumpTo(item){
   if (item.roomIdx !== undefined && item.roomIdx !== UI.roomIdx) switchRoom(item.roomIdx);
   if (item.uid) {
+    var f = findAny(DOC, item.uid);
+    if (f && f.layer !== UI.layer) setLayer(f.layer);
     UI.sel = item.uid2 ? [item.uid, item.uid2] : [item.uid];
-    var f = findDesk(DOC, item.uid);
-    if (f) { var c = shapeCentroid(f.desk.shape); centerOn(c[0], c[1]); }
+    if (f) { var c = shapeCentroid(f.item.shape); centerOn(c[0], c[1]); }
   }
   renderAll();
 }
@@ -3312,6 +3572,52 @@ function renderLegend(){
       el('span', { cls:'ct', text:String(undef) })
     ]));
   }
+
+  /* Features get their OWN block, below and visibly separated from the zones.
+   * The zone list above is the legend of selectable states; nothing grey may
+   * ever appear in it, because a student reading this map must not think a
+   * wall is something they can pick. */
+  var feats = r ? (r.features || []) : [];
+  if (!feats.length) return;
+  var fcount = Object.create(null);
+  feats.forEach(function(f){ fcount[f.kind] = (fcount[f.kind] || 0) + 1; });
+  var kinds = Object.keys(fcount).sort();
+
+  /* Collapsible: the number of kinds is data-driven, and on a phone an
+   * unbounded list would cover the plan it is there to explain. */
+  var det = el('details', { cls:'feat' });
+  if (UI.legendFeatOpen) det.setAttribute('open', 'open');
+  det.addEventListener('toggle', function(){ UI.legendFeatOpen = det.open; });
+  det.appendChild(el('summary', {}, [
+    el('span', {}, [el('b', { text:'Structure' }), el('em', { text:' — not selectable' })]),
+    el('span', { cls:'ct', text:String(feats.length) })
+  ]));
+
+  var master = el('div', { cls:'lg' + (UI.showFeatures ? '' : ' off') }, [
+    el('span', { cls:'sw feat', style:'background:rgba(126,134,144,.5);border-color:rgba(90,98,108,.9)' }),
+    el('span', { text:'all features' }),
+    el('span', { cls:'ct', text:String(feats.length) })
+  ]);
+  master.addEventListener('click', function(){
+    UI.showFeatures = !UI.showFeatures;
+    if (isFeatureLayer()) pruneHiddenSelection();
+    renderFeaturePanel(); renderLegend(); renderInspector(); requestDraw();
+  });
+  det.appendChild(master);
+
+  kinds.forEach(function(k){
+    var st = featureStyle(k);
+    var on = UI.showFeatures && !UI.hiddenKinds[k];
+    var row = el('div', { cls:'lg' + (on ? '' : ' off') }, [
+      el('span', { cls:'sw feat', style:'background:' + rgba(st.fill, Math.max(0.3, st.fillA)) +
+                                        ';border-color:' + rgba(st.stroke, 0.9) }),
+      el('span', { text: k || '(no kind)' }),
+      el('span', { cls:'ct', text:String(fcount[k]) })
+    ]);
+    row.addEventListener('click', function(){ toggleKind(k); });
+    det.appendChild(row);
+  });
+  lg.appendChild(det);
 }
 
 /* ------------------------------------------------------------- status */
@@ -3349,6 +3655,7 @@ function switchRoom(i){
   if (i < 0 || i >= DOC.rooms.length) return;
   UI.roomIdx = i;
   UI.sel = [];
+  UI.selStash = { desks: [], features: [] };
   PENDING = null;
   GHOSTS = null;
   var v = view();
@@ -3385,6 +3692,9 @@ function duplicateRoom(){
     dk.uid = uid();
     dk.id = '';
   });
+  /* feature ids are only unique WITHIN a room, so they carry over unchanged —
+   * but the uids must be fresh or selection would address two objects at once */
+  (copy.features || []).forEach(function(ft){ ft.uid = uid(); });
   DOC.rooms.push(copy);
   copy.desks.forEach(function(dk){ dk.id = nextDeskId(DOC); dk.label = labelFromId(dk.id); });
   if (IMAGES[r.id]) IMAGES[copy.id] = IMAGES[r.id];
@@ -3420,6 +3730,7 @@ function setRoomId(nid){
 }
 function renumberRoom(){
   var r = room(); if (!r || !r.desks.length) return;
+  /* Desks only. Feature ids are hand-authored names, not a sequence. */
   var pat = idPattern(DOC);
   confirmBox('Renumber ' + r.desks.length + ' regions',
     'Rewrite every id in this room in reading order (top-to-bottom rows, then left-to-right) using the ' +
@@ -3500,9 +3811,12 @@ function doImportText(text, sourceName){
   DOC = res.doc;
   UI.roomIdx = 0;
   UI.sel = [];
+  UI.selStash = { desks: [], features: [] };
   UI.hiddenZones = Object.create(null);
+  UI.hiddenKinds = Object.create(null);
   UI.suggestions = Object.create(null);
   LAST_ZONE = null;
+  LAST_KIND = null;
   VIEWS = Object.create(null);
   /* keep bitmaps whose room id still exists */
   var keep = Object.create(null);
@@ -3522,8 +3836,8 @@ function doImportText(text, sourceName){
 
   var body = el('div', {}, [
     el('p', { text:'Imported ' + DOC.rooms.length + ' room(s), ' + DOC.zones.length + ' zone(s), ' +
-                   allDesks(DOC).length + ' desk(s) from ' + sourceName + ' (coord_space "' +
-                   res.sourceSpace + '").' })
+                   allDesks(DOC).length + ' desk(s) and ' + allFeatures(DOC).length +
+                   ' feature(s) from ' + sourceName + ' (coord_space "' + res.sourceSpace + '").' })
   ]);
   if (res.warnings.length) {
     body.appendChild(el('p', { text:'Import notes:' }));
@@ -3697,8 +4011,18 @@ function applyReplicate(){
   var offs = replicateOffsets(src.shape, r, p.count, p.dir, p.mode, p.val);
   var made = [];
   offs.forEach(function(o){
+    var shape = translateShape(src.shape, o[0], o[1]);
+    if (isFeatureLayer()) {
+      var nf = newFeature(nextFeatureId(DOC, r, src.kind), src.kind, src.label, shape);
+      nf.hasLabel = src.hasLabel;
+      nf.note = src.note; nf.hasNote = src.hasNote;
+      nf.keyOrder = src.keyOrder.slice();
+      nf.extraKeys = src.extraKeys.slice(); nf.extra = clone(src.extra);
+      r.features.push(nf); made.push(nf.uid);
+      return;
+    }
     var id = nextDeskId(DOC);
-    var nd = newDesk(id, labelFromId(id), src.zone, translateShape(src.shape, o[0], o[1]));
+    var nd = newDesk(id, labelFromId(id), src.zone, shape);
     nd.notes = src.notes; nd.hasNotes = src.hasNotes;
     nd.extraKeys = src.extraKeys.slice(); nd.extra = clone(src.extra);
     r.desks.push(nd); made.push(nd.uid);
@@ -3706,7 +4030,8 @@ function applyReplicate(){
   UI.sel = made;
   GHOSTS = null;
   commit(); renderAll();
-  toast('Created ' + made.length + ' region(s) from "' + src.id + '"', 'ok');
+  toast('Created ' + made.length + (isFeatureLayer() ? ' feature(s) from "' : ' region(s) from "') +
+        src.id + '"', 'ok');
 }
 
 /* ------------------------------------------------------------ CV assist */
@@ -3790,6 +4115,8 @@ function syncSuggHighlight(){ renderSuggList(); }
 function acceptSuggestion(i){
   var list = suggList(), g = list[i];
   if (!g || g.state !== 'open') return;
+  /* the detector proposes desks, so accepting one is a desk-layer action */
+  if (isFeatureLayer()) setLayer('desks');
   g.state = 'accepted';
   addDesk(room(), { kind:'rect', x:g.x, y:g.y, w:g.w, h:g.h });
   renderSuggList();
@@ -3809,6 +4136,7 @@ function acceptAllSuggestions(){
     '". Check every one afterwards — this detector is a heuristic, not ground truth.',
     'Accept all').then(function(ok){
     if (!ok) return;
+    if (isFeatureLayer()) setLayer('desks');
     var r = room(), made = [];
     open.forEach(function(g){
       g.state = 'accepted';
@@ -3887,14 +4215,23 @@ function readSession(){
 }
 function applySession(o){
   DOC = o.doc;
-  /* uid counter must not collide with restored uids */
-  allDesks(DOC).forEach(function(e){
-    var m = /^r(\d+)$/.exec(e.desk.uid || '');
-    if (m) _uidSeq = Math.max(_uidSeq, parseInt(m[1], 10));
-    if (!e.desk.uid) e.desk.uid = uid();
+  /* A session saved before features existed has no `features` array. Normalise
+   * rather than let every consumer guard for it. */
+  DOC.rooms.forEach(function(r){
+    if (!Array.isArray(r.features)) { r.features = []; r.hasFeatures = !!r.hasFeatures; }
   });
+  /* uid counter must not collide with restored uids, in either namespace */
+  function seedUid(rec){
+    var m = /^r(\d+)$/.exec(rec.uid || '');
+    if (m) _uidSeq = Math.max(_uidSeq, parseInt(m[1], 10));
+  }
+  allDesks(DOC).forEach(function(e){ seedUid(e.desk); });
+  allFeatures(DOC).forEach(function(e){ seedUid(e.feature); });
+  allDesks(DOC).forEach(function(e){ if (!e.desk.uid) e.desk.uid = uid(); });
+  allFeatures(DOC).forEach(function(e){ if (!e.feature.uid) e.feature.uid = uid(); });
   UI.roomIdx = clamp(numOr(o.roomIdx, 0), 0, DOC.rooms.length - 1);
   UI.sel = [];
+  UI.selStash = { desks: [], features: [] };
   IMAGES = Object.create(null);
   VIEWS = Object.create(null);
   UI.suggestions = Object.create(null);
@@ -3922,11 +4259,15 @@ function applySession(o){
 }
 function offerRestore(o){
   var when = o.savedAt ? new Date(o.savedAt) : null;
-  var nDesk = 0;
-  o.doc.rooms.forEach(function(r){ nDesk += (r.desks || []).length; });
+  var nDesk = 0, nFeat = 0;
+  o.doc.rooms.forEach(function(r){
+    nDesk += (r.desks || []).length;
+    nFeat += (r.features || []).length;
+  });
   $('restoreMsg').textContent =
     'An autosaved session from ' + (when ? when.toLocaleString() : 'an earlier visit') + ' is available: ' +
-    o.doc.rooms.length + ' room(s), ' + (o.doc.zones || []).length + ' zone(s), ' + nDesk + ' region(s)' +
+    o.doc.rooms.length + ' room(s), ' + (o.doc.zones || []).length + ' zone(s), ' + nDesk + ' region(s), ' +
+    nFeat + ' feature(s)' +
     (o.imagesDropped ? ' (bitmaps not included)' : '') + '. Restore it?';
   $('restore').classList.add('on');
 }
@@ -3971,9 +4312,7 @@ function onKeyDown(e){
     if (k === 'o') { e.preventDefault(); askImportFile(); return; }
     if (k === 'a' && !typing(e)) {
       e.preventDefault();
-      var r = room();
-      UI.sel = r ? r.desks.filter(function(d){ return zoneVisible(d.zone); }).map(function(d){ return d.uid; }) : [];
-      renderAll();
+      selectAllInLayer();
       return;
     }
     if (k === 'd' && !typing(e)) { e.preventDefault(); duplicateSelected(); return; }
@@ -4018,7 +4357,13 @@ function onKeyDown(e){
   if (key === 'v' || key === 'V') { setTool('select'); return; }
   if (key === 'r' || key === 'R') { setTool('rect'); return; }
   if (key === 'p' || key === 'P') { setTool('poly'); return; }
+  if (key === 'n' || key === 'N') { setTool('line'); return; }
   if (key === 'h' || key === 'H') { setTool('pan'); return; }
+  if (key === 'f' || key === 'F') {
+    setLayer(isFeatureLayer() ? 'desks' : 'features');
+    toast(isFeatureLayer() ? 'Editing FEATURES — desks are not selectable' : 'Editing desks');
+    return;
+  }
   if (key === 'g') { UI.showGrid = !UI.showGrid; $('ckGrid').checked = UI.showGrid; requestDraw(); return; }
   if (key === 'G') { UI.snap = !UI.snap; $('ckSnap').checked = UI.snap; toast('Snap ' + (UI.snap ? 'on' : 'off')); return; }
   if (key === 'l' || key === 'L') { cycleLabelMode(); return; }
@@ -4039,11 +4384,15 @@ function onKeyUp(e){
 }
 function setTool(t){
   if (UI.preview) UI.preview = false;
+  /* the polyline tool only exists for features */
+  if (t === 'line' && !isFeatureLayer()) {
+    setLayer('features');
+    toast('Polyline is a feature shape — switched to the features layer');
+  }
   UI.tool = t;
   /* an in-progress shape only survives if its own tool is still active */
-  if (PENDING && ((PENDING.kind === 'poly' && t !== 'poly') || (PENDING.kind === 'rect' && t !== 'rect'))) {
-    PENDING = null;
-  }
+  var pendTool = PENDING && PENDING.kind === 'poly' ? (PENDING.open ? 'line' : 'poly') : 'rect';
+  if (PENDING && pendTool !== t) PENDING = null;
   if (cv) cv.style.cursor = '';
   renderAll();
 }
@@ -4069,6 +4418,9 @@ function boot(){
   Array.prototype.forEach.call(document.querySelectorAll('.tool'), function(b){
     b.addEventListener('click', function(){ setTool(b.getAttribute('data-tool')); });
   });
+  Array.prototype.forEach.call(document.querySelectorAll('.layer'), function(b){
+    b.addEventListener('click', function(){ setLayer(b.getAttribute('data-layer')); });
+  });
   $('btnPreview').addEventListener('click', togglePreview);
   $('btnFit').addEventListener('click', function(){ fitView(); updateStatusZoom(); });
   $('btnUndo').addEventListener('click', undo);
@@ -4091,7 +4443,11 @@ function boot(){
       DOC = starterDoc();
       IMAGES = Object.create(null); VIEWS = Object.create(null);
       UI.roomIdx = 0; UI.sel = []; UI.suggestions = Object.create(null);
+      UI.selStash = { desks: [], features: [] };
       UI.hiddenZones = Object.create(null); LAST_ZONE = null;
+      UI.hiddenKinds = Object.create(null); LAST_KIND = null;
+      UI.layer = 'desks';
+      if (UI.tool === 'line') UI.tool = 'poly';
       historyReset(); afterChange(); fitView(); renderAll();
     });
   });
@@ -4140,12 +4496,32 @@ function boot(){
   $('btnZoneAdd').addEventListener('click', addZone);
   $('deskSearch').addEventListener('input', function(){ UI.filter = $('deskSearch').value; renderDeskList(); });
   $('btnSelAll').addEventListener('click', function(){
-    var r = room();
-    UI.sel = r ? r.desks.filter(function(d){ return zoneVisible(d.zone); }).map(function(d){ return d.uid; }) : [];
-    renderAll();
+    if (isFeatureLayer()) setLayer('desks');
+    selectAllInLayer();
   });
   $('btnSelNone').addEventListener('click', function(){ UI.sel = []; renderAll(); });
   $('btnRenumber').addEventListener('click', renumberRoom);
+
+  /* features */
+  $('ckFeat').addEventListener('change', function(){
+    UI.showFeatures = $('ckFeat').checked;
+    if (isFeatureLayer()) pruneHiddenSelection();
+    renderFeaturePanel(); renderLegend(); renderInspector(); requestDraw();
+  });
+  $('ckFeatLab').addEventListener('change', function(){
+    UI.featureLabels = $('ckFeatLab').checked; requestDraw();
+  });
+  $('featKindNew').addEventListener('change', function(){
+    LAST_KIND = $('featKindNew').value;
+    renderFeaturePanel(); updateDrawHint();
+  });
+  $('btnFeatDraw').addEventListener('click', function(){
+    if (!isFeatureLayer()) setLayer('features');
+    if (!UI.showFeatures) { UI.showFeatures = true; $('ckFeat').checked = true; }
+    LAST_KIND = $('featKindNew').value;
+    setTool('rect');
+    toast('Drawing ' + currentFeatureKind() + ' — R rect, P polygon, N polyline');
+  });
 
   /* grid + replicate */
   $('ckGrid').addEventListener('change', function(){ UI.showGrid = $('ckGrid').checked; requestDraw(); });
@@ -4236,6 +4612,9 @@ function boot(){
 
   /* first paint */
   UI.gridPx = numOr($('gridPx').value, 10);
+  /* On a phone the legend competes with the plan for the same few hundred
+   * pixels, so the feature-kind rows start folded there and open on a desktop. */
+  UI.legendFeatOpen = !coarse();
   historyReset();
   VAL = validate(DOC);
   setAutoNote(storage() ? 'idle' : 'unavailable (localStorage is blocked for this page)');
@@ -4262,6 +4641,9 @@ if (typeof window !== 'undefined') {
     importRooms: importRooms, buildExport: buildExport, exportText: exportText,
     validate: validate,
     idPattern: idPattern, nextDeskId: nextDeskId, labelFromId: labelFromId,
+    FEATURE_KINDS: FEATURE_KINDS, featureStyle: featureStyle,
+    knownFeatureKind: knownFeatureKind, featureKeyOrder: featureKeyOrder,
+    newFeature: newFeature, allFeatures: allFeatures, nextFeatureId: nextFeatureId,
     shapeBBox: shapeBBox, shapePoly: shapePoly, polysOverlap: polysOverlap,
     pointInPoly: pointInPoly, rectOverlapArea: rectOverlapArea,
     replicateOffsets: replicateOffsets, translateShape: translateShape,

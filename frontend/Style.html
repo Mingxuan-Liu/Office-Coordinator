@@ -1171,9 +1171,12 @@ body[data-booted] .boot { display: none; }
 .feature-layer,
 .feature-layer * { pointer-events: none; }
 
-/* Over a real floor plan drawing the walls are already printed on the image,
-   so the overlay steps back. On the blank fallback it stays at full strength. */
-.feature-layer.is-over-image { opacity: 0.6; }
+/* Over a real floor plan drawing the walls are already printed on the image, so
+   the redrawn geometry steps back and stops competing with them. The labels do
+   not fade: naming the room is the part the scan cannot do legibly, and it is
+   why the features are drawn at all. On the blank fallback nothing fades —
+   there the geometry is the only thing giving the desks a room to sit in. */
+.feature-layer.is-over-image .feature > :not(.feature__label) { opacity: 0.5; }
 
 .feature__line {
   fill: none;

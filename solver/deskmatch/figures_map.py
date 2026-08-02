@@ -1357,14 +1357,13 @@ def _draw_features(
     sy: float,
     ppp: float,
     notes: list[str],
-) -> int:
-    """Draw a room's structure under everything else. Returns how many landed.
+) -> None:
+    """Draw a room's structure under everything else.
 
     Iterates `room.features` in rooms.json order — no sorting needed and no set
     anywhere, so the draw order (and therefore the output bytes) is fixed by the
     config file.
     """
-    drawn = 0
     unknown: list[str] = []
     for feature in room.features:
         raw, closed = _feature_points(feature)
@@ -1379,7 +1378,10 @@ def _draw_features(
             if feature.kind not in unknown:
                 unknown.append(feature.kind)
 
-        axis = _thin_axis(pts) if style.centre_line != "none" else None
+        # Only an area can be collapsed to (or annotated with) a centre line.
+        # An open polyline already *is* one; drawing its axis on top of it
+        # would just stroke the same dashes twice.
+        axis = _thin_axis(pts) if (closed and style.centre_line != "none") else None
         collapse = axis is not None and style.centre_line == "instead"
 
         if closed and not collapse:
@@ -1422,14 +1424,12 @@ def _draw_features(
 
         if style.label and feature.label.strip():
             _draw_feature_label(ax, feature, pts, ppp)
-        drawn += 1
 
     if unknown:
         notes.append(
             f"{room.id}: feature kind(s) {', '.join(sorted(unknown))} are not "
             f"recognised and were drawn as generic structure."
         )
-    return drawn
 
 
 def _draw_room(
@@ -1999,7 +1999,15 @@ def desk_popularity_heatmap(
             f"{'student' if stats.n_people == 1 else 'students'} in the pool  ·  "
             f"K = {k} ranked choices each  ·  {desks_bit}"
         )
-        if norm is not None and (lo > 1.0 + 1e-9 or hi < k + 1 - 1e-9):
+        # With one room the span belongs here, next to the other facts about
+        # the figure. With several it belongs in the caption, attached to the
+        # sentence that says the span is shared — repeating a shared range once
+        # per page invites the reader to assume it was computed per page.
+        if (
+            norm is not None
+            and n_rooms_cfg == 1
+            and (lo > 1.0 + 1e-9 or hi < k + 1 - 1e-9)
+        ):
             subtitle += (
                 f"  ·  colour scale spans {lo:.1f}–{hi:.1f} of a possible 1–{k + 1}"
             )
@@ -2035,17 +2043,14 @@ def desk_popularity_heatmap(
         # sentence is the only thing that names them.
         if has_features:
             caption += (
-                " Grey shapes are the structure of the room — walls, doors, "
-                "windows, partitions, furniture and named side-rooms, labelled "
-                "where they have a name. They are drawn from rooms.json for "
-                "orientation only: they are not desks, cannot be chosen, and "
-                "take no part in the shading."
+                " Grey shapes are structure — walls, doors, windows, rooms — drawn "
+                "for orientation only; they are not desks and are not shaded."
             )
         if norm is not None and n_rooms_cfg > 1:
             caption += (
-                f" One colour scale is shared by {rooms_phrase}, not stretched per "
-                f"room: the same shade means the same mean rank on every page, so "
-                f"the rooms can be read against each other."
+                f" One colour scale ({lo:.1f}–{hi:.1f} of a possible 1–{k + 1}) is "
+                f"shared by {rooms_phrase}, so the same shade means the same mean "
+                f"rank in each."
             )
     if footer is None:
         coord = rooms_cfg.coord_space

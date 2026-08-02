@@ -507,9 +507,10 @@
   function drawFeature(node, f) {
     var s = f.s;
 
-    /* An open path has no interior, so it is stroked whatever the kind says. */
+    /* An open path has no interior, so it is stroked whatever the kind says —
+       a dashed one when the kind is an annotation rather than a thing. */
     if (s.kind === 'polyline') {
-      node.appendChild(geomNode(s, 'feature__line'));
+      node.appendChild(geomNode(s, f.kind === 'divider' ? 'feature__dash' : 'feature__line'));
       return;
     }
 
@@ -671,12 +672,12 @@
     return layer;
   }
 
-  /* Lowers the whole layer over a real floor plan drawing, which already has
-     its own walls printed on it. On the blank fallback it stays at full
-     strength, because there the features are the only thing giving the desks
-     a room to sit in. */
-  function setFeaturesOverImage(on) {
-    if (featureLayer) { featureLayer.classList.toggle('is-over-image', !!on); }
+  /* Steps the redrawn geometry back over a real floor plan drawing, which
+     already has its own walls printed on it. Takes the layer rather than
+     reading the module one, because the image callbacks that call this are
+     asynchronous and the room may have been switched underneath them. */
+  function setFeaturesOverImage(layer, on) {
+    if (layer) { layer.classList.toggle('is-over-image', !!on); }
   }
 
   function anyRoomHasFeatures() {
@@ -822,6 +823,7 @@
 
     /* Structure, beneath the desks and above the plan image. */
     featureLayer = buildFeatures(geom);
+    var features = featureLayer;          /* captured for the image callbacks */
     svg.appendChild(featureLayer);
 
     /* Desks. */
@@ -847,12 +849,12 @@
         img.onload = function () {
           img.hidden = false;
           svgShow(bg, false);
-          setFeaturesOverImage(true);
+          setFeaturesOverImage(features, true);
         };
         img.onerror = function () {
           img.hidden = true;
           svgShow(bg, true);
-          setFeaturesOverImage(false);
+          setFeaturesOverImage(features, false);
           addNote('The floor plan drawing for ' + (room.label || room.id) +
                   ' could not be loaded, so the desks are shown as shapes on a blank ' +
                   'plan. Desk positions and everything else on this page still work.');
@@ -863,7 +865,7 @@
         img.removeAttribute('src');
         img.hidden = true;
         svgShow(bg, true);
-        setFeaturesOverImage(false);
+        setFeaturesOverImage(features, false);
         addNote('No floor plan drawing is available for ' + (room.label || room.id) +
                 ' in this deployment, so the desks are shown as shapes on a blank plan. ' +
                 'Desk numbers, positions and zones are still correct. ' +

@@ -31,20 +31,45 @@
  *   ALLOW_PROXY_SUBMIT      optional. "true" lets a signed-in user submit under
  *                           a different roster email (coordinator taking a
  *                           submission over the phone). Off by default.
+ *   PRELOCK_ENABLED         optional. "true" turns on the pre-lock step, where a
+ *                           student may claim the desk they already sit at and
+ *                           keep it instead of entering the ranking. Default
+ *                           "false": the step is greyed out and unreachable.
+ *   PRELOCK_DEADLINE_ISO    optional. ISO-8601 instant after which claims are
+ *                           refused. Independent of DEADLINE_ISO, and usually
+ *                           earlier — the coordinator wants the keepers settled
+ *                           before everyone else ranks. DEADLINE_ISO still
+ *                           applies as the outer bound.
+ *   KEEPERS_SHEET_NAME      optional. Tab the pre-lock claims are appended to.
+ *                           Defaults to "Keepers".
  * ======================================================================== */
 
 var APP_NAME = 'deskmatch';
-var APP_BUILD = '1.0.0';
+var APP_BUILD = '1.1.0';
 
 var PROP_SHEET_NAME = 'RESPONSE_SHEET_NAME';
 var PROP_SPREADSHEET_ID = 'RESPONSE_SPREADSHEET_ID';
 var PROP_DEADLINE_ISO = 'DEADLINE_ISO';
 var PROP_ALLOW_PROXY = 'ALLOW_PROXY_SUBMIT';
+var PROP_PRELOCK_ENABLED = 'PRELOCK_ENABLED';
+var PROP_PRELOCK_DEADLINE_ISO = 'PRELOCK_DEADLINE_ISO';
+var PROP_KEEPERS_SHEET_NAME = 'KEEPERS_SHEET_NAME';
+
+var DEFAULT_KEEPERS_SHEET = 'Keepers';
 
 /* The fixed part of the response header (SPEC §3.1). The choice_N columns are
- * generated from K and spliced in between these two halves. */
-var HEADER_LEAD = ['submission_id', 'timestamp', 'email', 'name', 'year', 'candidacy'];
+ * generated from K and spliced in between these two halves.
+ *
+ * `year` is deliberately absent: the form no longer asks for it, because
+ * candidacy alone decides which zones a person may sit in. */
+var HEADER_LEAD = ['submission_id', 'timestamp', 'email', 'name', 'candidacy'];
 var HEADER_TAIL = ['client_version', 'auth_method'];
+
+/* The pre-lock claim log. Append-only, exactly like the response sheet:
+ * releasing a desk writes a new row with keeping=false, and the latest row per
+ * email wins. tools/merge_keepers.py folds this into config/roster.csv. */
+var KEEPERS_HEADER = ['claim_id', 'timestamp', 'email', 'name', 'desk_id',
+                      'keeping', 'client_version'];
 
 var AUTH_GOOGLE = 'google';
 var AUTH_SELF_SELECT = 'self_select';
@@ -136,6 +161,9 @@ function getBootstrap() {
       allowedZonesFor: {},
       priorSubmission: null,
       concentration: {},
+      prelock: { enabled: false, deadlineIso: null, deadlinePassed: false },
+      claims: [],
+      myClaim: null,
       warnings: warnings
     };
   }
@@ -207,6 +235,26 @@ function getBootstrap() {
     warnings.push('Previous submissions could not be read: ' + errText_(err2));
   }
 
+  // ---- pre-lock claims --------------------------------------------------
+  // Only read while the step is switched on. When the coordinator turns it off
+  // the step is not in use this year, and nothing else about the form changes
+  // — including which desks are shown as taken.
+  var prelock = prelockSettings_();
+  var claims = [];
+  var myClaim = null;
+  if (prelock.enabled) {
+    try {
+      claims = activeClaims_(roster);
+      var mine = person ? person.email : '';
+      for (var c = 0; c < claims.length; c++) {
+        if (mine && claims[c].email === mine) { myClaim = claims[c]; break; }
+      }
+    } catch (err3) {
+      warnings.push('The pre-lock claims could not be read, so desks other people ' +
+        'have already claimed may not be shown as taken: ' + errText_(err3));
+    }
+  }
+
   // ---- deadline ---------------------------------------------------------
   var deadline = deadline_();
 
@@ -230,6 +278,13 @@ function getBootstrap() {
     allowedZonesFor: allowedZonesFor,
     priorSubmission: priorSubmission,
     concentration: concentration,
+    prelock: {
+      enabled: prelock.enabled,
+      deadlineIso: prelock.deadlineIso,
+      deadlinePassed: prelock.deadlinePassed
+    },
+    claims: claims,                                // every desk claimed and kept
+    myClaim: myClaim,                              // this person's, or null
     warnings: warnings
   };
 }
@@ -251,14 +306,17 @@ function getConcentration() {
 }
 
 /**
- * Recomputes allowed zones when the student corrects their year or candidacy on
- * the confirmation screen.
+ * Recomputes allowed zones when the student corrects their candidacy on the
+ * identity screen.
+ *
+ * Candidacy is the only thing the form asks them to confirm, because it is the
+ * only thing that decides where they may sit. The year is not collected at all.
  *
  * Applies exactly the rule submitRanking() applies: the intersection of the
  * zones the roster entitles them to and the zones their claimed attributes
  * entitle them to, so the form can never offer a desk the server would reject.
  *
- * @param {Object} claim {email, year, candidacy}.
+ * @param {Object} claim {email, candidacy}.
  * @return {Object} {ok, zones, rosterZones, claimZones, reason} | {ok:false, error}.
  */
 function getEligibleZonesForClaim(claim) {
@@ -461,25 +519,27 @@ function resolveAllowZones_(allowZones, known, where) {
  *   - the email is on the roster, and matches the signed-in user when Google
  *     identified them (unless ALLOW_PROXY_SUBMIT is set)
  *   - the person is not a desk-keeper — keepers are out of the pool (SPEC §3.4)
+ *   - the person has not claimed a desk in the pre-lock step, which takes them
+ *     out of the pool in exactly the same way
  *   - exactly K choices, each non-empty, all distinct
- *   - every choice is a real desk id from rooms.json, is not held by a keeper,
- *     and is not marked "available": false
+ *   - every choice is a real desk id from rooms.json, is not held by a keeper
+ *     or by someone else's pre-lock claim, and is not marked "available": false
  *   - every chosen desk's zone is eligible under BOTH the roster attributes and
- *     the year/candidacy the student just confirmed (see the note below)
- *   - year is a positive integer; candidacy is non-empty
+ *     the candidacy the student just confirmed (see the note below)
+ *   - candidacy is non-empty
  *   - the Sheet header is the SPEC §3.1 header for this K
  *
  * On success appends exactly one row and returns its id. Rows are never
  * updated or deleted: re-submitting appends again and the solver keeps the
  * latest row per email (SPEC §3.2), so the history stays auditable.
  *
- * Note on year/candidacy: SPEC §3.3 says the submission overrides the roster,
- * and it is recorded that way. For *eligibility* we take the intersection of
+ * Note on candidacy: SPEC §3.3 says the submission overrides the roster, and it
+ * is recorded that way. For *eligibility* we take the intersection of
  * roster-derived and claim-derived zones, so nobody can unlock a zone by
  * retyping their candidacy, and so the form can never accept a pick the solver
  * would later rule ineligible under either reading.
  *
- * @param {Object} payload {email, name, year, candidacy, choices[], authMethod, clientVersion}.
+ * @param {Object} payload {email, name, candidacy, choices[], authMethod, clientVersion}.
  * @return {Object} {ok:true, submissionId, timestampIso} | {ok:false, errors:[strings]}.
  */
 function submitRanking(payload) {
@@ -532,20 +592,27 @@ function submitRanking(payload) {
       '. Sign in as yourself, or ask the coordinator to enter this one for you.');
   }
 
-  // ---- year / candidacy the student just confirmed ----------------------
-  var year = null;
+  // ---- pre-lock claim ---------------------------------------------------
+  // Claiming a desk is a way out of the ranking, so someone holding a claim
+  // cannot also submit one. Releasing the desk puts them back in the pool.
+  var keepers = null;
+  if (person) {
+    try {
+      keepers = readKeepers_();
+    } catch (errKeep) {
+      keepers = null;                                  // no Keepers tab yet: nobody has claimed
+    }
+    var ownClaim = keepers ? activeClaimFor_(keepers, person.email) : null;
+    if (ownClaim) {
+      errors.push('You claimed ' + deskDescription_(deskIndex, ownClaim.deskId) +
+        ' in the pre-lock step and are keeping it, so you are not in the ranking. ' +
+        'Release that desk first if you would rather move.');
+    }
+  }
+
+  // ---- candidacy the student just confirmed -----------------------------
   var candidacy = '';
   if (person) {
-    if (payload.year === undefined || payload.year === null || String(payload.year).trim() === '') {
-      year = person.year;                              // not asked / not changed
-    } else {
-      var y = toNumber_(payload.year);
-      if (y === null || y !== Math.floor(y) || y < 1) {
-        errors.push('Year must be a whole number of 1 or more; got "' + payload.year + '".');
-      } else {
-        year = y;
-      }
-    }
     candidacy = String(payload.candidacy === undefined || payload.candidacy === null
       ? '' : payload.candidacy).trim() || String(person.candidacy || '').trim();
     if (!candidacy) {
@@ -560,7 +627,7 @@ function submitRanking(payload) {
   if (person) {
     try {
       var rosterZones = getEligibleZones(person.attributes);
-      var claimZones = getEligibleZones(claimAttributes_(person, { year: year, candidacy: candidacy }));
+      var claimZones = getEligibleZones(claimAttributes_(person, { candidacy: candidacy }));
       allowedZones = intersect_(rosterZones, claimZones);
       eligibilityReason = eligibilityDecision_(person.attributes).reason;
       if (allowedZones.length === 0) {
@@ -584,6 +651,14 @@ function submitRanking(payload) {
     }
     var seenAt = {};
     var locked = lockedDeskMap_(roster);
+    if (keepers) {
+      var claimed = keepers.activeByDesk;
+      Object.keys(claimed).forEach(function (deskId) {
+        if (locked[deskId]) return;
+        locked[deskId] = (claimed[deskId].name || claimed[deskId].email) +
+          ' claimed this desk in the pre-lock step and is keeping it';
+      });
+    }
     for (var i = 0; i < choices.length; i++) {
       var rank = i + 1;
       var raw = (choices[i] === undefined || choices[i] === null) ? '' : String(choices[i]).trim();
@@ -643,7 +718,6 @@ function submitRanking(payload) {
         case 'timestamp': return timestampIso;
         case 'email': return email;
         case 'name': return String(payload.name || '').trim() || person.name;
-        case 'year': return year;
         case 'candidacy': return candidacy;
         default: return '';
       }
@@ -692,35 +766,36 @@ function fail_(errors) {
  * @return {Sheet}
  */
 function getSheet_() {
-  var props = PropertiesService.getScriptProperties();
-  var name = String(props.getProperty(PROP_SHEET_NAME) || '').trim();
+  var name = String(prop_(PROP_SHEET_NAME) || '').trim();
   if (!name) {
     throw new Error('Script property "' + PROP_SHEET_NAME + '" is not set, so there is ' +
       'nowhere to write responses. Set it in Project Settings -> Script Properties to the ' +
       'name of the tab in the response spreadsheet (see frontend/DEPLOY.md).');
   }
+  var ss = spreadsheet_();
+  var sheet = ss.getSheetByName(name);
+  if (!sheet) sheet = ss.insertSheet(name);
+  return sheet;
+}
 
-  var id = String(props.getProperty(PROP_SPREADSHEET_ID) || '').trim();
-  var ss;
+/** The spreadsheet everything is written to. Shared by responses and keepers. */
+function spreadsheet_() {
+  var id = String(prop_(PROP_SPREADSHEET_ID) || '').trim();
   if (id) {
     try {
-      ss = SpreadsheetApp.openById(id);
+      return SpreadsheetApp.openById(id);
     } catch (err) {
       throw new Error('Script property "' + PROP_SPREADSHEET_ID + '" is "' + id + '", but ' +
         'that spreadsheet could not be opened. Check the id and that the deploying account ' +
         'can edit it. (' + errText_(err) + ')');
     }
-  } else {
-    ss = SpreadsheetApp.getActiveSpreadsheet();
-    if (!ss) {
-      throw new Error('This script is not bound to a spreadsheet and script property "' +
-        PROP_SPREADSHEET_ID + '" is not set, so there is nowhere to write responses.');
-    }
   }
-
-  var sheet = ss.getSheetByName(name);
-  if (!sheet) sheet = ss.insertSheet(name);
-  return sheet;
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) {
+    throw new Error('This script is not bound to a spreadsheet and script property "' +
+      PROP_SPREADSHEET_ID + '" is not set, so there is nowhere to write anything.');
+  }
+  return ss;
 }
 
 /** The SPEC §3.1 header for a given K. choice_N columns are generated, never typed. */
@@ -804,7 +879,9 @@ function readResponses_() {
       timestampIso: isoCell_(rowVals[col.timestamp]),
       email: email,
       name: cell_(rowVals, col.name),
-      year: rowVals[col.year],
+      // `year` is no longer written. A sheet left over from an older cycle may
+      // still have the column; read it if it is there, ignore it otherwise.
+      year: col.year === undefined ? '' : rowVals[col.year],
       candidacy: cell_(rowVals, col.candidacy),
       choices: choices,
       clientVersion: cell_(rowVals, col.client_version),
@@ -843,7 +920,318 @@ function firstChoiceCounts_(responses) {
 }
 
 /* ===========================================================================
- * 6. Config access helpers (everything here reads ConfigData.gs)
+ * 6. The pre-lock step — claiming the desk you already sit at
+ *
+ * A student who is happy where they are can take themselves AND their desk out
+ * of the draw rather than ranking anything. The claim log is a second
+ * append-only tab with the same semantics as the response sheet: one row per
+ * action, releasing writes a new row with keeping=false, and the latest row per
+ * email wins. tools/merge_keepers.py folds the result into config/roster.csv,
+ * which is where keeps_desk / current_desk actually live (SPEC §2.3, §3.4).
+ *
+ * Nothing here decides who *may* keep a desk beyond "it exists and nobody else
+ * has it". In particular a claim is deliberately NOT checked against the
+ * eligibility zones: the rule table says where somebody may be *assigned*, and
+ * staying put is not an assignment. The coordinator sees every claim in the tab.
+ * ======================================================================== */
+
+/** {enabled, deadlineIso, deadlinePassed} for the pre-lock step. Never throws. */
+function prelockSettings_() {
+  var enabled = String(prop_(PROP_PRELOCK_ENABLED) || '').trim().toLowerCase() === 'true';
+  var iso = String(prop_(PROP_PRELOCK_DEADLINE_ISO) || '').trim();
+  if (!iso) return { enabled: enabled, deadlineIso: null, deadlinePassed: false };
+  var when = Date.parse(iso);
+  if (isNaN(when)) {
+    console.warn('Script property ' + PROP_PRELOCK_DEADLINE_ISO + ' is not a parseable ' +
+      'ISO-8601 instant ("' + iso + '"); ignoring it.');
+    return { enabled: enabled, deadlineIso: null, deadlinePassed: false };
+  }
+  return { enabled: enabled, deadlineIso: iso, deadlinePassed: Date.now() > when };
+}
+
+/** Tab the claims live in. */
+function keepersSheetName_() {
+  return String(prop_(PROP_KEEPERS_SHEET_NAME) || '').trim() || DEFAULT_KEEPERS_SHEET;
+}
+
+/**
+ * The Keepers tab. Returns null when it does not exist and `create` is falsy,
+ * which is the normal state before the first claim — reading must not create a
+ * tab as a side effect of somebody merely opening the form.
+ */
+function keepersSheet_(create) {
+  var ss = spreadsheet_();
+  var name = keepersSheetName_();
+  var sheet = ss.getSheetByName(name);
+  if (!sheet && create) sheet = ss.insertSheet(name);
+  return sheet || null;
+}
+
+/** Writes the header on first use; refuses to append to a mismatched tab. */
+function ensureKeepersHeader_(sheet) {
+  var lastCol = sheet.getLastColumn();
+  var lastRow = sheet.getLastRow();
+  var have = (lastRow >= 1 && lastCol >= 1)
+    ? sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function (v) { return String(v).trim(); })
+    : [];
+
+  if (have.filter(function (v) { return v !== ''; }).length === 0) {
+    sheet.getRange(1, 1, 1, KEEPERS_HEADER.length).setValues([KEEPERS_HEADER]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    var tsCol = KEEPERS_HEADER.indexOf('timestamp') + 1;
+    sheet.getRange(1, tsCol, sheet.getMaxRows(), 1).setNumberFormat('@');
+    return KEEPERS_HEADER;
+  }
+
+  for (var i = 0; i < KEEPERS_HEADER.length; i++) {
+    if (have[i] !== KEEPERS_HEADER[i]) {
+      throw new Error('The "' + keepersSheetName_() + '" tab does not have the expected ' +
+        'header. Column ' + (i + 1) + ' is "' + (have[i] === undefined ? '' : have[i]) +
+        '" but should be "' + KEEPERS_HEADER[i] + '". Expected header: ' +
+        KEEPERS_HEADER.join(', ') + '. Rename or clear that tab rather than editing it.');
+    }
+  }
+  return have;
+}
+
+/**
+ * Every claim row, plus the latest row per email and the desks those latest
+ * rows are keeping. Identical resolution to readResponses_ (SPEC §3.2).
+ *
+ * @return {Object} {all:[...], latest:{email: row}, activeByDesk:{deskId: row}}.
+ */
+function readKeepers_() {
+  var empty = { all: [], latest: {}, activeByDesk: {} };
+  var sheet = keepersSheet_(false);
+  if (!sheet) return empty;
+
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return empty;
+
+  var values = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+  var header = values[0].map(function (v) { return String(v).trim(); });
+  var col = {};
+  for (var c = 0; c < header.length; c++) if (header[c]) col[header[c]] = c;
+
+  var all = [];
+  for (var r = 1; r < values.length; r++) {
+    var rowVals = values[r];
+    var email = normEmail_(cell_(rowVals, col.email));
+    if (!email) continue;                                // blank / spacer row
+    all.push({
+      claimId: cell_(rowVals, col.claim_id),
+      timestampIso: isoCell_(rowVals[col.timestamp]),
+      email: email,
+      name: cell_(rowVals, col.name),
+      deskId: cell_(rowVals, col.desk_id),
+      keeping: truthy_(col.keeping === undefined ? '' : rowVals[col.keeping]),
+      clientVersion: cell_(rowVals, col.client_version),
+      fileRow: r - 1
+    });
+  }
+
+  var latest = {};
+  for (var i = 0; i < all.length; i++) {
+    var row = all[i];
+    var prev = latest[row.email];
+    if (!prev || !laterThan_(prev, row)) latest[row.email] = row;
+  }
+
+  var activeByDesk = {};
+  Object.keys(latest).forEach(function (email) {
+    var row = latest[email];
+    if (row.keeping && row.deskId) activeByDesk[row.deskId] = row;
+  });
+
+  return { all: all, latest: latest, activeByDesk: activeByDesk };
+}
+
+/** The desk this email is currently keeping, or null. */
+function activeClaimFor_(keepers, email) {
+  var row = keepers.latest[normEmail_(email)];
+  return (row && row.keeping && row.deskId) ? row : null;
+}
+
+/**
+ * Live claims, as the client needs them: [{deskId, email, name, timestampIso}].
+ * Sorted by desk id so the payload is stable between calls.
+ */
+function activeClaims_(roster) {
+  var keepers = readKeepers_();
+  var byDesk = keepers.activeByDesk;
+  return Object.keys(byDesk).sort().map(function (deskId) {
+    var row = byDesk[deskId];
+    var person = roster ? findRosterRow_(roster, row.email) : null;
+    return {
+      deskId: deskId,
+      email: row.email,
+      name: (person && person.name) || row.name || row.email,
+      timestampIso: row.timestampIso
+    };
+  });
+}
+
+/**
+ * Records one pre-lock claim, or one release. The only other write path in the
+ * app, and it is append-only for the same reason submitRanking() is.
+ *
+ * Re-validates everything the browser checked:
+ *   - the step is switched on, and neither deadline has passed
+ *   - the email is on the roster, and matches the signed-in user when Google
+ *     identified them (unless ALLOW_PROXY_SUBMIT is set)
+ *   - the desk exists in rooms.json and is in the pool
+ *   - nobody else is already keeping it — held under a script lock, so two
+ *     people tapping the same desk at the same moment cannot both win
+ *   - a release names a desk this person is actually keeping
+ *
+ * @param {Object} payload {email, name, deskId, keeping, clientVersion}.
+ * @return {Object} {ok:true, claimId, timestampIso, deskId, keeping} |
+ *                  {ok:false, errors:[strings]}.
+ */
+function claimDesk(payload) {
+  payload = (payload && typeof payload === 'object') ? payload : {};
+  var keeping = payload.keeping !== false && truthy_(
+    payload.keeping === undefined ? true : payload.keeping);
+  var errors = [];
+
+  var prelock = prelockSettings_();
+  if (!prelock.enabled) {
+    return fail_(['The pre-lock step is not in use this year, so nothing was saved. ' +
+      'Rank your desks as normal.']);
+  }
+
+  var deskIndex, roster;
+  try {
+    deskIndex = deskIndex_();
+    roster = rosterRows_();
+  } catch (err) {
+    return fail_(['The desk configuration could not be loaded, so nothing was saved. ' +
+      errText_(err)]);
+  }
+
+  var deadline = deadline_();
+  if (deadline.passed) {
+    return fail_(['The form closed at ' + deadline.iso + '. Nothing was saved.']);
+  }
+  if (prelock.deadlinePassed) {
+    return fail_(['The deadline for keeping your current desk passed at ' +
+      prelock.deadlineIso + '. Nothing was saved — email the coordinator.']);
+  }
+
+  // ---- identity ---------------------------------------------------------
+  var email = normEmail_(payload.email);
+  var person = null;
+  if (!email) {
+    errors.push('No email address was submitted. Reload the page and choose your name.');
+  } else {
+    person = findRosterRow_(roster, email);
+    if (!person) {
+      errors.push('"' + email + '" is not on the department roster, so it cannot claim a ' +
+        'desk. Email the coordinator to be added.');
+    }
+  }
+  var sessionEmail = activeEmail_();
+  if (sessionEmail && email && sessionEmail !== email && !proxySubmitAllowed_()) {
+    errors.push('You are signed in as ' + sessionEmail + ' but tried to claim a desk as ' +
+      email + '. Sign in as yourself, or ask the coordinator to enter this one for you.');
+  }
+
+  // ---- the desk ---------------------------------------------------------
+  var raw = String(payload.deskId === undefined || payload.deskId === null
+    ? '' : payload.deskId).trim();
+  var desk = raw ? deskIndex[raw.toUpperCase()] : null;
+  if (!raw) {
+    errors.push('No desk was named, so there is nothing to ' + (keeping ? 'claim' : 'release') + '.');
+  } else if (!desk) {
+    errors.push('"' + raw + '" is not a desk in this building. Reload the page — the floor ' +
+      'plan may have changed.');
+  } else if (keeping && desk.available === false) {
+    errors.push(deskDescription_(deskIndex, desk.id) + ' has been taken out of the pool by ' +
+      'the coordinator, so it cannot be claimed. Email them.');
+  }
+
+  if (keeping && desk && person) {
+    var locked = lockedDeskMap_(roster);
+    if (locked[desk.id] && !(person.keepsDesk && person.currentDesk === desk.id)) {
+      errors.push(deskDescription_(deskIndex, desk.id) + ' is already down on the roster as ' +
+        'kept: ' + locked[desk.id] + '.');
+    }
+  }
+
+  if (errors.length) return fail_(errors);
+
+  // ---- write ------------------------------------------------------------
+  // The "is it taken" read has to happen inside the lock, or two people can
+  // both read "free" and both write a claim for the same desk.
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(LOCK_TIMEOUT_MS);
+  } catch (errLock) {
+    return fail_(['The claim sheet was busy for ' + Math.round(LOCK_TIMEOUT_MS / 1000) +
+      ' seconds and nothing was saved. Try again in a moment.']);
+  }
+  try {
+    var keepers = readKeepers_();
+    var held = keepers.activeByDesk[desk.id];
+    if (keeping && held && held.email !== email) {
+      return fail_([(held.name || held.email) + ' claimed ' +
+        deskDescription_(deskIndex, desk.id) + ' first, so it is no longer available. ' +
+        'Pick a different desk, or go on to rank desks instead.']);
+    }
+    if (!keeping) {
+      var own = activeClaimFor_(keepers, email);
+      if (!own) {
+        return fail_(['You are not currently keeping a desk, so there is nothing to release. ' +
+          'Reload the page to see where things stand.']);
+      }
+      if (own.deskId !== desk.id) {
+        return fail_(['You are keeping ' + deskDescription_(deskIndex, own.deskId) +
+          ', not ' + deskDescription_(deskIndex, desk.id) + '. Reload the page.']);
+      }
+    }
+
+    var sheet = keepersSheet_(true);
+    ensureKeepersHeader_(sheet);
+
+    var claimId = Utilities.getUuid();
+    var timestampIso = nowIso_();
+    var row = KEEPERS_HEADER.map(function (colName) {
+      switch (colName) {
+        case 'claim_id': return claimId;
+        case 'timestamp': return timestampIso;
+        case 'email': return email;
+        case 'name': return String(payload.name || '').trim() || person.name;
+        case 'desk_id': return desk.id;
+        case 'keeping': return keeping ? 'yes' : 'no';
+        case 'client_version': return String(payload.clientVersion || '').trim() || clientVersion_();
+        default: return '';
+      }
+    });
+
+    sheet.appendRow(row);
+    var tsCol = KEEPERS_HEADER.indexOf('timestamp') + 1;
+    sheet.getRange(sheet.getLastRow(), tsCol).setNumberFormat('@').setValue(timestampIso);
+    SpreadsheetApp.flush();
+
+    return {
+      ok: true,
+      claimId: claimId,
+      timestampIso: timestampIso,
+      deskId: desk.id,
+      keeping: keeping
+    };
+  } catch (errWrite) {
+    return fail_(['Your ' + (keeping ? 'claim' : 'release') + ' could not be saved: ' +
+      errText_(errWrite) + ' Nothing was recorded — please try again, then tell the ' +
+      'coordinator if it keeps failing.']);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* ===========================================================================
+ * 7. Config access helpers (everything here reads ConfigData.gs)
  * ======================================================================== */
 
 /** Fetches a generated global, with a message that says how to create it. */
@@ -966,18 +1354,25 @@ function findRosterRow_(roster, email) {
 }
 
 /**
- * Roster attributes with the year/candidacy the student just confirmed layered
- * on top (SPEC §3.3: the submission wins). Column names are matched
+ * Roster attributes with the candidacy the student just confirmed layered on
+ * top (SPEC §3.3: the submission wins). Column names are matched
  * case-insensitively so an oddly-cased header still gets overridden.
+ *
+ * CONFIRMED_FIELDS is the list of roster columns the form lets a student
+ * correct. It is one entry long on purpose: candidacy is the only attribute the
+ * form collects, so it is the only one that can override the roster. Everything
+ * else — including `year`, which eligibility rules may still reference — is
+ * taken from the roster untouched.
  */
+var CONFIRMED_FIELDS = ['candidacy'];
+
 function claimAttributes_(rosterRow, claim) {
   var attrs = {};
   Object.keys(rosterRow.attributes).forEach(function (key) { attrs[key] = rosterRow.attributes[key]; });
-  ['year', 'candidacy'].forEach(function (field) {
+  CONFIRMED_FIELDS.forEach(function (field) {
     var value = claim[field];
     if (value === undefined || value === null || String(value).trim() === '') return;
-    var key = attributeKey_(attrs, field);
-    attrs[key] = (field === 'year' && toNumber_(value) !== null) ? toNumber_(value) : String(value).trim();
+    attrs[attributeKey_(attrs, field)] = String(value).trim();
   });
   return attrs;
 }
@@ -1006,8 +1401,17 @@ function lockedDeskMap_(roster) {
 }
 
 /* ===========================================================================
- * 7. Small utilities
+ * 8. Small utilities
  * ======================================================================== */
+
+/** One script property, or '' when properties are unreadable. Never throws. */
+function prop_(name) {
+  try {
+    return String(PropertiesService.getScriptProperties().getProperty(name) || '');
+  } catch (err) {
+    return '';
+  }
+}
 
 /** The signed-in user's email, or '' if Google will not tell us. Never throws. */
 function activeEmail_() {
@@ -1026,12 +1430,7 @@ function clientVersion_() {
 
 /** {iso, passed} for the optional DEADLINE_ISO script property. */
 function deadline_() {
-  var iso = '';
-  try {
-    iso = String(PropertiesService.getScriptProperties().getProperty(PROP_DEADLINE_ISO) || '').trim();
-  } catch (err) {
-    iso = '';
-  }
+  var iso = String(prop_(PROP_DEADLINE_ISO) || '').trim();
   if (!iso) return { iso: null, passed: false };
   var when = Date.parse(iso);
   if (isNaN(when)) {
@@ -1044,12 +1443,7 @@ function deadline_() {
 
 /** Whether a signed-in user may submit under someone else's roster email. */
 function proxySubmitAllowed_() {
-  try {
-    return String(PropertiesService.getScriptProperties().getProperty(PROP_ALLOW_PROXY) || '')
-      .trim().toLowerCase() === 'true';
-  } catch (err) {
-    return false;
-  }
+  return String(prop_(PROP_ALLOW_PROXY) || '').trim().toLowerCase() === 'true';
 }
 
 /** Now, as ISO-8601 with a UTC offset, in the script's timezone (SPEC §3.1). */
