@@ -1,0 +1,844 @@
+<!-- ===========================================================================
+     ViewExplainer.html — "How your desk gets chosen"
+
+     Markup and prose only. Every number on this page is injected by
+     JsExplainer.html from APP.state.bootstrap (curve, K, seed, rooms,
+     eligibility outcomes). Nothing about the size of the problem is written
+     down here: no desk count, no zone count, no K, no "5".
+
+     Nodes that JS fills:
+       [data-xp="<key>"]     text/HTML injected from config
+       [data-xp-*]           containers built by JsExplainer
+
+     Anything JS cannot fill degrades to the placeholder character in the
+     markup, and the two figures each carry a visible fallback note.
+
+     CSS note: this block is view-local and namespaced .xp-*. It lives here
+     rather than in Style.html so the explainer is one self-contained unit;
+     it can be lifted into Style.html verbatim if that is preferred.
+     =========================================================================== -->
+
+<section class="view" id="view-explainer" data-view-name="explainer"
+         aria-labelledby="xp-title" hidden>
+
+<style>
+/* ---- layout ------------------------------------------------------------ */
+#view-explainer .xp-body {
+  counter-reset: xpsec;
+  display: grid;
+  gap: clamp(var(--s-6), 6vw, var(--s-8));
+  max-width: 46rem;
+}
+/* Grid and flex items default to min-width:auto, which lets one wide child
+   (a table, a <pre>) push the whole column past the page gutter. Nothing on
+   this page may scroll the body sideways; wide things scroll inside their own
+   .tbl-wrap instead. */
+#view-explainer .xp-body > *,
+#view-explainer .xp-sec > *,
+#view-explainer .xp-fig__body > * { min-width: 0; }
+
+#view-explainer .xp-sec { scroll-margin-top: 5.5rem; }
+#view-explainer .xp-sec:focus { outline: none; }
+#view-explainer .xp-sec > * + * { margin-top: var(--s-4); }
+
+#view-explainer .xp-h {
+  counter-increment: xpsec;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: var(--s-3);
+  margin: 0 0 var(--s-4);
+  font-size: var(--fs-xl);
+  line-height: var(--lh-tight);
+}
+#view-explainer .xp-h::before {
+  content: counter(xpsec);
+  display: inline-grid;
+  place-items: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: var(--r-pill);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  transform: translateY(-0.1em);
+}
+#view-explainer .xp-sec p,
+#view-explainer .xp-sec li { max-width: var(--maxw-prose); }
+
+#view-explainer .xp-bullets { margin: 0; padding-left: 1.15rem; }
+#view-explainer .xp-bullets > li + li { margin-top: var(--s-2); }
+
+#view-explainer .xp-lead-in { color: var(--ink-2); }
+
+/* ---- jump nav ---------------------------------------------------------- */
+#view-explainer .xp-jump {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-bottom: var(--s-6);
+}
+#view-explainer .xp-jump button {
+  min-height: 2.25rem;
+  padding: var(--s-1) var(--s-3);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+#view-explainer .xp-jump button:hover { background: var(--surface-2); color: var(--ink); }
+
+/* ---- summary card ------------------------------------------------------ */
+#view-explainer .xp-tldr { margin-bottom: var(--s-6); }
+#view-explainer .xp-tldr .caps { margin: 0 0 var(--s-3); }
+
+/* ---- the scoring curve strip ------------------------------------------- */
+#view-explainer .xp-curve {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+#view-explainer .xp-curve li {
+  flex: 1 1 4.5rem;
+  min-width: 4.25rem;
+  display: grid;
+  gap: 2px;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  text-align: center;
+}
+#view-explainer .xp-curve li:first-child {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+#view-explainer .xp-curve__rank {
+  font-size: var(--fs-xs);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 600;
+}
+#view-explainer .xp-curve__pts {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+#view-explainer .xp-curve__unit { font-size: var(--fs-xs); color: var(--ink-3); }
+
+/* ---- figures ----------------------------------------------------------- */
+#view-explainer .xp-fig {
+  margin: 0;                      /* UA default is `margin: 1em 40px` */
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
+  max-width: none;
+}
+#view-explainer .xp-fig__head {
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+}
+#view-explainer .xp-fig__title { margin: 0; font-size: var(--fs-md); font-weight: 700; }
+#view-explainer .xp-fig__hint { margin: 2px 0 0; font-size: var(--fs-sm); color: var(--ink-3); }
+#view-explainer .xp-fig__body { padding: var(--s-4); display: grid; gap: var(--s-4); }
+#view-explainer .xp-fig__foot {
+  padding: var(--s-3) var(--s-4);
+  border-top: 1px solid var(--line);
+  background: var(--surface-2);
+  font-size: var(--fs-sm);
+}
+
+/* ---- figure A: the two ranking lists ----------------------------------- */
+#view-explainer .xp-lists {
+  display: grid;
+  gap: var(--s-4);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+}
+#view-explainer .xp-person__name {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  margin-bottom: var(--s-2);
+  font-weight: 700;
+  font-size: var(--fs-md);
+}
+#view-explainer .xp-person__note { font-weight: 400; font-size: var(--fs-xs); color: var(--ink-3); }
+
+#view-explainer .xp-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+
+/* Fixed height, not min-height: the drag maths measures one row and steps by
+   it, so every row in a list must be exactly the same size. */
+#view-explainer .xp-row {
+  display: grid;
+  grid-template-columns: 1.5rem minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--s-2);
+  height: 2.75rem;                /* == --tap */
+  padding: 0 4px 0 var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease),
+              box-shadow var(--dur-1) var(--ease), transform var(--dur-2) var(--ease);
+}
+#view-explainer .xp-row__rank {
+  display: grid;
+  place-items: center;
+  width: 1.5rem; height: 1.5rem;
+  border-radius: var(--r-pill);
+  background: var(--sunken);
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+#view-explainer .xp-row__label {
+  min-width: 0;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#view-explainer .xp-row__pts {
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#view-explainer .xp-row--pinned { background: var(--accent-soft); border-color: var(--accent-line); }
+#view-explainer .xp-row--pinned .xp-row__rank { background: var(--accent); color: var(--accent-ink); }
+#view-explainer .xp-row--pinned .xp-row__label { font-weight: 600; }
+
+#view-explainer .xp-row--filler { border-style: dashed; color: var(--ink-3); }
+#view-explainer .xp-row--filler .xp-row__label { font-style: italic; }
+#view-explainer .xp-row--slot { cursor: pointer; }
+#view-explainer .xp-row--slot:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+#view-explainer .xp-row--move {
+  background: var(--surface);
+  border-color: var(--maize-deep);
+  box-shadow: inset 3px 0 0 var(--maize);
+  cursor: grab;
+}
+#view-explainer .xp-row--move .xp-row__label { font-weight: 600; }
+#view-explainer .xp-row--move:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+#view-explainer .xp-row.is-dragging {
+  cursor: grabbing;
+  z-index: 3;
+  position: relative;
+  box-shadow: var(--shadow-2), inset 3px 0 0 var(--maize);
+  transition: none;
+}
+#view-explainer .xp-row.is-target { border-color: var(--accent); background: var(--accent-soft); }
+#view-explainer .xp-row.is-landed { animation: xp-land 480ms var(--ease); }
+@keyframes xp-land {
+  0%   { box-shadow: inset 3px 0 0 var(--maize), 0 0 0 3px var(--accent-soft); }
+  100% { box-shadow: inset 3px 0 0 var(--maize), 0 0 0 0 transparent; }
+}
+
+/* Always in the DOM so every row is the same width and the columns line up.
+   visibility:hidden also drops the buttons out of the tab order and stops them
+   swallowing taps meant for the row underneath. */
+#view-explainer .xp-nudge { display: flex; align-items: stretch; gap: 0; height: 100%; }
+#view-explainer .xp-nudge[data-off="1"] { visibility: hidden; }
+#view-explainer .xp-nudge button {
+  width: 2.4rem;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-2);
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+  line-height: 1;
+}
+#view-explainer .xp-nudge button:hover { background: var(--sunken); color: var(--ink); }
+#view-explainer .xp-nudge button[disabled] { opacity: 0.3; pointer-events: none; }
+#view-explainer .xp-nudge svg { width: 0.9rem; height: 0.9rem; }
+#view-explainer .xp-grip {
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  color: var(--ink-3);
+  cursor: grab;
+  touch-action: none;
+}
+#view-explainer .xp-grip:active { cursor: grabbing; }
+
+/* ---- figure A: the outcome table --------------------------------------- */
+#view-explainer .xp-cands th[scope="row"] { font-weight: 600; width: 1%; white-space: nowrap; }
+#view-explainer .xp-cands tbody tr { transition: background var(--dur-2) var(--ease); }
+#view-explainer .xp-cands tbody tr.is-win { background: var(--ok-soft) !important; }
+#view-explainer .xp-cands tbody tr.is-win th[scope="row"] { box-shadow: inset 3px 0 0 var(--ok); }
+#view-explainer .xp-cell__desk { display: block; font-weight: 600; font-size: var(--fs-sm); }
+#view-explainer .xp-cell__meta { display: block; font-size: var(--fs-xs); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+#view-explainer .xp-cell__pts {
+  display: block;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+#view-explainer .xp-total { display: block; font-size: var(--fs-lg); font-weight: 700; font-variant-numeric: tabular-nums; }
+#view-explainer .xp-total.is-flash { animation: xp-flash 700ms var(--ease); }
+@keyframes xp-flash { 0% { color: var(--ok); transform: scale(1.18); } 100% { color: inherit; transform: none; } }
+
+#view-explainer .xp-chosen {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  padding: 1px var(--s-2);
+  border-radius: var(--r-pill);
+  background: var(--ok);
+  color: #fff;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  white-space: nowrap;
+  will-change: transform;
+}
+#view-explainer .xp-chosen--tie { background: var(--warn); }
+
+#view-explainer .xp-why {
+  margin: 0;
+  padding: var(--s-3);
+  border-left: 3px solid var(--line-2);
+  background: var(--surface-2);
+  border-radius: 0 var(--r-2) var(--r-2) 0;
+  font-size: var(--fs-md);
+  line-height: var(--lh-snug);
+}
+#view-explainer .xp-why.is-tie { border-left-color: var(--warn); background: var(--warn-soft); }
+#view-explainer .xp-why b { font-variant-numeric: tabular-nums; }
+
+/* ---- figure B: greedy vs global ---------------------------------------- */
+#view-explainer .xp-orders td { vertical-align: middle; }
+#view-explainer .xp-orders tr.is-global { background: var(--accent-soft) !important; }
+#view-explainer .xp-orders tr.is-global td, #view-explainer .xp-orders tr.is-global th { border-top: 2px solid var(--accent-line); }
+#view-explainer .xp-orders tr.is-worst .xp-tot { color: var(--danger); }
+#view-explainer .xp-seq { font-size: var(--fs-sm); white-space: nowrap; }
+#view-explainer .xp-who { display: flex; flex-wrap: wrap; gap: 4px; }
+#view-explainer .xp-mini {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 1px var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-1);
+  background: var(--surface-2);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+#view-explainer .xp-mini b { font-weight: 700; }
+#view-explainer .xp-mini span { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+#view-explainer .xp-tot { font-weight: 700; font-variant-numeric: tabular-nums; }
+#view-explainer .xp-orders .meter { margin-top: 4px; min-width: 3.5rem; }
+
+/* ---- zones ------------------------------------------------------------- */
+#view-explainer .xp-zonelist { display: grid; gap: var(--s-3); margin: 0; padding: 0; list-style: none; }
+#view-explainer .xp-zone {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--s-3);
+  padding: var(--s-3);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--zone, var(--line-2));
+  border-radius: var(--r-2);
+  background: var(--surface);
+}
+#view-explainer .xp-zone__name { font-weight: 600; font-size: var(--fs-md); }
+#view-explainer .xp-zone__meta { font-size: var(--fs-sm); color: var(--ink-3); }
+#view-explainer .xp-you { padding: var(--s-3) var(--s-4); }
+#view-explainer .xp-quote {
+  margin: var(--s-3) 0 0;
+  padding-left: var(--s-3);
+  border-left: 2px solid var(--line-2);
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+  font-style: italic;
+}
+#view-explainer .xp-quote cite { display: block; margin-top: 4px; font-style: normal; font-size: var(--fs-xs); color: var(--ink-3); }
+
+/* ---- misc -------------------------------------------------------------- */
+#view-explainer .xp-pre {
+  margin: 0;
+  padding: var(--s-3);
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  background: var(--sunken);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  white-space: pre;
+}
+#view-explainer .xp-seedbox {
+  display: grid;
+  gap: var(--s-1);
+  padding: var(--s-3);
+  border: 1px dashed var(--line-2);
+  border-radius: var(--r-2);
+  background: var(--surface-2);
+}
+#view-explainer .xp-seedbox code {
+  font-size: var(--fs-sm);
+  word-break: break-all;
+  color: var(--ink);
+}
+#view-explainer .xp-fallback { font-size: var(--fs-sm); color: var(--warn); }
+
+#view-explainer .xp-cta {
+  margin-top: var(--s-7);
+  padding: var(--s-5) var(--s-4);
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: var(--s-3);
+  justify-items: start;
+}
+@media (max-width: 30rem) {
+  #view-explainer .xp-cta { justify-items: stretch; }
+  #view-explainer .xp-h { font-size: var(--fs-lg); }
+  #view-explainer .xp-fig__body { padding: var(--s-3); }
+  #view-explainer .xp-cands { font-size: var(--fs-sm); }
+  #view-explainer .xp-cands th, #view-explainer .xp-cands td { padding: var(--s-2) var(--s-2); }
+  #view-explainer .xp-cands th[scope="row"] { white-space: normal; min-width: 5.5rem; }
+  #view-explainer .xp-total { font-size: var(--fs-md); }
+}
+</style>
+
+<header class="view__head">
+  <h1 class="view__title" id="xp-title" data-view-focus>How your desk gets chosen</h1>
+  <p class="view__lede">
+    You rank desks. A solver seats everyone at once. This page says what it is
+    optimising, why the answer it returns is provably the best one available,
+    and what it cannot do. Every number below is computed in your browser from
+    this year&rsquo;s published configuration &mdash; nothing here is a stock
+    illustration.
+  </p>
+</header>
+
+<div class="xp-tldr card card--quiet">
+  <div class="card__body">
+    <p class="caps">The short version</p>
+    <ul class="xp-bullets">
+      <li><strong>Speed buys nothing.</strong> When you submit is not an input.
+        First minute or last, same answer.</li>
+      <li><strong>Rank honestly, in the order you actually want.</strong> The
+        order is the only signal you can send, and it is the only one used.</li>
+      <li><strong>You will get one of the
+        <span class="num" data-xp="k">&hellip;</span> desks you asked for</strong> &mdash;
+        or the run fails loudly and a human comes back to you. There is no path
+        where you silently end up somewhere you never ranked.</li>
+    </ul>
+    <div class="btn-row" style="margin-top: var(--s-4);">
+      <button type="button" class="btn btn--ghost btn--sm" data-xp-action="skip">
+        Skip the explanation &rarr;
+      </button>
+    </div>
+  </div>
+</div>
+
+<nav class="xp-jump" aria-label="Jump to a section" data-xp-jump hidden>
+  <button type="button" data-xp-goto="xp-sec-race">Racing</button>
+  <button type="button" data-xp-goto="xp-sec-objective">The objective</button>
+  <button type="button" data-xp-goto="xp-sec-global">Global vs. greedy</button>
+  <button type="button" data-xp-goto="xp-sec-floor">The top-K floor</button>
+  <button type="button" data-xp-goto="xp-sec-ties">Ties &amp; the seed</button>
+  <button type="button" data-xp-goto="xp-sec-zones">Zones</button>
+  <button type="button" data-xp-goto="xp-sec-limits">Limitations</button>
+</nav>
+
+<div class="xp-body">
+
+  <!-- =====================================================================
+       1. Why ranking beats racing
+       ===================================================================== -->
+  <section class="xp-sec" id="xp-sec-race" tabindex="-1">
+    <h2 class="xp-h"><span>Why ranking beats racing</span></h2>
+
+    <p>
+      The previous process was a shared document that opened at an announced
+      time. Everyone piled in at once and typed their name next to a desk.
+      Whoever&rsquo;s laptop woke up first got the window.
+    </p>
+    <p>
+      That process was optimising something. Just not preference. It rewarded
+      being awake, being on a fast connection, and not being mid-observing-run
+      in Chile. It also quietly punished caring: if the one desk you actually
+      wanted was gone in the first four seconds, you were left choosing between
+      options you were indifferent about, with no way to say so.
+    </p>
+    <p>
+      Here, <strong>submission time is not an input to the answer</strong>. Not
+      as a tie-break, not as a tie-break of a tie-break. The only thing
+      timestamps are used for is deciding which of <em>your own</em> submissions
+      is the latest. Submit in the first minute or the last; change your mind
+      six times; the result is identical. The solver is a pure function of
+      (responses, config, seed) &mdash; same inputs, byte-identical output file,
+      on any machine.
+    </p>
+    <p class="xp-lead-in">
+      What replaces the race is an ordering. You say which desks you want and in
+      what order. Everyone else does the same. Then one calculation seats
+      everybody.
+    </p>
+  </section>
+
+  <!-- =====================================================================
+       2. What "maximise total satisfaction" means  (THE WORKED EXAMPLE)
+       ===================================================================== -->
+  <section class="xp-sec" id="xp-sec-objective" tabindex="-1">
+    <h2 class="xp-h"><span>What &ldquo;maximise total satisfaction&rdquo; means</span></h2>
+
+    <p>
+      Your ranking is turned into points. This is the curve in this
+      year&rsquo;s <code>scoring.json</code>, read live:
+    </p>
+
+    <ol class="xp-curve" data-xp-curve aria-label="Points awarded for each rank">
+      <li><span class="xp-curve__rank">&hellip;</span><span class="xp-curve__pts">&mdash;</span></li>
+    </ol>
+
+    <p>
+      Everyone is scored on the same curve. There is no per-person weighting, no
+      intensity field, nothing to inflate. Getting your first choice is worth
+      <b class="num" data-xp="c1">&hellip;</b>; your
+      <span data-xp="kth">last</span> is worth
+      <b class="num" data-xp="ck">&hellip;</b>.
+    </p>
+    <p>
+      The solver returns the seating that makes <strong>the sum of everyone&rsquo;s
+      points as large as it can possibly be</strong>. That sentence does more
+      work than it looks like it does, because what you <em>lose</em> by being
+      moved off a desk depends on how far down your list the next available desk
+      sits &mdash; and that differs enormously between people.
+    </p>
+
+    <p>
+      Two people. Both put the same desk first. Only one can have it. The
+      question the solver asks is not who wants it more &mdash; the curve gives
+      both of them <b class="num" data-xp="c1">&hellip;</b> for a first choice,
+      so &ldquo;wanting it more&rdquo; is not something this form can express.
+      The question is <strong>what it costs to move each of them off it</strong>.
+    </p>
+
+    <figure class="xp-fig" data-xp-figa>
+      <div class="xp-fig__head">
+        <p class="xp-fig__title">Live: two people, one contested desk</p>
+        <p class="xp-fig__hint">
+          Drag the highlighted row up or down &mdash; or tap any dashed row, use
+          the arrow buttons, or focus the row and press &uarr;/&darr;. The
+          seating below is recomputed by brute force over every possible
+          assignment each time you move it.
+        </p>
+      </div>
+      <div class="xp-fig__body">
+        <div class="xp-lists" data-xp-lists></div>
+
+        <div class="tbl-wrap">
+          <table class="tbl xp-cands" data-xp-cands>
+            <caption class="sr-only">Every possible seating and its total score</caption>
+          </table>
+        </div>
+
+        <p class="xp-why" data-xp-why></p>
+        <p class="sr-only" role="status" aria-live="polite" data-xp-live></p>
+        <p class="xp-fallback" data-xp-fallback-a hidden>
+          The interactive controls could not start, so this figure is showing a
+          fixed example. The numbers in it are still computed from the live
+          scoring curve and are still correct.
+        </p>
+      </div>
+      <figcaption class="xp-fig__foot muted">
+        Both seatings are listed, both totals are shown, and the larger one wins.
+        You can check the arithmetic without trusting the page.
+      </figcaption>
+    </figure>
+
+    <p>
+      Note what did <em>not</em> decide this: not who submitted first, not
+      seniority, not who wrote a more emphatic justification. The contested desk
+      goes to the person whose alternatives are worse. Move the highlighted row
+      so both people have the same fallback and watch the two totals become
+      exactly equal &mdash; that is the one and only situation where the
+      published seed does anything, and it is dealt with further down.
+    </p>
+  </section>
+
+  <!-- =====================================================================
+       3. Global optimum, not a sequence of local decisions
+       ===================================================================== -->
+  <section class="xp-sec" id="xp-sec-global" tabindex="-1">
+    <h2 class="xp-h"><span>A global optimum, not a sequence of local decisions</span></h2>
+
+    <p>
+      There is an obvious way to do this, and it is wrong. Take everyone in some
+      order; give the first person their best available desk, then the second,
+      and so on. That is <strong>serial dictatorship</strong>, and it is exactly
+      what the shared document was &mdash; the order was just &ldquo;who clicked
+      first&rdquo;.
+    </p>
+    <p>
+      It is fast, it is easy to explain, and it gives a different answer
+      depending on the order &mdash; sometimes a much worse one. Below is a
+      small example with <span class="num" data-xp="fb-people">&hellip;</span>
+      people and <span class="num" data-xp="fb-desks">&hellip;</span> desks. All
+      <span class="num" data-xp="fb-orders">&hellip;</span> pick orders are run
+      out, then compared against the answer this system gives.
+    </p>
+
+    <figure class="xp-fig" data-xp-figb>
+      <div class="xp-fig__head">
+        <p class="xp-fig__title">Going in order vs. solving all at once</p>
+        <p class="xp-fig__hint" data-xp-figb-hint>
+          Same three people, same three desks, same curve. Only the pick order
+          changes.
+        </p>
+      </div>
+      <div class="xp-fig__body">
+        <div data-xp-figb-prefs></div>
+        <div class="tbl-wrap">
+          <table class="tbl xp-orders" data-xp-orders>
+            <caption class="sr-only">Total score for each pick order, and for the global optimum</caption>
+          </table>
+        </div>
+        <p class="xp-fallback" data-xp-fallback-b hidden>
+          This figure could not be computed from the published curve.
+        </p>
+      </div>
+      <figcaption class="xp-fig__foot muted" data-xp-figb-caption></figcaption>
+    </figure>
+
+    <p>
+      Every greedy row above is a sequence of decisions that each looked fine at
+      the time. The first person takes their first choice; nothing in that
+      moment tells them the desk they just took was the only tolerable option
+      left for someone else. The damage lands on whoever has the least
+      flexibility, and which person that is depends entirely on an order nobody
+      agreed to.
+    </p>
+    <p>
+      This system makes no local decisions at all. It builds the matrix
+      <code>points[person, desk]</code>, blanks out every cell that is not in
+      that person&rsquo;s top <span class="num" data-xp="k">&hellip;</span> or
+      not in a zone they are allowed to sit in, and solves the resulting
+      rectangular <em>linear assignment problem</em> &mdash; the standard
+      operations-research problem of matching two sets one-to-one at minimum
+      cost &mdash; with the <strong>Jonker&ndash;Volgenant</strong> algorithm
+      (<code>scipy.optimize.linear_sum_assignment</code>).
+    </p>
+    <p>
+      &ldquo;Solves&rdquo; has its strict meaning here.
+      <strong>Not a heuristic.</strong> Not annealing, not &ldquo;good enough
+      after ten thousand iterations&rdquo;. The algorithm returns an assignment
+      together with a set of dual prices that certifies it: a short arithmetic
+      check anyone can redo, which proves no other assignment scores higher. It
+      runs in polynomial time, so considering every seating at once costs
+      seconds. For scale, with
+      <b class="num" data-xp="pool-desks">&hellip;</b> desks in this
+      year&rsquo;s pool and <b class="num" data-xp="pool-people">&hellip;</b>
+      people on the roster who are not keeping a desk, there are roughly
+      <b data-xp="pool-ways">&hellip;</b> ways to seat everybody before
+      eligibility and top-<span class="num" data-xp="k">&hellip;</span> narrow
+      it down. None of them are enumerated. (The two figures on this page
+      <em>do</em> enumerate, because they are small enough that you can check
+      them by hand &mdash; that is the point of them.)
+    </p>
+  </section>
+
+  <!-- =====================================================================
+       4. The top-K floor
+       ===================================================================== -->
+  <section class="xp-sec" id="xp-sec-floor" tabindex="-1">
+    <h2 class="xp-h"><span>The guarantee: nothing outside your top
+      <span class="num" data-xp="k">&hellip;</span></span></h2>
+
+    <p>
+      You rank <span class="num" data-xp="k">&hellip;</span> desks. Nobody is
+      assigned a desk outside their own submitted
+      <span class="num" data-xp="k">&hellip;</span>. This is structural rather
+      than aspirational: a desk you did not rank has no cell in your row of the
+      matrix, so there is no arithmetic that could put you there. It is then
+      asserted again after the solve, in case that sentence ever stops being
+      true.
+    </p>
+    <p>
+      If the floor cannot be met &mdash; if some group of people collectively
+      ranked fewer desks than there are of them &mdash; <strong>the run
+      fails</strong>. Non-zero exit code, no assignment file written. What comes
+      out instead is a diagnostic naming the smallest group that is
+      over-subscribed:
+    </p>
+
+    <pre class="xp-pre">6 people can only reach 4 desks between them:
+  people: ...
+  desks:  ...
+  short by: 2</pre>
+
+    <p>
+      &hellip;plus a round-2 file listing exactly those people and the desks
+      genuinely still open to them. The coordinator comes back to that group and
+      asks for more ranks. Everyone else&rsquo;s assignment is deliberately
+      <em>not</em> frozen at that point: publishing it would tell the round-2
+      people precisely what to avoid, which is an invitation to rank
+      strategically rather than honestly.
+    </p>
+    <p>
+      The failure mode this rules out is the one that actually destroys trust:
+      quietly handing somebody their ninth choice and hoping they do not notice.
+      A loud failure with names in it is worse for the coordinator and better
+      for everyone else, so that is the trade the system makes.
+    </p>
+  </section>
+
+  <!-- =====================================================================
+       5. Ties and the seed
+       ===================================================================== -->
+  <section class="xp-sec" id="xp-sec-ties" tabindex="-1">
+    <h2 class="xp-h"><span>Ties, and why the seed is published first</span></h2>
+
+    <p>
+      Two different seatings can score exactly the same total. Something has to
+      choose. Here is exactly what does, and exactly how much it is capable of.
+    </p>
+
+    <div class="xp-seedbox" data-xp-seedbox>
+      <span class="caps">This year&rsquo;s tie-break seed</span>
+      <code data-xp="seed">&hellip;</code>
+      <span class="small muted" data-xp="seed-when">&hellip;</span>
+    </div>
+
+    <p>
+      It is announced before the form opens. SHA-256 of that string gives an
+      integer; that integer seeds NumPy&rsquo;s PCG64 generator; that stream
+      does two things, and only two:
+    </p>
+    <ul class="xp-bullets">
+      <li><strong>It shuffles the rows and columns</strong> before solving and
+        un-shuffles after, so the answer can never depend on where you happen to
+        land in an alphabetised roster.</li>
+      <li><strong>It adds a tiny nudge</strong> to every cell of the points
+        matrix.</li>
+    </ul>
+    <p>
+      The nudge is the part that sounds alarming, so here is the bound. Curve
+      values are converted to exact integers before anything else happens, which
+      means <strong>any two achievable totals differ by at least 1</strong>.
+      Each nudge is drawn from <code>[0, &epsilon;)</code> with
+      <code>&epsilon; = 1 / (2(n+1))</code> for <code>n</code> people, so the
+      total nudge across a whole seating is strictly less than
+      <code>&frac12;</code>. Half a point cannot overturn a gap of a whole
+      point. The nudge is therefore able to choose among assignments that are
+      <em>exactly</em> tied, and is arithmetically incapable of anything else.
+      The solver re-checks <code>n&middot;&epsilon; &lt; 1</code> against the
+      actual matrix at runtime, and separately verifies that the un-nudged total
+      of the answer it returns equals the un-nudged optimum.
+    </p>
+    <p>
+      Plainly: <strong>the seed cannot make you lose a contest you won. It can
+      only settle a genuine draw.</strong>
+    </p>
+    <p>
+      Why not break ties alphabetically, or by year, or by seniority? Because
+      that is not a tie-break, it is a standing advantage. &ldquo;Earliest
+      surname wins every draw&rdquo; means the same handful of people win every
+      draw, this year and every year after, and the effect compounds because
+      those are the same people every time. A published random seed spreads
+      draws around; a name does not. Publishing it <em>in advance</em> is what
+      makes the claim checkable rather than a promise: anyone can re-run the
+      solver with the announced seed and the published hash of the response file
+      and get the same result, and re-running with a different seed produces a
+      visibly different output hash.
+    </p>
+  </section>
+
+  <!-- =====================================================================
+       6. Zones
+       ===================================================================== -->
+  <section class="xp-sec" id="xp-sec-zones" tabindex="-1">
+    <h2 class="xp-h"><span>Why some desks are not offered to you</span></h2>
+
+    <p>
+      The room is divided into zones, and not every zone is open to everyone.
+      This is a rule table in <code>eligibility.json</code>, evaluated top to
+      bottom, first match wins &mdash; not a branch buried in the code. Changing
+      who may sit where is a config edit that shows up in the commit history.
+      Here is what the rules currently resolve to, read from the live config:
+    </p>
+
+    <ul class="xp-zonelist" data-xp-zones></ul>
+
+    <div class="tbl-wrap" style="margin-top: var(--s-4);">
+      <table class="tbl" data-xp-groups>
+        <caption class="sr-only">Which roster groups may sit in which zones</caption>
+      </table>
+    </div>
+
+    <div class="card card--quiet xp-you" data-xp-you hidden></div>
+
+    <p>
+      An ineligible desk is not scored low &mdash; it is <em>absent</em> from
+      your row of the matrix. No amount of total-satisfaction arithmetic can
+      seat you in one, and the server re-checks it when you submit rather than
+      trusting this page.
+    </p>
+  </section>
+
+  <!-- =====================================================================
+       7. Limitations
+       ===================================================================== -->
+  <section class="xp-sec" id="xp-sec-limits" tabindex="-1">
+    <h2 class="xp-h"><span>What this does not do</span></h2>
+
+    <p>
+      The objective is a sum, so it maximises the total and not the worst
+      individual outcome: it will accept one person landing further down their
+      list if that buys two other people their first choice, which is a real
+      value judgement and not a mathematical necessity &mdash; the published
+      report prints the full rank histogram so you can see exactly when that
+      happened. The shape of the curve is likewise a departmental choice: a
+      steeper one protects first choices harder at the cost of the tail, so the
+      report re-runs the identical responses under the comparison curves in
+      <code>scoring.json</code> and shows whether the answer was even sensitive
+      to it. Because the curve is fixed and public, the mechanism is
+      <em>not</em> strategy-proof in the formal sense &mdash; somebody who
+      already knew everyone else&rsquo;s list could in principle do better by
+      misreporting theirs &mdash; though nobody can see anyone else&rsquo;s
+      list, and a dishonest ranking mostly injures the person who submitted it.
+      It cannot conjure desks: if demand collapses onto too few of them it fails
+      loudly rather than fudging. And it takes as given the things people
+      actually argue about &mdash; who keeps their desk, where the zone divider
+      sits, how many ranks are required &mdash; all of which are policy fixed
+      before the form opens, not outputs of the algorithm.
+    </p>
+  </section>
+
+</div><!-- /.xp-body -->
+
+<div class="xp-cta">
+  <button type="button" class="btn btn--primary btn--lg" data-xp-action="ready">
+    I&rsquo;m ready &mdash; choose my desks
+  </button>
+  <p class="small muted" style="margin:0;">
+    You can come back to this page at any time from the progress bar at the top,
+    and you can change your ranking until the deadline.
+  </p>
+</div>
+
+</section>

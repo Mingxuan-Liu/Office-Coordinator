@@ -1,0 +1,13 @@
+# Files in frontend/ that must NOT be pushed to Apps Script.
+#
+# mock_server.html is the dev-only stand-in for google.script.run. Index.html
+# references it only from its local-preview loader (a client-side fetch that
+# never runs under Apps Script), so pushing it would be harmless — it bails out
+# immediately when google.script.run exists — but there is no reason to ship a
+# fake server alongside the real one.
+mock_server.html
+**/mock_server.html
+
+# Documentation, not code.
+DEPLOY.md
+**/DEPLOY.md

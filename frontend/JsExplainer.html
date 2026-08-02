@@ -1,0 +1,1197 @@
+<!-- ===========================================================================
+     JsExplainer.html — the interactive figures on the explainer page.
+
+     Everything numeric on the explainer comes from here, and everything here
+     comes from APP.state.bootstrap. There is no hard-coded K, curve value, desk
+     count, zone name, zone count or roster size anywhere in this file.
+
+     The two illustrations ARE authored (that is what an illustration is), but
+     they are declared as data at the top and the engine below never learns how
+     big they are: it enumerates people.length and desks.length, and it reads
+     every point value out of the published curve. If you change K in
+     scoring.json, both figures re-shape themselves.
+
+     Degradation: render() draws both figures as static, correct tables with no
+     interactivity. enhance() then layers drag / arrow-key / tap-to-place on top
+     inside its own try-catch. If enhance() throws, the tables are untouched and
+     still correct, and a note says so.
+     =========================================================================== -->
+<script>
+(function (global) {
+  'use strict';
+
+  var doc = global.document;
+  var APP = global.APP;
+  if (!APP) {
+    if (global.console) { console.error('[explainer] APP is missing; JsCore must load first.'); }
+    return;
+  }
+
+  var VIEW = 'explainer';
+  var EPS = 1e-9;
+
+  /* ======================================================================
+     0. Small helpers
+     ====================================================================== */
+
+  function root() { return doc.getElementById('view-explainer'); }
+  function q(sel, scope) { return (scope || root() || doc).querySelector(sel); }
+  function qa(sel, scope) {
+    var host = scope || root() || doc;
+    return Array.prototype.slice.call(host.querySelectorAll(sel));
+  }
+  function esc(v) { return APP.util.esc(v); }
+  function ordinal(n) { return APP.util.ordinal(n); }
+  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+  function reduced() {
+    if (!global.matchMedia) { return false; }
+    try { return global.matchMedia('(prefers-reduced-motion: reduce)').matches; }
+    catch (e) { return false; }
+  }
+
+  /* Curve values may be decimals (scoring.json allows them), so every printed
+     number goes through here: round off float dust, drop trailing zeros. */
+  function fmt(n) {
+    if (n === null || n === undefined || isNaN(n)) { return '—'; }
+    var r = Math.round(Number(n) * 1e6) / 1e6;
+    return String(r);
+  }
+  function pts(n) {
+    var v = Number(n);
+    return fmt(v) + (Math.abs(v - 1) < EPS ? ' pt' : ' pts');
+  }
+
+  function elem(tag, cls, html) {
+    var n = doc.createElement(tag);
+    if (cls) { n.className = cls; }
+    if (html !== undefined && html !== null) { n.innerHTML = html; }
+    return n;
+  }
+  function closest(node, sel) {
+    while (node && node.nodeType === 1) {
+      if (node.matches ? node.matches(sel) : false) { return node; }
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  var ICON_GRIP =
+    '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">' +
+    '<circle cx="6" cy="3.5" r="1.35"/><circle cx="10" cy="3.5" r="1.35"/>' +
+    '<circle cx="6" cy="8" r="1.35"/><circle cx="10" cy="8" r="1.35"/>' +
+    '<circle cx="6" cy="12.5" r="1.35"/><circle cx="10" cy="12.5" r="1.35"/></svg>';
+  var ICON_UP =
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10l4-4 4 4"/></svg>';
+  var ICON_DOWN =
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>';
+
+  /* ======================================================================
+     1. Config access — the single door to the bootstrap
+     ====================================================================== */
+
+  function boot() { return APP.state.bootstrap || null; }
+
+  function curve() {
+    var b = boot();
+    var c = (b && b.curve) || APP.curve || [];
+    if (Object.prototype.toString.call(c) !== '[object Array]') { return []; }
+    var out = [];
+    for (var i = 0; i < c.length; i++) {
+      var v = Number(c[i]);
+      if (isNaN(v)) { return []; }
+      out.push(v);
+    }
+    return out;
+  }
+  function K() {
+    var b = boot();
+    var k = b ? parseInt(b.k, 10) : NaN;
+    if (isNaN(k) || k <= 0) { k = curve().length; }
+    return k > 0 ? k : 0;
+  }
+  /* Points for a 1-based rank. Outside the curve there are no points, because
+     outside the curve there is no cell in the matrix. */
+  function pointsForRank(rank) {
+    var c = curve();
+    return (rank >= 1 && rank <= c.length) ? c[rank - 1] : null;
+  }
+
+  /* ======================================================================
+     2. The engine: brute force over assignments
+        Generic in both dimensions. Nothing here knows the figures are small.
+     ====================================================================== */
+
+  /* Calls back with every injective map people -> desks, as an array of desk
+     indices of length nPeople. Order of enumeration is lexicographic and
+     stable, so table rows never jump around. */
+  function eachAssignment(nPeople, nDesks, cb) {
+    var pick = [];
+    var used = [];
+    (function step(p) {
+      if (p === nPeople) { cb(pick.slice()); return; }
+      for (var d = 0; d < nDesks; d++) {
+        if (used[d]) { continue; }
+        used[d] = true; pick[p] = d;
+        step(p + 1);
+        used[d] = false;
+      }
+    }(0));
+  }
+
+  /* points[p][d] === null means "not allowed" — that assignment is skipped
+     entirely rather than scored badly. */
+  function enumerate(points, nPeople, nDesks) {
+    var rows = [];
+    var best = null;
+    eachAssignment(nPeople, nDesks, function (cols) {
+      var total = 0;
+      for (var p = 0; p < nPeople; p++) {
+        var v = points[p][cols[p]];
+        if (v === null || v === undefined) { return; }
+        total += v;
+      }
+      rows.push({ cols: cols, total: total });
+      if (best === null || total > best + EPS) { best = total; }
+    });
+    var winners = [];
+    for (var i = 0; i < rows.length; i++) {
+      rows[i].isBest = best !== null && Math.abs(rows[i].total - best) < EPS;
+      if (rows[i].isBest) { winners.push(i); }
+    }
+    return { rows: rows, best: best, winners: winners, tied: winners.length > 1 };
+  }
+
+  function permutations(n) {
+    var out = [];
+    var cur = [], used = [];
+    (function step() {
+      if (cur.length === n) { out.push(cur.slice()); return; }
+      for (var i = 0; i < n; i++) {
+        if (used[i]) { continue; }
+        used[i] = true; cur.push(i);
+        step();
+        cur.pop(); used[i] = false;
+      }
+    }());
+    return out;
+  }
+
+  /* Serial dictatorship: each person in turn takes their best remaining desk. */
+  function greedy(points, order, nDesks) {
+    var used = {}, cols = [], total = 0;
+    for (var i = 0; i < order.length; i++) {
+      var p = order[i], bestD = -1, bestV = null;
+      for (var d = 0; d < nDesks; d++) {
+        if (used[d]) { continue; }
+        var v = points[p][d];
+        if (v === null || v === undefined) { continue; }
+        if (bestV === null || v > bestV + EPS) { bestV = v; bestD = d; }
+      }
+      cols[p] = bestD;
+      if (bestD >= 0) { used[bestD] = true; total += bestV; }
+    }
+    return { cols: cols, total: total };
+  }
+
+  /* ======================================================================
+     3. The two authored illustrations, declared as data
+     ====================================================================== */
+
+  /* Figure A. Two people, two desks. Both rank the contested desk first; the
+     only variable is how far down each person's list the other desk sits. */
+  var FIG_A = {
+    people: [{ name: 'Ana' }, { name: 'Bo' }],
+    desks: [{ name: 'Window desk', short: 'Window' }, { name: 'Corner desk', short: 'Corner' }],
+    contested: 0,       // index of the desk both people rank first
+    movable: 1,         // index of the desk the reader can re-rank
+    rank: []            // rank of desks[movable] per person; filled from K
+  };
+
+  function figADefaults() {
+    var k = K();
+    /* Person 0 has a shallow drop-off, person 1 a steep one — the whole point
+       of the figure. Both derived from K so this survives a curve change. */
+    FIG_A.rank = [
+      Math.min(2, k),
+      k >= 4 ? k - 1 : k
+    ];
+  }
+
+  /* Figure B. Three people, three desks, and the same curve. Ranks are given
+     as a function of K so the illustration survives a change to scoring.json.
+     Person 1 is the one with nowhere good to fall back to. */
+  var FIG_B = {
+    people: ['Cai', 'Dev', 'Eve'],
+    desks: ['Desk X', 'Desk Y', 'Desk Z'],
+    ranksFor: function (k) {
+      var third = Math.min(3, k);
+      return [
+        [1, Math.min(2, k), third],
+        [1, (k >= 4 ? k - 1 : Math.min(2, k)), k],
+        [Math.min(2, k), 1, third]
+      ];
+    }
+  };
+
+  function ranksValid(rows, k) {
+    for (var i = 0; i < rows.length; i++) {
+      var seen = {};
+      for (var j = 0; j < rows[i].length; j++) {
+        var r = rows[i][j];
+        if (!(r >= 1 && r <= k) || seen[r]) { return false; }
+        seen[r] = true;
+      }
+    }
+    return true;
+  }
+
+  /* ======================================================================
+     4. Scalar injection — every number that appears in the prose
+     ====================================================================== */
+
+  var HTML_KEYS = { 'pool-ways': true };
+
+  function setKey(key, value) {
+    qa('[data-xp="' + key + '"]').forEach(function (n) {
+      if (HTML_KEYS[key]) { n.innerHTML = value; } else { n.textContent = value; }
+    });
+  }
+
+  function bigWays(nA, nB) {
+    var hi = Math.max(nA, nB), lo = Math.min(nA, nB);
+    if (lo <= 0 || hi <= 0) { return null; }
+    var log10 = 0;
+    for (var i = 0; i < lo; i++) { log10 += Math.log(hi - i) / Math.LN10; }
+    if (log10 < 15) {
+      var exact = 1;
+      for (var j = 0; j < lo; j++) { exact *= (hi - j); }
+      return String(exact).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    }
+    var e = Math.floor(log10);
+    var m = Math.pow(10, log10 - e);
+    return m.toFixed(1) + ' × 10<sup>' + e + '</sup>';
+  }
+
+  function renderScalars() {
+    var c = curve(), k = K();
+
+    setKey('k', k ? String(k) : '—');
+    setKey('kth', k ? ordinal(k) : 'last');
+    setKey('c1', c.length ? fmt(c[0]) : '—');
+    setKey('ck', c.length ? fmt(c[c.length - 1]) : '—');
+
+    /* Scoring curve strip. One entry per rank, however many that is. */
+    var strip = q('[data-xp-curve]');
+    if (strip) {
+      strip.innerHTML = '';
+      c.forEach(function (v, i) {
+        var li = elem('li');
+        li.innerHTML =
+          '<span class="xp-curve__rank">' + esc(ordinal(i + 1)) + '</span>' +
+          '<span class="xp-curve__pts">' + esc(fmt(v)) + '</span>' +
+          '<span class="xp-curve__unit">' + (Math.abs(v - 1) < EPS ? 'point' : 'points') + '</span>';
+        strip.appendChild(li);
+      });
+      if (!c.length) {
+        strip.innerHTML = '<li><span class="xp-curve__rank">curve</span>' +
+          '<span class="xp-curve__pts">—</span>' +
+          '<span class="xp-curve__unit">unavailable</span></li>';
+      }
+    }
+
+    /* Pool size — derived, never stated. */
+    var locked = {};
+    APP.lockedDeskIds().forEach(function (id) { locked[id] = true; });
+    var poolDesks = APP.desks().filter(function (d) {
+      return d.available !== false && !locked[d.id];
+    }).length;
+    var poolPeople = APP.rosterNames().filter(function (r) { return !r.keepsDesk; }).length;
+
+    setKey('pool-desks', String(poolDesks));
+    setKey('pool-people', String(poolPeople));
+    var ways = bigWays(poolDesks, poolPeople);
+    setKey('pool-ways', ways || '—');
+
+    /* The seed, verbatim, plus when it was committed. */
+    var b = boot() || {};
+    var seed = b.seedString || APP.seedString || '';
+    setKey('seed', seed || '(not set in scoring.json)');
+    var when = b.seedCommittedAt;
+    if (when) {
+      setKey('seed-when', 'Announced ' + APP.util.formatWhen(when) + ', before this form opened.');
+    } else {
+      setKey('seed-when',
+        'No commitment timestamp is recorded in scoring.json yet — ' +
+        'the seed above is only meaningful once the coordinator has announced it publicly.');
+    }
+  }
+
+  /* ======================================================================
+     5. Figure A — the live worked example
+     ====================================================================== */
+
+  var A = {
+    built: false,
+    interactive: false,
+    listNodes: [],     // per person: { list, rows: [ {li, rank, label, nudge, up, down, grip} ] }
+    candRows: [],      // per enumerated assignment: { tr, cells, totalEl, slot }
+    order: [],         // the enumerated assignments, in table order
+    pill: null,
+    lastTotals: []
+  };
+
+  function figAPoints() {
+    var pointsMat = [];
+    for (var p = 0; p < FIG_A.people.length; p++) {
+      var row = [];
+      for (var d = 0; d < FIG_A.desks.length; d++) {
+        row.push(pointsForRank(figARankOf(p, d)));
+      }
+      pointsMat.push(row);
+    }
+    return pointsMat;
+  }
+  function figARankOf(person, desk) {
+    if (desk === FIG_A.contested) { return 1; }
+    if (desk === FIG_A.movable) { return FIG_A.rank[person]; }
+    return null;
+  }
+
+  function buildFigA() {
+    var host = q('[data-xp-lists]');
+    var table = q('[data-xp-cands]');
+    if (!host || !table) { return false; }
+    if (!curve().length || K() < 2) { return false; }
+
+    figADefaults();
+    var k = K();
+
+    /* --- the ranking lists --------------------------------------------- */
+    host.innerHTML = '';
+    A.listNodes = [];
+    FIG_A.people.forEach(function (person, pi) {
+      var wrap = elem('div', 'xp-person');
+      wrap.appendChild(elem('div', 'xp-person__name',
+        '<span>' + esc(person.name) + '’s ranking</span>' +
+        '<span class="xp-person__note">top ' + esc(k) + '</span>'));
+
+      var list = elem('ol', 'xp-list');
+      list.setAttribute('data-person', String(pi));
+      list.setAttribute('aria-label', person.name + '’s ranked list');
+
+      var rows = [];
+      for (var i = 0; i < k; i++) {
+        var li = elem('li', 'xp-row');
+        li.setAttribute('data-idx', String(i));
+        var rank = elem('span', 'xp-row__rank', String(i + 1));
+        var label = elem('span', 'xp-row__label', '');
+        var ptsEl = elem('span', 'xp-row__pts', '');
+        var nudge = elem('span', 'xp-nudge');
+        var up = elem('button', null, ICON_UP);
+        up.type = 'button'; up.setAttribute('data-xp-ctl', 'up');
+        var down = elem('button', null, ICON_DOWN);
+        down.type = 'button'; down.setAttribute('data-xp-ctl', 'down');
+        var grip = elem('span', 'xp-grip', ICON_GRIP);
+        grip.setAttribute('data-xp-ctl', 'grip');
+        grip.setAttribute('aria-hidden', 'true');
+        nudge.appendChild(grip); nudge.appendChild(up); nudge.appendChild(down);
+        li.appendChild(rank); li.appendChild(label); li.appendChild(ptsEl); li.appendChild(nudge);
+        list.appendChild(li);
+        rows.push({ li: li, rank: rank, label: label, pts: ptsEl, nudge: nudge, up: up, down: down, grip: grip });
+      }
+      wrap.appendChild(list);
+      host.appendChild(wrap);
+      A.listNodes.push({ list: list, rows: rows, person: pi });
+    });
+
+    /* --- the outcome table --------------------------------------------- */
+    var nP = FIG_A.people.length, nD = FIG_A.desks.length;
+    A.order = [];
+    eachAssignment(nP, nD, function (cols) { A.order.push(cols); });
+
+    var head = '<thead><tr><th scope="col">Seating</th>';
+    FIG_A.people.forEach(function (p) { head += '<th scope="col">' + esc(p.name) + '</th>'; });
+    head += '<th scope="col" class="num">Total</th></tr></thead>';
+
+    table.innerHTML = head + '<tbody></tbody>';
+    var tbody = table.querySelector('tbody');
+    A.candRows = [];
+
+    A.order.forEach(function (cols, ci) {
+      var tr = elem('tr');
+      tr.setAttribute('data-xp-cand', String(ci));
+      var th = elem('th'); th.setAttribute('scope', 'row');
+      tr.appendChild(th);
+      var cells = [];
+      for (var p = 0; p < nP; p++) {
+        var td = elem('td');
+        tr.appendChild(td);
+        cells.push(td);
+      }
+      var tot = elem('td', 'num');
+      var totalEl = elem('span', 'xp-total', '—');
+      var slot = elem('span', 'xp-slot');
+      tot.appendChild(totalEl); tot.appendChild(slot);
+      tr.appendChild(tot);
+      tbody.appendChild(tr);
+      A.candRows.push({ tr: tr, th: th, cells: cells, totalEl: totalEl, slot: slot });
+    });
+
+    A.pill = elem('span', 'xp-chosen', '✓ chosen');
+    A.lastTotals = [];
+    A.built = true;
+    updateFigA({ silent: true });
+    return true;
+  }
+
+  function figAAnnounce(text) {
+    var live = q('[data-xp-live]');
+    if (live) { live.textContent = text; }
+  }
+
+  function updateFigA(opts) {
+    opts = opts || {};
+    if (!A.built) { return; }
+    var k = K();
+    var c = curve();
+    var contested = FIG_A.desks[FIG_A.contested];
+    var movable = FIG_A.desks[FIG_A.movable];
+
+    /* --- lists ---------------------------------------------------------- */
+    A.listNodes.forEach(function (node, pi) {
+      var rankOfMovable = FIG_A.rank[pi];
+      node.rows.forEach(function (r, i) {
+        var isPinned = (i === 0);
+        var isMovable = (i + 1 === rankOfMovable);
+        r.li.className = 'xp-row' +
+          (isPinned ? ' xp-row--pinned' : '') +
+          (isMovable ? ' xp-row--move' : '') +
+          (!isPinned && !isMovable ? ' xp-row--filler' + (A.interactive ? ' xp-row--slot' : '') : '');
+        r.rank.textContent = String(i + 1);
+
+        if (isPinned) {
+          r.label.textContent = contested.short || contested.name;
+          r.pts.textContent = pts(c[0]);
+        } else if (isMovable) {
+          r.label.textContent = movable.short || movable.name;
+          r.pts.textContent = pts(pointsForRank(i + 1));
+        } else {
+          r.label.innerHTML = '<span class="muted">another desk</span>';
+          r.pts.textContent = fmt(pointsForRank(i + 1));
+        }
+
+        var showCtl = isMovable && A.interactive;
+        r.nudge.setAttribute('data-off', showCtl ? '0' : '1');
+        if (showCtl) {
+          r.up.disabled = (i + 1 <= 2);
+          r.down.disabled = (i + 1 >= k);
+          r.up.setAttribute('aria-label',
+            'Move ' + movable.name + ' up in ' + FIG_A.people[pi].name + '’s ranking');
+          r.down.setAttribute('aria-label',
+            'Move ' + movable.name + ' down in ' + FIG_A.people[pi].name + '’s ranking');
+          r.li.setAttribute('tabindex', '0');
+          r.li.setAttribute('data-xp-ctl', 'row');
+          r.li.setAttribute('data-person', String(pi));
+          r.li.setAttribute('role', 'button');
+          r.li.setAttribute('aria-label',
+            movable.name + ' is ' + FIG_A.people[pi].name + '’s ' + ordinal(i + 1) +
+            ' choice. Press the up and down arrow keys to move it.');
+        } else {
+          r.li.removeAttribute('tabindex');
+          r.li.removeAttribute('role');
+          r.li.removeAttribute('aria-label');
+          r.li.removeAttribute('data-xp-ctl');
+          if (A.interactive && !isPinned) {
+            r.li.setAttribute('data-person', String(pi));
+            r.li.title = 'Put ' + movable.name + ' here (' + ordinal(i + 1) + ' choice)';
+          } else {
+            r.li.removeAttribute('title');
+          }
+        }
+      });
+    });
+
+    /* --- solve ---------------------------------------------------------- */
+    var res = enumerate(figAPoints(), FIG_A.people.length, FIG_A.desks.length);
+
+    A.order.forEach(function (cols, ci) {
+      var row = A.candRows[ci];
+      var found = null;
+      for (var i = 0; i < res.rows.length; i++) {
+        if (res.rows[i].cols.join(',') === cols.join(',')) { found = res.rows[i]; break; }
+      }
+
+      /* Row header names whoever ends up with the contested desk — that is the
+         only thing that distinguishes these seatings. */
+      var winnerOfContested = -1;
+      for (var p = 0; p < cols.length; p++) { if (cols[p] === FIG_A.contested) { winnerOfContested = p; } }
+      row.th.innerHTML = winnerOfContested >= 0
+        ? esc(contested.name) + ' → <b>' + esc(FIG_A.people[winnerOfContested].name) + '</b>'
+        : 'nobody takes the ' + esc(contested.name);
+
+      cols.forEach(function (d, p) {
+        var rank = figARankOf(p, d);
+        var v = pointsForRank(rank);
+        row.cells[p].innerHTML =
+          '<span class="xp-cell__desk">' + esc(FIG_A.desks[d].name) + '</span>' +
+          '<span class="xp-cell__meta">' + esc(ordinal(rank)) + ' choice</span>' +
+          '<span class="xp-cell__pts">' + esc(pts(v)) + '</span>';
+      });
+
+      var totalText = found ? fmt(found.total) : '—';
+      var changed = A.lastTotals[ci] !== undefined && A.lastTotals[ci] !== totalText;
+      row.totalEl.textContent = totalText;
+      A.lastTotals[ci] = totalText;
+      if (changed && !opts.silent && !reduced()) { flash(row.totalEl); }
+
+      row.tr.classList.toggle('is-win', !!(found && found.isBest));
+      row.slot.textContent = '';
+    });
+
+    /* --- the chosen marker, animated between rows ----------------------- */
+    if (res.tied) {
+      if (A.pill.parentNode) { A.pill.parentNode.removeChild(A.pill); }
+      res.winners.forEach(function (wi) {
+        var tie = elem('span', 'xp-chosen xp-chosen--tie', 'exact tie');
+        A.candRows[wi].slot.appendChild(tie);
+      });
+    } else if (res.winners.length === 1) {
+      moveChosen(A.candRows[res.winners[0]].slot);
+    }
+
+    /* --- the arithmetic, in words --------------------------------------- */
+    renderWhy(res);
+
+    if (!opts.silent) {
+      var summary;
+      if (res.tied) {
+        summary = 'Exact tie at ' + fmt(res.best) + ' points. The published seed decides.';
+      } else if (res.winners.length === 1) {
+        summary = A.candRows[res.winners[0]].th.textContent.replace(/\s+/g, ' ') +
+                  ', total ' + fmt(res.best) + ' points.';
+      } else {
+        summary = 'No valid seating.';
+      }
+      figAAnnounce(summary);
+    }
+  }
+
+  function flash(node) {
+    node.classList.remove('is-flash');
+    void node.offsetWidth;
+    node.classList.add('is-flash');
+    var off = function () { node.classList.remove('is-flash'); node.removeEventListener('animationend', off); };
+    node.addEventListener('animationend', off);
+  }
+
+  /* FLIP: measure, move, invert, release. Skipped under reduced motion. */
+  function moveChosen(slot) {
+    var pill = A.pill;
+    if (!pill) { return; }
+    if (pill.parentNode === slot) { return; }
+    var first = pill.parentNode ? pill.getBoundingClientRect() : null;
+    slot.appendChild(pill);
+    if (!first || reduced()) { return; }
+    var last = pill.getBoundingClientRect();
+    var dx = first.left - last.left, dy = first.top - last.top;
+    if (!dx && !dy) { return; }
+    pill.style.transition = 'none';
+    pill.style.transform = 'translate(' + dx + 'px, ' + dy + 'px)';
+    void pill.offsetWidth;
+    pill.style.transition = 'transform 340ms cubic-bezier(0.2, 0.8, 0.2, 1)';
+    pill.style.transform = 'translate(0, 0)';
+    var clear = function () {
+      pill.style.transition = '';
+      pill.style.transform = '';
+      pill.removeEventListener('transitionend', clear);
+    };
+    pill.addEventListener('transitionend', clear);
+    global.setTimeout(clear, 500);
+  }
+
+  function renderWhy(res) {
+    var why = q('[data-xp-why]');
+    if (!why) { return; }
+    var c = curve();
+    var contested = FIG_A.desks[FIG_A.contested];
+    var top = c[0];
+
+    /* Cost of moving each person off the contested desk = their points there
+       minus the best they can do anywhere else. */
+    var loss = FIG_A.people.map(function (_, p) {
+      var here = pointsForRank(figARankOf(p, FIG_A.contested));
+      var alt = null;
+      for (var d = 0; d < FIG_A.desks.length; d++) {
+        if (d === FIG_A.contested) { continue; }
+        var v = pointsForRank(figARankOf(p, d));
+        if (v !== null && (alt === null || v > alt)) { alt = v; }
+      }
+      return { p: p, here: here, alt: alt, loss: (alt === null ? here : here - alt) };
+    });
+
+    var byLoss = loss.slice().sort(function (a, b) { return b.loss - a.loss; });
+    var keeper = byLoss[0], mover = byLoss[byLoss.length - 1];
+    var name = function (i) { return esc(FIG_A.people[i].name); };
+    var n = function (v) { return '<b class="num">' + esc(fmt(v)) + '</b>'; };
+
+    var head = FIG_A.people.map(function (p, i) {
+      var rank = FIG_A.rank[i];
+      return name(i) + '’s next-best desk is their ' + esc(ordinal(rank)) +
+             ' choice, so moving ' + name(i) + ' off the ' + esc(contested.name) +
+             ' costs ' + n(top) + ' − ' + n(loss[i].alt) + ' = ' + n(loss[i].loss) + '.';
+    }).join(' ');
+
+    if (res.tied) {
+      why.className = 'xp-why is-tie';
+      why.innerHTML = head +
+        ' The two seatings therefore score <b class="num">' + esc(fmt(res.best)) +
+        '</b> either way. Nothing in anyone’s ranking separates them — this is an ' +
+        '<strong>exact tie</strong>, and it is the only situation in which the published ' +
+        'seed does anything at all.';
+      return;
+    }
+
+    var winTotal = res.best;
+    var otherTotal = null;
+    res.rows.forEach(function (r) {
+      if (!r.isBest && (otherTotal === null || r.total > otherTotal)) { otherTotal = r.total; }
+    });
+
+    why.className = 'xp-why';
+    why.innerHTML = head +
+      ' So the ' + esc(contested.name) + ' goes to ' + name(keeper.p) +
+      ': it costs ' + n(mover.loss) + ' and saves ' + n(keeper.loss) +
+      ', and the total goes from ' + n(otherTotal) + ' to ' + n(winTotal) +
+      ' — a gain of ' + n(winTotal - otherTotal) + '.';
+  }
+
+  /* ---- interaction ---------------------------------------------------- */
+
+  function setRankA(person, rank, opts) {
+    opts = opts || {};
+    var k = K();
+    rank = clamp(rank, 2, k);
+    if (FIG_A.rank[person] === rank) { return; }
+    FIG_A.rank[person] = rank;
+
+    /* Remember which control had focus so the reader can hold down an arrow. */
+    var active = doc.activeElement;
+    var wanted = null;
+    if (active && active.getAttribute) {
+      var ctl = active.getAttribute('data-xp-ctl');
+      var owner = active.getAttribute('data-person');
+      if (ctl && owner !== null && parseInt(owner, 10) === person) { wanted = ctl; }
+    }
+
+    updateFigA();
+
+    var node = A.listNodes[person];
+    var target = node && node.rows[rank - 1];
+    if (target) {
+      if (opts.landed && !reduced()) {
+        target.li.classList.remove('is-landed');
+        void target.li.offsetWidth;
+        target.li.classList.add('is-landed');
+      }
+      if (wanted === 'up' && !target.up.disabled) { target.up.focus(); }
+      else if (wanted === 'down' && !target.down.disabled) { target.down.focus(); }
+      else if (wanted) { target.li.focus(); }
+    }
+  }
+
+  var drag = null;
+
+  function onPointerDown(ev) {
+    if (drag || ev.button > 0) { return; }
+    var grip = closest(ev.target, '.xp-grip');
+    if (!grip || !root() || !root().contains(grip)) { return; }
+    var li = closest(grip, '.xp-row');
+    var list = li && closest(li, '.xp-list');
+    if (!li || !list || li.className.indexOf('xp-row--move') < 0) { return; }
+
+    var rows = Array.prototype.slice.call(list.children);
+    var startIdx = rows.indexOf(li);
+    var step = rows.length > 1
+      ? (rows[1].getBoundingClientRect().top - rows[0].getBoundingClientRect().top)
+      : li.offsetHeight;
+    if (!step) { step = li.offsetHeight || 40; }
+
+    drag = {
+      person: parseInt(list.getAttribute('data-person'), 10),
+      li: li, rows: rows, startIdx: startIdx, targetIdx: startIdx,
+      y0: ev.clientY, step: step,
+      minIdx: 1, maxIdx: rows.length - 1,
+      pid: ev.pointerId
+    };
+    li.classList.add('is-dragging');
+    try { grip.setPointerCapture(ev.pointerId); } catch (e) { /* not fatal */ }
+    ev.preventDefault();
+  }
+
+  function onPointerMove(ev) {
+    if (!drag || ev.pointerId !== drag.pid) { return; }
+    var dy = ev.clientY - drag.y0;
+    dy = clamp(dy, (drag.minIdx - drag.startIdx) * drag.step, (drag.maxIdx - drag.startIdx) * drag.step);
+    drag.li.style.transform = 'translateY(' + dy + 'px)';
+    var t = clamp(drag.startIdx + Math.round(dy / drag.step), drag.minIdx, drag.maxIdx);
+    if (t !== drag.targetIdx) {
+      drag.rows.forEach(function (r) { r.classList.remove('is-target'); });
+      drag.targetIdx = t;
+      if (t !== drag.startIdx && drag.rows[t]) { drag.rows[t].classList.add('is-target'); }
+    }
+    ev.preventDefault();
+  }
+
+  function onPointerUp(ev) {
+    if (!drag || (ev && ev.pointerId !== undefined && ev.pointerId !== drag.pid)) { return; }
+    var d = drag;
+    drag = null;
+    d.rows.forEach(function (r) { r.classList.remove('is-target'); });
+
+    function commit() {
+      d.li.style.transition = '';
+      d.li.style.transform = '';
+      d.li.classList.remove('is-dragging');
+      setRankA(d.person, d.targetIdx + 1, { landed: true });
+    }
+    if (reduced() || d.targetIdx === d.startIdx) { commit(); return; }
+
+    d.li.style.transition = 'transform 150ms cubic-bezier(0.2, 0.8, 0.2, 1)';
+    d.li.style.transform = 'translateY(' + ((d.targetIdx - d.startIdx) * d.step) + 'px)';
+    var done = false;
+    var fin = function () {
+      if (done) { return; }
+      done = true;
+      d.li.removeEventListener('transitionend', fin);
+      commit();
+    };
+    d.li.addEventListener('transitionend', fin);
+    global.setTimeout(fin, 260);
+  }
+
+  function onListClick(ev) {
+    var btn = closest(ev.target, '[data-xp-ctl="up"], [data-xp-ctl="down"]');
+    if (btn) {
+      var li0 = closest(btn, '.xp-row');
+      var list0 = closest(li0, '.xp-list');
+      if (!list0) { return; }
+      var p0 = parseInt(list0.getAttribute('data-person'), 10);
+      var dir = btn.getAttribute('data-xp-ctl') === 'up' ? -1 : 1;
+      setRankA(p0, FIG_A.rank[p0] + dir);
+      ev.preventDefault();
+      return;
+    }
+    /* Tap any other row to place the movable desk at that rank. The primary
+       affordance on a phone. */
+    var li = closest(ev.target, '.xp-row--slot');
+    if (!li) { return; }
+    var list = closest(li, '.xp-list');
+    if (!list) { return; }
+    var p = parseInt(list.getAttribute('data-person'), 10);
+    var idx = parseInt(li.getAttribute('data-idx'), 10);
+    if (isNaN(p) || isNaN(idx) || idx < 1) { return; }
+    setRankA(p, idx + 1, { landed: true });
+  }
+
+  function onListKey(ev) {
+    var li = closest(ev.target, '.xp-row--move');
+    if (!li) { return; }
+    var list = closest(li, '.xp-list');
+    if (!list) { return; }
+    var p = parseInt(list.getAttribute('data-person'), 10);
+    if (isNaN(p)) { return; }
+    var k = K();
+    var cur = FIG_A.rank[p];
+    var next = null;
+    if (ev.key === 'ArrowUp' || ev.key === 'Up') { next = cur - 1; }
+    else if (ev.key === 'ArrowDown' || ev.key === 'Down') { next = cur + 1; }
+    else if (ev.key === 'Home') { next = 2; }
+    else if (ev.key === 'End') { next = k; }
+    if (next === null) { return; }
+    ev.preventDefault();
+    setRankA(p, next);
+  }
+
+  function enhanceFigA() {
+    var host = q('[data-xp-lists]');
+    if (!host) { return false; }
+    A.interactive = true;
+    host.addEventListener('click', onListClick);
+    host.addEventListener('keydown', onListKey);
+    host.addEventListener('pointerdown', onPointerDown);
+    doc.addEventListener('pointermove', onPointerMove);
+    doc.addEventListener('pointerup', onPointerUp);
+    doc.addEventListener('pointercancel', onPointerUp);
+    updateFigA({ silent: true });
+    return true;
+  }
+
+  /* ======================================================================
+     6. Figure B — going in order vs. solving all at once
+     ====================================================================== */
+
+  function buildFigB() {
+    var prefsHost = q('[data-xp-figb-prefs]');
+    var table = q('[data-xp-orders]');
+    var caption = q('[data-xp-figb-caption]');
+    var hint = q('[data-xp-figb-hint]');
+    if (!prefsHost || !table) { return false; }
+
+    var k = K(), c = curve();
+    var people = FIG_B.people, desks = FIG_B.desks;
+    var ranks = FIG_B.ranksFor(k);
+    if (!c.length || k < desks.length || !ranksValid(ranks, k)) { return false; }
+
+    setKey('fb-people', String(people.length));
+    setKey('fb-desks', String(desks.length));
+
+    var pointsMat = ranks.map(function (row) {
+      return row.map(function (r) { return pointsForRank(r); });
+    });
+
+    /* --- preference table ---------------------------------------------- */
+    var html = '<div class="tbl-wrap"><table class="tbl"><caption class="sr-only">' +
+      'Where each desk sits on each person’s list</caption><thead><tr><th scope="col"></th>';
+    desks.forEach(function (d) { html += '<th scope="col">' + esc(d) + '</th>'; });
+    html += '</tr></thead><tbody>';
+    people.forEach(function (name, p) {
+      html += '<tr><th scope="row">' + esc(name) + '</th>';
+      desks.forEach(function (_, d) {
+        html += '<td><span class="xp-cell__desk">' + esc(ordinal(ranks[p][d])) + '</span>' +
+                '<span class="xp-cell__meta">' + esc(fmt(pointsMat[p][d])) + '</span></td>';
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+
+    /* Name the person whose fallbacks are worst, computed rather than asserted. */
+    var spread = pointsMat.map(function (row, p) {
+      var hi = Math.max.apply(null, row), lo = Math.min.apply(null, row);
+      return { p: p, gap: hi - lo };
+    }).sort(function (a, b) { return b.gap - a.gap; });
+
+    html += '<p class="small muted" style="margin:var(--s-2) 0 0;">' +
+      esc(people[spread[0].p]) + ' is the inflexible one: the drop from their best of these ' +
+      'to their worst is ' + esc(fmt(spread[0].gap)) + ' points, against ' +
+      esc(fmt(spread[spread.length - 1].gap)) + ' for ' +
+      esc(people[spread[spread.length - 1].p]) + '. Ranks not shown are desks elsewhere in the building.</p>';
+    prefsHost.innerHTML = html;
+
+    if (hint) {
+      hint.textContent = 'Same ' + people.length + ' people, same ' + desks.length +
+        ' desks, same curve. Only the order in which they pick changes.';
+    }
+
+    /* --- every pick order, plus the global optimum ---------------------- */
+    var orders = permutations(people.length);
+    setKey('fb-orders', String(orders.length));
+
+    var results = orders.map(function (order) {
+      var g = greedy(pointsMat, order, desks.length);
+      return { order: order, cols: g.cols, total: g.total };
+    });
+    var opt = enumerate(pointsMat, people.length, desks.length);
+    var optRow = opt.rows[opt.winners.length ? opt.winners[0] : 0];
+
+    var totals = results.map(function (r) { return r.total; });
+    var worst = Math.min.apply(null, totals);
+    var bestGreedy = Math.max.apply(null, totals);
+    var scaleMax = Math.max(bestGreedy, opt.best);
+    var hitOptimum = results.filter(function (r) { return Math.abs(r.total - opt.best) < EPS; }).length;
+
+    function whoCell(cols) {
+      var s = '<div class="xp-who">';
+      cols.forEach(function (d, p) {
+        s += '<span class="xp-mini"><b>' + esc(people[p]) + '</b> ' +
+             esc(d >= 0 ? desks[d] : 'nothing') + ' <span>' +
+             esc(d >= 0 ? ordinal(ranks[p][d]) : '—') + '</span></span>';
+      });
+      return s + '</div>';
+    }
+    function totalCell(total) {
+      var w = scaleMax > 0 ? Math.round((total / scaleMax) * 100) : 0;
+      return '<span class="xp-tot">' + esc(fmt(total)) + '</span>' +
+             '<div class="meter"><div class="meter__fill" style="width:' + w + '%"></div></div>';
+    }
+
+    var body = '<thead><tr><th scope="col">Pick order</th>' +
+      '<th scope="col">Who ends up where</th><th scope="col" class="num">Total</th></tr></thead><tbody>';
+
+    results.forEach(function (r) {
+      var cls = Math.abs(r.total - worst) < EPS ? ' class="is-worst"' : '';
+      body += '<tr' + cls + '><th scope="row" class="xp-seq">' +
+        r.order.map(function (p) { return esc(people[p]); }).join(' → ') +
+        '</th><td>' + whoCell(r.cols) + '</td><td class="num">' + totalCell(r.total) + '</td></tr>';
+    });
+    body += '<tr class="is-global"><th scope="row" class="xp-seq"><strong>All at once</strong>' +
+      '<br><span class="tiny muted">this system</span></th><td>' +
+      whoCell(optRow ? optRow.cols : []) + '</td><td class="num">' +
+      totalCell(opt.best) + '</td></tr>';
+    body += '</tbody>';
+    table.innerHTML = body;
+
+    if (caption) {
+      caption.innerHTML =
+        'Going in order scores between <b>' + esc(fmt(worst)) + '</b> and <b>' +
+        esc(fmt(bestGreedy)) + '</b> depending on an order nobody agreed to; only ' +
+        esc(hitOptimum) + ' of the ' + esc(orders.length) + ' orders happen to reach the best answer. ' +
+        'Solving all at once returns <b>' + esc(fmt(opt.best)) + '</b> every time, and proves ' +
+        'nothing beats it. The worst order costs <b>' + esc(fmt(opt.best - worst)) + '</b> points ' +
+        'against the same rankings.';
+    }
+    return true;
+  }
+
+  /* ======================================================================
+     7. Zones — read out of the live config, not asserted
+     ====================================================================== */
+
+  function renderZones() {
+    var b = boot() || {};
+    var host = q('[data-xp-zones]');
+    var ids = APP.zoneIds();
+
+    if (host) {
+      host.innerHTML = '';
+      var perZone = {};
+      APP.desks().forEach(function (d) { perZone[d.zone] = (perZone[d.zone] || 0) + 1; });
+
+      ids.forEach(function (id) {
+        var z = APP.zoneStyle(id);
+        var li = elem('li', 'xp-zone');
+        APP.applyZoneVars(li, id);
+        var count = perZone[id] || 0;
+        li.innerHTML =
+          '<span class="swatch" aria-hidden="true"></span>' +
+          '<span><span class="xp-zone__name">' + esc(z.label) + '</span>' +
+          '<span class="xp-zone__meta"> · ' + esc(count) +
+          (count === 1 ? ' desk' : ' desks') + '</span>' +
+          (z.description ? '<br><span class="xp-zone__meta">' + esc(z.description) + '</span>' : '') +
+          '</span>';
+        host.appendChild(li);
+      });
+      if (!ids.length) { host.innerHTML = '<li class="muted">No zones are defined in rooms.json.</li>'; }
+    }
+
+    /* --- who may sit where, grouped from the resolved rules ------------- */
+    var table = q('[data-xp-groups]');
+    if (table) {
+      var lookup = {};
+      var raw = b.allowedZonesFor || {};
+      Object.keys(raw).forEach(function (key) { lookup[String(key).toLowerCase()] = raw[key]; });
+
+      var groups = [];
+      var byKey = {};
+      APP.rosterNames().forEach(function (r) {
+        var zs = lookup[String(r.email || '').toLowerCase()];
+        if (zs === '*' || zs === true) { zs = ids.slice(); }
+        if (Object.prototype.toString.call(zs) !== '[object Array]') { return; }
+        var norm = zs.slice().sort();
+        var key = norm.join('');
+        if (!byKey[key]) {
+          byKey[key] = { zones: norm, candidacies: [], years: [], n: 0 };
+          groups.push(byKey[key]);
+        }
+        var g = byKey[key];
+        g.n++;
+        var cand = String(r.candidacy == null ? '' : r.candidacy).trim();
+        if (cand && g.candidacies.indexOf(cand) < 0) { g.candidacies.push(cand); }
+        var yr = parseInt(r.year, 10);
+        if (!isNaN(yr)) { g.years.push(yr); }
+      });
+
+      if (!groups.length) {
+        table.innerHTML = '<tbody><tr><td class="muted">' +
+          'The server did not send resolved eligibility, so this table cannot be ' +
+          'derived. Your own eligibility is shown below.</td></tr></tbody>';
+      } else {
+        groups.sort(function (a, b2) { return a.zones.length - b2.zones.length; });
+        var out = '<thead><tr><th scope="col">Roster group</th>' +
+          '<th scope="col">May be assigned</th></tr></thead><tbody>';
+        groups.forEach(function (g) {
+          var who = g.candidacies.length ? g.candidacies.map(esc).join(', ') : 'everyone else';
+          if (g.years.length) {
+            var lo = Math.min.apply(null, g.years), hi = Math.max.apply(null, g.years);
+            who += ' <span class="muted">· ' +
+              (lo === hi ? 'year ' + lo : 'years ' + lo + '–' + hi) + '</span>';
+          }
+          who += '<span class="xp-cell__meta">' + g.n +
+            (g.n === 1 ? ' person on the roster' : ' people on the roster') + '</span>';
+          var where = g.zones.length === ids.length && ids.length
+            ? '<strong>every zone</strong>'
+            : g.zones.map(function (z) { return esc(APP.zoneLabel(z)); }).join(', ');
+          out += '<tr><td>' + who + '</td><td>' + where + '</td></tr>';
+        });
+        table.innerHTML = out + '</tbody>';
+      }
+    }
+
+    renderYou();
+  }
+
+  var reasonFetched = false;
+
+  function renderYou() {
+    var host = q('[data-xp-you]');
+    if (!host) { return; }
+    var p = APP.state.person;
+    if (!p) { host.hidden = true; return; }
+
+    var b = boot() || {};
+    var zones = p.allowedZones && p.allowedZones.length ? p.allowedZones : APP.zoneIds();
+    var chips = zones.map(function (id) {
+      var z = APP.zoneStyle(id);
+      return '<span class="chip chip--zone" data-zone="' + esc(id) + '" ' +
+        'style="--zone-base:' + esc(z.base.hex) + ';--zone-base-rgb:' + esc(z.base.rgb) +
+        ';--zone-lift:' + esc(z.lift.hex) + ';--zone-lift-rgb:' + esc(z.lift.rgb) + '">' +
+        '<span class="chip__label">' + esc(z.label) + '</span></span>';
+    }).join(' ');
+
+    var locked = {};
+    APP.lockedDeskIds().forEach(function (id) { locked[id] = true; });
+    var deskCount = APP.desks().filter(function (d) {
+      return zones.indexOf(d.zone) >= 0 && d.available !== false && !locked[d.id];
+    }).length;
+
+    var head = '<p style="margin:0 0 var(--s-2);"><strong>You</strong> — ' +
+      esc(p.name || p.email) +
+      (p.year ? ', year ' + esc(p.year) : '') +
+      (p.candidacy ? ', ' + esc(p.candidacy) : '') +
+      '. Under the rules as they stand, ' + esc(deskCount) +
+      (deskCount === 1 ? ' desk in this year’s pool is' : ' desks in this year’s pool are') +
+      ' open to you, in:</p>' +
+      '<div class="row row--tight">' + chips + '</div>';
+
+    var reason = (b.person && b.person.eligibilityReason &&
+      String(b.person.email || '').toLowerCase() === String(p.email || '').toLowerCase())
+      ? b.person.eligibilityReason : (host.getAttribute('data-reason') || '');
+    var ruleId = (b.person && b.person.eligibilityRuleId) || host.getAttribute('data-rule') || '';
+
+    if (reason) {
+      head += '<blockquote class="xp-quote">“' + esc(reason) + '”' +
+        '<cite>— eligibility.json' + (ruleId ? ', rule ' + esc(ruleId) : '') + ', verbatim</cite></blockquote>';
+    }
+
+    host.innerHTML = head;
+    host.hidden = false;
+
+    /* If the reason was not in the bootstrap (self-select sign-in), ask the
+       server for the rule that applies. Silent on failure — the zone
+       descriptions above already carry the substance. */
+    if (!reason && !reasonFetched && p.email) {
+      reasonFetched = true;
+      APP.server('getEligibleZonesForClaim',
+        { email: p.email, year: p.year, candidacy: p.candidacy })
+        .then(function (res) {
+          if (!res || !res.ok || !res.reason) { return; }
+          host.setAttribute('data-reason', res.reason);
+          renderYou();
+        })
+        .catch(function () { /* endpoint absent or unreachable; not worth a banner */ });
+    }
+  }
+
+  /* ======================================================================
+     8. Page wiring
+     ====================================================================== */
+
+  function wireChrome() {
+    var r = root();
+    if (!r || r.getAttribute('data-xp-wired')) { return; }
+    r.setAttribute('data-xp-wired', '1');
+
+    /* No <a href="#..."> anywhere: Index.html sets <base target="_top">, so a
+       fragment link would try to navigate the parent frame out of the app. */
+    var nav = q('[data-xp-jump]');
+    if (nav) {
+      nav.hidden = false;
+      nav.addEventListener('click', function (ev) {
+        var btn = closest(ev.target, '[data-xp-goto]');
+        if (!btn) { return; }
+        var target = doc.getElementById(btn.getAttribute('data-xp-goto'));
+        if (!target) { return; }
+        try { target.scrollIntoView({ behavior: reduced() ? 'auto' : 'smooth', block: 'start' }); }
+        catch (e) { target.scrollIntoView(); }
+        target.focus({ preventScroll: true });
+      });
+    }
+
+    r.addEventListener('click', function (ev) {
+      var btn = closest(ev.target, '[data-xp-action]');
+      if (!btn) { return; }
+      var action = btn.getAttribute('data-xp-action');
+      if (action === 'ready' || action === 'skip') { APP.go('select'); }
+    });
+  }
+
+  var rendered = false;
+
+  function render() {
+    if (!root()) { return; }
+    wireChrome();
+    renderScalars();
+    renderZones();
+
+    var okA = false, okB = false;
+    try { okA = buildFigA(); } catch (e) { okA = false; report('figure A', e); }
+    try { okB = buildFigB(); } catch (e) { okB = false; report('figure B', e); }
+
+    if (okA) {
+      try {
+        if (!A.interactive) { enhanceFigA(); }
+      } catch (e) {
+        A.interactive = false;
+        report('figure A interactivity', e);
+        var noteA = q('[data-xp-fallback-a]');
+        if (noteA) { noteA.hidden = false; }
+      }
+    } else {
+      var failA = q('[data-xp-fallback-a]');
+      if (failA) {
+        failA.hidden = false;
+        failA.textContent = 'This figure needs the published scoring curve, which the ' +
+          'server did not send. The explanation above is unaffected.';
+      }
+    }
+    if (!okB) {
+      var failB = q('[data-xp-fallback-b]');
+      if (failB) { failB.hidden = false; }
+    }
+    rendered = true;
+  }
+
+  function report(what, err) {
+    if (global.console && console.warn) {
+      console.warn('[explainer] ' + what + ' failed:', err);
+    }
+  }
+
+  APP.on(VIEW, {
+    onEnter: function () {
+      /* Idempotent: re-entering the view re-reads the bootstrap (concentration
+         and locked desks can change between visits) but keeps the reader's
+         current position in the figure. */
+      var keep = FIG_A.rank.slice();
+      render();
+      if (keep.length === FIG_A.rank.length && A.built) {
+        var changed = false;
+        for (var i = 0; i < keep.length; i++) {
+          if (keep[i] >= 2 && keep[i] <= K() && keep[i] !== FIG_A.rank[i]) {
+            FIG_A.rank[i] = keep[i];
+            changed = true;
+          }
+        }
+        if (changed) { updateFigA({ silent: true }); }
+      }
+    }
+  });
+
+  APP.listen('bootstrap:ready', function () { if (root()) { render(); } });
+  APP.listen('person:set', function () { if (rendered) { renderYou(); } });
+  APP.listen('zones:changed', function () { if (rendered) { renderZones(); } });
+
+}(window));
+</script>

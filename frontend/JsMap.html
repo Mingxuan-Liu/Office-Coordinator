@@ -1,0 +1,1802 @@
+<script>
+/* ==========================================================================
+   JsMap — floor plan renderer, desk interaction, ranked list, validation.
+
+   Owns everything inside #view-select. Reads the world exclusively through
+   window.APP (JsCore): APP.rooms(), APP.desks(), APP.deskStatus(), APP.K,
+   APP.zones(), APP.concentration(). Nothing here knows how many desks, zones,
+   rooms, ranks or people exist, what the zones are called, or which coordinate
+   space the plan uses — all of that comes from bootstrap.rooms verbatim.
+
+   The only numeric literals below are rendering constants (a 44px touch
+   target, a zoom ceiling, a double-tap window). None of them describes the
+   size of the problem.
+   ========================================================================== */
+(function (global, doc) {
+  'use strict';
+
+  var APP = global.APP;
+  if (!APP) {
+    if (global.console) { console.error('[deskmatch] JsMap loaded before JsCore.'); }
+    return;
+  }
+
+  var U = APP.util;
+  var esc = U.esc;
+  var ordinal = U.ordinal;
+  var toArray = U.toArray;
+
+  var SVGNS = 'http://www.w3.org/2000/svg';
+
+  /* Rendering constants. Not problem dimensions. */
+  var MIN_TAP_PX     = 44;     /* smallest comfortable finger target */
+  var MAX_ZOOM       = 10;
+  var ZOOM_STEP      = 1.6;
+  var DBLTAP_MS      = 320;
+  var DBLTAP_PX      = 30;
+  var DBLTAP_ZOOM    = 2.75;
+  var AUTOSCROLL_EDGE  = 76;
+  var AUTOSCROLL_SPEED = 16;
+  var NOMINAL_CANVAS = 1000;   /* fallback canvas when image_size is absent */
+  var HOT_SHARE      = 0.5;    /* share of picks that must be in demand to warn */
+
+  /* ----------------------------------------------------------------------
+     Tiny helpers
+     ---------------------------------------------------------------------- */
+
+  function $(id) { return doc.getElementById(id); }
+  function isArr(v) { return Object.prototype.toString.call(v) === '[object Array]'; }
+  function num(v) { var n = Number(v); return isFinite(n) ? n : NaN; }
+  function clamp(lo, v, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+  function closest(node, sel) { return (node && node.closest) ? node.closest(sel) : null; }
+
+  function mk(tag, attrs) {
+    var n = doc.createElementNS(SVGNS, tag);
+    if (attrs) {
+      for (var k in attrs) {
+        if (!Object.prototype.hasOwnProperty.call(attrs, k)) { continue; }
+        var v = attrs[k];
+        if (v === null || v === undefined) { continue; }
+        if (k === 'text') { n.textContent = String(v); }
+        else { n.setAttribute(k, String(v)); }
+      }
+    }
+    return n;
+  }
+
+  function coarsePointer() {
+    try { return !!(global.matchMedia && global.matchMedia('(pointer: coarse)').matches); }
+    catch (e) { return false; }
+  }
+
+  /* `hidden` is an HTML attribute and does nothing to an SVG element, so SVG
+     visibility is toggled through inline display instead. */
+  function svgShow(node, on) {
+    if (node) { node.style.display = on ? '' : 'none'; }
+  }
+
+  function live(msg) {
+    var n = $('select-live');
+    if (n) { n.textContent = msg || ''; }
+  }
+
+  /* ----------------------------------------------------------------------
+     Icons
+     ---------------------------------------------------------------------- */
+
+  var IC = {
+    grip: '<svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">' +
+          '<circle cx="7.5" cy="5" r="1.4"/><circle cx="12.5" cy="5" r="1.4"/>' +
+          '<circle cx="7.5" cy="10" r="1.4"/><circle cx="12.5" cy="10" r="1.4"/>' +
+          '<circle cx="7.5" cy="15" r="1.4"/><circle cx="12.5" cy="15" r="1.4"/></svg>',
+    up:   '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" ' +
+          'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+          '<path d="M10 15.5V5M5.5 9.5 10 5l4.5 4.5"/></svg>',
+    down: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" ' +
+          'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+          '<path d="M10 4.5V15M5.5 10.5 10 15l4.5-4.5"/></svg>',
+    x:    '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" ' +
+          'stroke-linecap="round" aria-hidden="true"><path d="m5.5 5.5 9 9m0-9-9 9"/></svg>'
+  };
+
+  /* ----------------------------------------------------------------------
+     Module state
+     ---------------------------------------------------------------------- */
+
+  var activeRoomId = null;
+  var geom = null;            /* geometry of the room currently drawn */
+  var deskNodes = {};         /* desk id -> node record, active room only */
+  var deskOrder = [];         /* desk ids in the active room, config order */
+  var focusDeskId = null;     /* roving tabindex owner */
+  var linkedId = null;
+  var builtFor = null;        /* room id the SVG currently shows */
+  var pendingFocus = null;
+  var tipEl = null;
+  var tipFor = null;
+  var drag = null;
+  var lastTap = { t: 0, x: 0, y: 0 };
+  var pinch = null;
+  var wired = false;
+  var view = { zoom: 1, fitW: 0, autoZoomDone: false };
+
+  /* ----------------------------------------------------------------------
+     Geometry — coordinate space, shapes, view box
+     ---------------------------------------------------------------------- */
+
+  function roomsList() { return APP.rooms(); }
+
+  function roomById(id) {
+    var list = roomsList();
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i].id) === String(id)) { return list[i]; }
+    }
+    return null;
+  }
+
+  function roomDesks(room) {
+    if (!room) { return []; }
+    var all = APP.desks();
+    var out = [];
+    for (var i = 0; i < all.length; i++) {
+      if (String(all[i].roomId) === String(room.id)) { out.push(all[i]); }
+    }
+    return out;
+  }
+
+  /* Converts one desk shape into view-box units, whatever the config used.
+     Supports rect [x,y,w,h] and polygon [[x,y],...], in normalized or pixel
+     space. Returns null for a shape the config did not actually provide. */
+  function convertShape(shape, sx, sy) {
+    if (!shape || typeof shape !== 'object') { return null; }
+
+    if (isArr(shape.rect) && shape.rect.length >= 4) {
+      var x = num(shape.rect[0]) * sx;
+      var y = num(shape.rect[1]) * sy;
+      var w = num(shape.rect[2]) * sx;
+      var h = num(shape.rect[3]) * sy;
+      if (isNaN(x) || isNaN(y) || isNaN(w) || isNaN(h)) { return null; }
+      /* Negative width/height is legal-ish input; normalise it. */
+      if (w < 0) { x += w; w = -w; }
+      if (h < 0) { y += h; h = -h; }
+      return {
+        kind: 'rect',
+        rect: { x: x, y: y, w: w, h: h },
+        points: [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+        bbox: { x: x, y: y, w: w, h: h },
+        center: { x: x + w / 2, y: y + h / 2 }
+      };
+    }
+
+    if (isArr(shape.polygon) && shape.polygon.length >= 3) {
+      var pts = [];
+      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      var cx = 0, cy = 0;
+      for (var i = 0; i < shape.polygon.length; i++) {
+        var p = shape.polygon[i];
+        if (!isArr(p) || p.length < 2) { continue; }
+        var px = num(p[0]) * sx, py = num(p[1]) * sy;
+        if (isNaN(px) || isNaN(py)) { continue; }
+        pts.push([px, py]);
+        if (px < minX) { minX = px; }
+        if (py < minY) { minY = py; }
+        if (px > maxX) { maxX = px; }
+        if (py > maxY) { maxY = py; }
+        cx += px; cy += py;
+      }
+      if (pts.length < 3) { return null; }
+      return {
+        kind: 'poly',
+        points: pts,
+        bbox: { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
+        center: { x: cx / pts.length, y: cy / pts.length }
+      };
+    }
+
+    return null;
+  }
+
+  function computeGeom(room) {
+    var space = APP.coordSpace() === 'pixels' ? 'pixels' : 'normalized';
+    var size = room && room.image_size;
+    var iw = isArr(size) ? num(size[0]) : NaN;
+    var ih = isArr(size) ? num(size[1]) : NaN;
+    var haveSize = iw > 0 && ih > 0;
+
+    /* Multiplier that turns a config coordinate into a view-box unit. */
+    var sx, sy;
+    if (space === 'pixels') { sx = 1; sy = 1; }
+    else { sx = haveSize ? iw : NOMINAL_CANVAS; sy = haveSize ? ih : NOMINAL_CANVAS; }
+
+    var desks = roomDesks(room);
+    var shapes = {};
+    var bad = [];
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    var minMinor = Infinity;
+
+    desks.forEach(function (d) {
+      var s = convertShape(d.shape, sx, sy);
+      if (!s) { bad.push(d.id); return; }
+      shapes[d.id] = s;
+      if (s.bbox.x < minX) { minX = s.bbox.x; }
+      if (s.bbox.y < minY) { minY = s.bbox.y; }
+      if (s.bbox.x + s.bbox.w > maxX) { maxX = s.bbox.x + s.bbox.w; }
+      if (s.bbox.y + s.bbox.h > maxY) { maxY = s.bbox.y + s.bbox.h; }
+      var minor = Math.min(s.bbox.w, s.bbox.h);
+      if (minor > 0 && minor < minMinor) { minMinor = minor; }
+    });
+
+    var vb;
+    if (haveSize && space !== 'pixels') {
+      vb = { x: 0, y: 0, w: iw, h: ih };
+    } else if (haveSize) {
+      vb = { x: 0, y: 0, w: iw, h: ih };
+    } else if (isFinite(minX)) {
+      var spanX = Math.max(maxX - minX, 1);
+      var spanY = Math.max(maxY - minY, 1);
+      var pad = Math.max(spanX, spanY) * 0.09;
+      vb = { x: minX - pad, y: minY - pad, w: spanX + pad * 2, h: spanY + pad * 2 };
+    } else {
+      vb = { x: 0, y: 0, w: NOMINAL_CANVAS, h: NOMINAL_CANVAS };
+    }
+
+    return {
+      roomId: room ? room.id : null,
+      space: space,
+      haveSize: haveSize,
+      vb: vb,
+      ratio: vb.h / vb.w,
+      shapes: shapes,
+      badShapes: bad,
+      minMinor: isFinite(minMinor) ? minMinor : Math.min(vb.w, vb.h) * 0.05,
+      unit: Math.max(vb.w, vb.h) / 200      /* one "hairline" in view units */
+    };
+  }
+
+  /* ----------------------------------------------------------------------
+     Floor plan image
+     ---------------------------------------------------------------------- */
+
+  function imageSrcFor(room) {
+    var b = APP.state.bootstrap || {};
+    var fp = (b.floorplans && typeof b.floorplans === 'object') ? b.floorplans : {};
+    var direct = fp[room.id];
+    if (typeof direct === 'string' && direct) { return direct; }
+
+    var candidates = [room.imageDataUri, room.image_data_uri, room.imageData, room.image];
+    for (var i = 0; i < candidates.length; i++) {
+      var c = candidates[i];
+      if (typeof c === 'string' && /^(data:|https?:|\/\/)/.test(c)) { return c; }
+    }
+
+    /* Local preview convenience: rooms.json image paths are relative to
+       config/, and the dev server serves frontend/. Harmless under Apps
+       Script, where this branch never runs. */
+    if (doc.documentElement.getAttribute('data-preview') === 'local' &&
+        typeof room.image === 'string' && room.image) {
+      return '../config/' + room.image.replace(/^\.?\//, '');
+    }
+    return '';
+  }
+
+  /* ----------------------------------------------------------------------
+     SVG construction
+     ---------------------------------------------------------------------- */
+
+  function buildDefs(g) {
+    var defs = mk('defs');
+    var p = Math.max(4, g.vb.w / 150);          /* texture period, view units */
+
+    /* Diagonal hatch — "someone is keeping this desk". */
+    var hatch = mk('pattern', {
+      id: 'dm-pat-locked', width: p, height: p,
+      patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)'
+    });
+    hatch.appendChild(mk('rect', { width: p, height: p, style: 'fill: var(--sunken)' }));
+    hatch.appendChild(mk('rect', {
+      width: p * 0.34, height: p, style: 'fill: var(--line-2)'
+    }));
+    defs.appendChild(hatch);
+
+    /* Stipple — "not open to you". Deliberately a different texture family
+       from the hatch so the two read apart in greyscale. */
+    var dots = mk('pattern', {
+      id: 'dm-pat-ineligible', width: p, height: p, patternUnits: 'userSpaceOnUse'
+    });
+    dots.appendChild(mk('rect', { width: p, height: p, style: 'fill: var(--surface-2)' }));
+    dots.appendChild(mk('circle', {
+      cx: p * 0.25, cy: p * 0.25, r: p * 0.15, style: 'fill: var(--line-2)'
+    }));
+    dots.appendChild(mk('circle', {
+      cx: p * 0.75, cy: p * 0.75, r: p * 0.15, style: 'fill: var(--line-2)'
+    }));
+    defs.appendChild(dots);
+
+    /* Graph paper for the no-image fallback. */
+    var gp = Math.max(8, g.vb.w / 26);
+    var grid = mk('pattern', {
+      id: 'dm-pat-grid', width: gp, height: gp, patternUnits: 'userSpaceOnUse'
+    });
+    grid.appendChild(mk('path', {
+      d: 'M ' + gp + ' 0 L 0 0 L 0 ' + gp,
+      'vector-effect': 'non-scaling-stroke',
+      style: 'fill: none; stroke: var(--line); stroke-width: 1'
+    }));
+    defs.appendChild(grid);
+
+    return defs;
+  }
+
+  /* A padlock, drawn in a 0..1 box and scaled onto the desk. */
+  function lockGlyph(cx, cy, size) {
+    var s = size, x = cx - s / 2, y = cy - s / 2;
+    var g = mk('g', {
+      class: 'desk__glyph desk__glyph--lock',
+      transform: 'translate(' + x + ',' + y + ') scale(' + s + ')'
+    });
+    g.appendChild(mk('path', { d: 'M0.28 0.46 V0.31 a0.22 0.22 0 0 1 0.44 0 V0.46' }));
+    g.appendChild(mk('rect', {
+      x: 0.14, y: 0.46, width: 0.72, height: 0.44, rx: 0.09,
+      class: 'desk__glyph--fill'
+    }));
+    return g;
+  }
+
+  /* A no-entry sign: circle plus bar. */
+  function banGlyph(cx, cy, size) {
+    var s = size, x = cx - s / 2, y = cy - s / 2;
+    var g = mk('g', {
+      class: 'desk__glyph desk__glyph--ban',
+      transform: 'translate(' + x + ',' + y + ') scale(' + s + ')'
+    });
+    g.appendChild(mk('circle', { cx: 0.5, cy: 0.5, r: 0.42 }));
+    g.appendChild(mk('path', { d: 'M0.2 0.8 L0.8 0.2' }));
+    return g;
+  }
+
+  function shapeNode(s) {
+    if (s.kind === 'rect') {
+      return mk('rect', {
+        x: s.rect.x, y: s.rect.y, width: s.rect.w, height: s.rect.h,
+        rx: Math.min(s.rect.w, s.rect.h) * 0.12
+      });
+    }
+    var d = '';
+    for (var i = 0; i < s.points.length; i++) {
+      d += (i === 0 ? 'M' : 'L') + s.points[i][0] + ' ' + s.points[i][1] + ' ';
+    }
+    return mk('path', { d: d + 'Z' });
+  }
+
+  function buildRoom(roomId) {
+    var svg = $('map-svg');
+    var ratioBox = $('map-ratio');
+    var img = $('map-img');
+    var note = $('map-note');
+    if (!svg || !ratioBox) { return; }
+
+    var room = roomById(roomId) || roomsList()[0];
+    if (!room) {
+      svg.setAttribute('viewBox', '0 0 100 100');
+      ratioBox.style.paddingBottom = '56%';
+      showNote('This deployment has no rooms in its floor plan configuration, so ' +
+               'there is nothing to show. Tell the coordinator.');
+      return;
+    }
+
+    activeRoomId = room.id;
+    geom = computeGeom(room);
+    deskNodes = {};
+    deskOrder = [];
+
+    /* Aspect-locked box. The image and the overlay share it, so they cannot
+       drift apart at any width and no resize maths is needed for alignment. */
+    ratioBox.style.paddingBottom = (geom.ratio * 100) + '%';
+
+    while (svg.firstChild) { svg.removeChild(svg.firstChild); }
+    svg.setAttribute('viewBox',
+      geom.vb.x + ' ' + geom.vb.y + ' ' + geom.vb.w + ' ' + geom.vb.h);
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    svg.setAttribute('aria-label',
+      'Floor plan of ' + (room.label || room.id) + '. ' +
+      roomDesks(room).length + ' desks.');
+
+    svg.appendChild(buildDefs(geom));
+
+    /* Background, shown only when there is no plan image. */
+    var bg = mk('g', { class: 'map-bglayer' });
+    bg.appendChild(mk('rect', {
+      x: geom.vb.x, y: geom.vb.y, width: geom.vb.w, height: geom.vb.h,
+      style: 'fill: var(--surface)'
+    }));
+    bg.appendChild(mk('rect', {
+      x: geom.vb.x, y: geom.vb.y, width: geom.vb.w, height: geom.vb.h,
+      style: 'fill: url(#dm-pat-grid)'
+    }));
+    bg.appendChild(mk('rect', {
+      class: 'map-frame',
+      x: geom.vb.x + geom.unit, y: geom.vb.y + geom.unit,
+      width: Math.max(1, geom.vb.w - geom.unit * 2),
+      height: Math.max(1, geom.vb.h - geom.unit * 2)
+    }));
+    svg.appendChild(bg);
+
+    /* Desks. */
+    var layer = mk('g', { class: 'desk-layer' });
+    roomDesks(room).forEach(function (desk) {
+      var rec = buildDesk(desk, geom);
+      if (rec) {
+        layer.appendChild(rec.group);
+        deskNodes[desk.id] = rec;
+        deskOrder.push(desk.id);
+      }
+    });
+    svg.appendChild(layer);
+
+    /* Image. The desks are drawn either way: a missing plan degrades to shapes
+       on a blank grid plus a warning, it never blanks the view out. */
+    var src = imageSrcFor(room);
+    clearNotes();
+    if (img) {
+      img.onload = null;
+      img.onerror = null;
+      if (src) {
+        img.onload = function () { img.hidden = false; svgShow(bg, false); };
+        img.onerror = function () {
+          img.hidden = true;
+          svgShow(bg, true);
+          addNote('The floor plan drawing for ' + (room.label || room.id) +
+                  ' could not be loaded, so the desks are shown as shapes on a blank ' +
+                  'plan. Desk positions and everything else on this page still work.');
+        };
+        img.alt = 'Floor plan of ' + (room.label || room.id);
+        img.src = src;
+      } else {
+        img.removeAttribute('src');
+        img.hidden = true;
+        svgShow(bg, true);
+        addNote('No floor plan drawing is available for ' + (room.label || room.id) +
+                ' in this deployment, so the desks are shown as shapes on a blank plan. ' +
+                'Desk numbers, positions and zones are still correct. ' +
+                'The coordinator can add the image and re-run tools/sync_config.py.');
+      }
+    }
+
+    if (geom.badShapes.length) {
+      addNote('These desks have no usable shape in rooms.json and are not drawn: ' +
+              geom.badShapes.join(', ') + '. Tell the coordinator — you cannot rank ' +
+              'them from the plan.');
+    }
+
+    builtFor = room.id;
+    view.autoZoomDone = false;
+    view.zoom = 1;
+
+    /* Roving tabindex starts on something the user can actually use. */
+    focusDeskId = null;
+    for (var i = 0; i < deskOrder.length; i++) {
+      if (APP.isPicked(deskOrder[i]) || APP.deskStatus(deskOrder[i]).ok) {
+        focusDeskId = deskOrder[i];
+        break;
+      }
+    }
+    if (!focusDeskId && deskOrder.length) { focusDeskId = deskOrder[0]; }
+
+    paintDesks();
+  }
+
+  function buildDesk(desk, g) {
+    var s = g.shapes[desk.id];
+    if (!s) { return null; }
+
+    var group = mk('g', { class: 'deskgroup' });
+    group.setAttribute('data-desk-id', desk.id);
+    APP.applyZoneVars(group, desk.zone);
+
+    var shape = shapeNode(s);
+    shape.setAttribute('class', 'desk');
+    shape.setAttribute('data-desk-id', desk.id);
+    shape.setAttribute('role', 'button');
+    shape.setAttribute('tabindex', '-1');
+    group.appendChild(shape);
+
+    /* Immediately after .desk, so Style.html's `.desk.is-picked + .desk__label`
+       rule keeps working. */
+    var labelText = String(desk.label);
+    var fs = Math.min(s.bbox.h * 0.40, (s.bbox.w * 0.86) / Math.max(1, labelText.length));
+    fs = Math.max(fs, g.unit * 1.4);
+    var label = mk('text', { class: 'desk__label', x: s.center.x, y: s.center.y, text: labelText });
+    label.style.fontSize = fs + 'px';
+    group.appendChild(label);
+
+    /* The rank medal and the state glyphs each need their own room inside the
+       shape, so the number slides out of their way rather than under them. */
+    var labelYUp = s.center.y - s.bbox.h * 0.16;
+    var labelYDown = s.center.y + s.bbox.h * 0.20;
+
+    var glyphSize = Math.min(s.bbox.w, s.bbox.h) * 0.42;
+    var glyphY = s.center.y + s.bbox.h * 0.22;
+    var lock = lockGlyph(s.center.x, glyphY, glyphSize);
+    var ban = banGlyph(s.center.x, glyphY, glyphSize);
+    svgShow(lock, false);
+    svgShow(ban, false);
+    group.appendChild(lock);
+    group.appendChild(ban);
+
+    /* Rank medal, top-left inside the shape. */
+    var r = Math.max(Math.min(s.bbox.w, s.bbox.h) * 0.26, g.unit * 2.2);
+    var medal = mk('g', { class: 'desk__medalwrap' });
+    svgShow(medal, false);
+    var mc = mk('circle', {
+      class: 'desk__medal', cx: s.bbox.x + r * 1.02, cy: s.bbox.y + r * 1.02, r: r
+    });
+    var mt = mk('text', {
+      class: 'desk__rank', x: s.bbox.x + r * 1.02, y: s.bbox.y + r * 1.02, text: ''
+    });
+    mt.style.fontSize = (r * 1.28) + 'px';
+    medal.appendChild(mc);
+    medal.appendChild(mt);
+    group.appendChild(medal);
+
+    return {
+      id: desk.id, desk: desk, shape: shape, group: group, label: label,
+      lock: lock, ban: ban, medal: medal, medalText: mt,
+      center: s.center, bbox: s.bbox,
+      labelY: s.center.y, labelYUp: labelYUp, labelYDown: labelYDown,
+      fs: fs, fsSmall: fs * 0.82
+    };
+  }
+
+  /* ----------------------------------------------------------------------
+     Desk state painting
+     ---------------------------------------------------------------------- */
+
+  function deskAria(rec, status, rank) {
+    var bits = [APP.deskTitle(rec.id)];
+    var sub = APP.deskSubtitle(rec.id);
+    if (sub) { bits.push(sub); }
+    if (rank) { bits.push('your ' + ordinal(rank) + ' choice'); }
+    else if (!status.ok) { bits.push(status.reason); }
+    else { bits.push('available'); }
+    if (rec.desk.notes) { bits.push(rec.desk.notes); }
+    return bits.join('. ');
+  }
+
+  function paintDesks() {
+    var k = APP.K;
+    deskOrder.forEach(function (id) {
+      var rec = deskNodes[id];
+      if (!rec) { return; }
+      var status = APP.deskStatus(id);
+      var rank = APP.rankOf(id);
+      var picked = rank > 0;
+      var cl = rec.shape.classList;
+      var gcl = rec.group.classList;
+
+      cl.remove('is-picked', 'is-locked', 'is-ineligible');
+      gcl.remove('is-muted');
+      svgShow(rec.lock, false);
+      svgShow(rec.ban, false);
+
+      var showGlyph = false;
+      if (picked) {
+        cl.add('is-picked');
+      } else if (status.code === 'locked' || status.code === 'unavailable') {
+        cl.add('is-locked');
+        svgShow(rec.lock, true);
+        gcl.add('is-muted');
+        showGlyph = true;
+      } else if (!status.ok) {
+        cl.add('is-ineligible');
+        svgShow(rec.ban, true);
+        gcl.add('is-muted');
+        showGlyph = true;
+      }
+
+      rec.label.setAttribute('y',
+        picked ? rec.labelYDown : (showGlyph ? rec.labelYUp : rec.labelY));
+      rec.label.style.fontSize = (picked ? rec.fsSmall : rec.fs) + 'px';
+      rec.label.classList.toggle('on-fill', picked);
+
+      svgShow(rec.medal, picked);
+      rec.medalText.textContent = picked ? String(rank) : '';
+
+      rec.shape.setAttribute('aria-pressed', picked ? 'true' : 'false');
+      if (status.ok) { rec.shape.removeAttribute('aria-disabled'); }
+      else { rec.shape.setAttribute('aria-disabled', 'true'); }
+      rec.shape.setAttribute('aria-label', deskAria(rec, status, rank));
+      rec.shape.setAttribute('tabindex', id === focusDeskId ? '0' : '-1');
+      rec.shape.setAttribute('data-state',
+        picked ? 'picked' : (status.ok ? 'available' : status.code));
+      /* Kept for parity with the ranked list; K is only ever read, never assumed. */
+      if (picked && k && rank > k) { cl.add('is-ineligible'); }
+    });
+  }
+
+  /* ----------------------------------------------------------------------
+     Legend — one entry per zone from config, plus one per desk state
+     ---------------------------------------------------------------------- */
+
+  function sampleSvg(kind) {
+    var fill, stroke, dash = '', extra = '';
+    if (kind === 'available') { fill = 'rgba(var(--zone-rgb), var(--zone-alpha-fill))'; stroke = 'var(--zone, var(--ink-3))'; }
+    else if (kind === 'picked') { fill = 'var(--ink)'; stroke = 'var(--ink)'; extra = '<text x="12" y="9" text-anchor="middle" dominant-baseline="central" style="font-size:9px;font-weight:800;fill:var(--surface)">1</text>'; }
+    else if (kind === 'locked') { fill = 'var(--sunken)'; stroke = 'var(--ink-3)'; extra = '<path d="M8.5 9.5 V7.8 a1.9 1.9 0 0 1 3.8 0 V9.5" fill="none" stroke="var(--ink-3)" stroke-width="1.2"/><rect x="7.6" y="9.4" width="5.6" height="3.6" rx="0.8" fill="var(--ink-3)"/><path d="M15 3 L21 3 M15 6 L21 6 M15 9 L21 9 M15 12 L21 12" stroke="var(--line-2)" stroke-width="2"/>'; }
+    else { fill = 'var(--surface-2)'; stroke = 'var(--line-2)'; dash = ' stroke-dasharray="3 2"'; extra = '<circle cx="10.5" cy="8" r="4" fill="none" stroke="var(--ink-3)" stroke-width="1.2"/><path d="M7.7 10.8 L13.3 5.2" stroke="var(--ink-3)" stroke-width="1.2"/><circle cx="18" cy="4" r="1" fill="var(--line-2)"/><circle cx="21" cy="8" r="1" fill="var(--line-2)"/><circle cx="18" cy="12" r="1" fill="var(--line-2)"/>'; }
+    return '<svg class="map-legend__sample" viewBox="0 0 24 16" aria-hidden="true">' +
+           '<rect x="0.8" y="0.8" width="22.4" height="14.4" rx="2" fill="' + fill +
+           '" stroke="' + stroke + '" stroke-width="1.4"' + dash + '/>' + extra + '</svg>';
+  }
+
+  function renderLegend() {
+    var host = $('map-legend');
+    if (!host) { return; }
+
+    var zones = APP.zones();
+    var ids = APP.zoneIds();
+    var person = APP.state.person;
+    var allowed = (person && isArr(person.allowedZones)) ? person.allowedZones : null;
+
+    var html = '<div class="map-legend__group"><p class="map-legend__title">Areas</p>';
+    if (!ids.length) {
+      html += '<span class="map-legend__note">No zones are defined in the floor plan configuration.</span>';
+    }
+    ids.forEach(function (zid) {
+      var z = zones[zid] || {};
+      var open = !allowed || allowed.indexOf(zid) >= 0;
+      html += '<span class="map-legend__item" data-legend-zone="' + esc(zid) + '"' +
+              (z.description ? ' title="' + esc(z.description) + '"' : '') + '>' +
+              '<span class="swatch" aria-hidden="true"></span>' +
+              '<span>' + esc(z.label || zid) +
+              (open ? '' : ' <span class="map-legend__note">(not open to you)</span>') +
+              '</span></span>';
+    });
+    html += '</div>';
+
+    html += '<div class="map-legend__group"><p class="map-legend__title">Desk states</p>' +
+      '<span class="map-legend__item">' + sampleSvg('available') + '<span>Available &mdash; tap to rank</span></span>' +
+      '<span class="map-legend__item">' + sampleSvg('picked') + '<span>Ranked by you &mdash; the number is its rank</span></span>' +
+      '<span class="map-legend__item">' + sampleSvg('locked') + '<span>Kept &mdash; someone is staying at this desk (hatched, padlock)</span></span>' +
+      '<span class="map-legend__item">' + sampleSvg('ineligible') + '<span>Not open to you &mdash; wrong area for your year (dotted, crossed)</span></span>' +
+      '</div>';
+
+    host.innerHTML = html;
+
+    /* Zone colours come from JsCore, never from this file. */
+    toArray(host.querySelectorAll('[data-legend-zone]')).forEach(function (node) {
+      APP.applyZoneVars(node, node.getAttribute('data-legend-zone'));
+    });
+  }
+
+  /* ----------------------------------------------------------------------
+     Room tabs
+     ---------------------------------------------------------------------- */
+
+  function openDeskCount(room) {
+    var n = 0;
+    roomDesks(room).forEach(function (d) { if (APP.deskStatus(d.id).ok) { n++; } });
+    return n;
+  }
+
+  function renderRoomTabs() {
+    var host = $('map-rooms');
+    var nameEl = $('map-roomname');
+    if (!host) { return; }
+    var rooms = roomsList();
+
+    if (rooms.length <= 1) {
+      host.hidden = true;
+      host.innerHTML = '';
+      if (nameEl) {
+        nameEl.textContent = rooms.length ? (rooms[0].label || rooms[0].id) : '';
+      }
+      return;
+    }
+
+    if (nameEl) { nameEl.textContent = ''; }
+    host.hidden = false;
+    var html = '';
+    rooms.forEach(function (room) {
+      var sel = String(room.id) === String(activeRoomId);
+      var mine = 0;
+      APP.state.picks.forEach(function (id) {
+        var d = APP.deskById(id);
+        if (d && String(d.roomId) === String(room.id)) { mine++; }
+      });
+      html += '<button type="button" class="map-rooms__tab" role="tab" ' +
+              'data-room-id="' + esc(room.id) + '" ' +
+              'aria-selected="' + (sel ? 'true' : 'false') + '" ' +
+              'tabindex="' + (sel ? '0' : '-1') + '">' +
+              '<span>' + esc(room.label || room.id) + '</span>' +
+              '<span class="map-rooms__count">' +
+              (mine ? mine + ' ranked' : openDeskCount(room) + ' open') +
+              '</span></button>';
+    });
+    host.innerHTML = html;
+  }
+
+  function switchRoom(roomId) {
+    if (String(roomId) === String(activeRoomId) && builtFor === activeRoomId) { return; }
+    hideTip();
+    buildRoom(roomId);
+    renderRoomTabs();
+    measure(true);
+  }
+
+  function pickInitialRoom() {
+    var rooms = roomsList();
+    if (!rooms.length) { return null; }
+    if (activeRoomId && roomById(activeRoomId)) { return activeRoomId; }
+
+    var picks = APP.state.picks;
+    for (var i = 0; i < picks.length; i++) {
+      var d = APP.deskById(picks[i]);
+      if (d) { return d.roomId; }
+    }
+    for (var r = 0; r < rooms.length; r++) {
+      if (openDeskCount(rooms[r]) > 0) { return rooms[r].id; }
+    }
+    return rooms[0].id;
+  }
+
+  /* ----------------------------------------------------------------------
+     Notes
+     ---------------------------------------------------------------------- */
+
+  var noteMsgs = [];
+
+  function paintNotes() {
+    var n = $('map-note');
+    if (!n) { return; }
+    if (!noteMsgs.length) { n.hidden = true; n.innerHTML = ''; return; }
+    n.hidden = false;
+    n.innerHTML = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" ' +
+      'stroke-width="1.8" aria-hidden="true" style="flex:0 0 auto;width:1.1rem;height:1.1rem;' +
+      'margin-top:.15rem"><path d="M10 2.5 18.5 17.5H1.5z"></path>' +
+      '<path d="M10 8v4M10 15h.01"></path></svg><span>' +
+      noteMsgs.map(esc).join('<br>') + '</span>';
+  }
+
+  function addNote(text) {
+    if (noteMsgs.indexOf(text) < 0) { noteMsgs.push(text); }
+    paintNotes();
+  }
+
+  function clearNotes() { noteMsgs = []; paintNotes(); }
+  function showNote(text) { clearNotes(); addNote(text); }
+
+  /* ----------------------------------------------------------------------
+     Zoom and pan
+     ---------------------------------------------------------------------- */
+
+  function applyWidth() {
+    var inner = $('map-stage-inner');
+    if (!inner || !view.fitW) { return; }
+    inner.style.width = Math.max(1, Math.round(view.fitW * view.zoom)) + 'px';
+  }
+
+  function updateZoomUi() {
+    var lvl = $('map-zoom-level');
+    if (lvl) { lvl.textContent = Math.round(view.zoom * 100) + '%'; }
+    var out = $('map-zoom-out'), inn = $('map-zoom-in'), fit = $('map-zoom-fit');
+    if (out) { out.disabled = view.zoom <= 1.001; }
+    if (inn) { inn.disabled = view.zoom >= MAX_ZOOM - 0.001; }
+    if (fit) { fit.disabled = view.zoom <= 1.001; }
+  }
+
+  function autoZoom() {
+    if (!geom || !coarsePointer()) { return 1; }
+    var pxPerUnit = view.fitW / geom.vb.w;
+    var px = geom.minMinor * pxPerUnit;
+    if (!(px > 0)) { return 1; }
+    return clamp(1, MIN_TAP_PX / px, MAX_ZOOM);
+  }
+
+  function measure(resetZoom) {
+    var stage = $('map-stage');
+    if (!stage || !geom) { return; }
+    var cw = stage.clientWidth;
+    var ch = stage.clientHeight;
+    if (!cw) { return; }                     /* view still hidden */
+    var fitW = Math.min(cw, geom.ratio > 0 ? ch / geom.ratio : cw);
+    if (!(fitW > 0)) { fitW = cw; }
+    view.fitW = fitW;
+    if (resetZoom) { view.zoom = 1; view.autoZoomDone = false; }
+    applyWidth();
+    if (!view.autoZoomDone) {
+      view.autoZoomDone = true;
+      var z = autoZoom();
+      if (z > 1.001) { setZoom(z); return; }
+    }
+    updateZoomUi();
+  }
+
+  function setZoom(z, ax, ay) {
+    var stage = $('map-stage');
+    var inner = $('map-stage-inner');
+    if (!stage || !inner) { return; }
+    z = clamp(1, z, MAX_ZOOM);
+    if (Math.abs(z - view.zoom) < 0.0005) { return; }
+
+    var sr = stage.getBoundingClientRect();
+    if (ax == null) { ax = sr.left + sr.width / 2; }
+    if (ay == null) { ay = sr.top + sr.height / 2; }
+
+    var r = inner.getBoundingClientRect();
+    var fx = r.width ? clamp(0, (ax - r.left) / r.width, 1) : 0.5;
+    var fy = r.height ? clamp(0, (ay - r.top) / r.height, 1) : 0.5;
+
+    view.zoom = z;
+    applyWidth();
+
+    var r2 = inner.getBoundingClientRect();
+    stage.scrollLeft += (r2.left + fx * r2.width) - ax;
+    stage.scrollTop += (r2.top + fy * r2.height) - ay;
+    updateZoomUi();
+  }
+
+  function centerOnDesk(id, flash) {
+    var rec = deskNodes[id];
+    var stage = $('map-stage');
+    var inner = $('map-stage-inner');
+    if (!rec || !stage || !inner || !geom) { return; }
+    var r = inner.getBoundingClientRect();
+    var sr = stage.getBoundingClientRect();
+    if (!r.width) { return; }
+    var fx = (rec.center.x - geom.vb.x) / geom.vb.w;
+    var fy = (rec.center.y - geom.vb.y) / geom.vb.h;
+    stage.scrollLeft += (r.left + fx * r.width) - (sr.left + sr.width / 2);
+    stage.scrollTop += (r.top + fy * r.height) - (sr.top + sr.height / 2);
+    if (flash) {
+      rec.group.classList.remove('is-flash');
+      /* reflow so the animation restarts */
+      void rec.group.getBoundingClientRect();
+      rec.group.classList.add('is-flash');
+      global.setTimeout(function () { rec.group.classList.remove('is-flash'); }, 2000);
+    }
+  }
+
+  /* ----------------------------------------------------------------------
+     Tooltip (SVG shapes cannot use the CSS ::after tooltip in Style.html)
+     ---------------------------------------------------------------------- */
+
+  function ensureTip() {
+    if (tipEl && tipEl.parentNode) { return tipEl; }
+    tipEl = doc.createElement('div');
+    tipEl.className = 'tip tip--float';
+    tipEl.setAttribute('role', 'presentation');
+    doc.body.appendChild(tipEl);
+    return tipEl;
+  }
+
+  function showTipFor(id) {
+    var rec = deskNodes[id];
+    if (!rec) { return; }
+    var status = APP.deskStatus(id);
+    var rank = APP.rankOf(id);
+    var el = ensureTip();
+
+    var html = '<span class="tip__title">' + esc(APP.deskTitle(id)) + '</span>';
+    var sub = APP.deskSubtitle(id);
+    if (sub) { html += '<span class="tip__row">' + esc(sub) + '</span>'; }
+    if (rec.desk.notes) { html += '<span class="tip__row">' + esc(rec.desk.notes) + '</span>'; }
+    if (rank) {
+      html += '<span class="tip__reason">Your ' + ordinal(rank) +
+              ' choice. Tap again to remove it.</span>';
+    } else if (!status.ok) {
+      html += '<span class="tip__reason">' + esc(status.reason) + '</span>';
+    }
+    el.innerHTML = html;
+    el.classList.add('is-open');
+
+    var r = rec.shape.getBoundingClientRect();
+    var t = el.getBoundingClientRect();
+    var vw = doc.documentElement.clientWidth;
+    var vh = doc.documentElement.clientHeight;
+    var left = clamp(8, r.left + r.width / 2 - t.width / 2, Math.max(8, vw - t.width - 8));
+    var top = r.top - t.height - 8;
+    if (top < 8) { top = Math.min(r.bottom + 8, vh - t.height - 8); }
+    el.style.left = left + 'px';
+    el.style.top = Math.max(8, top) + 'px';
+    tipFor = id;
+  }
+
+  function hideTip() {
+    if (tipEl) { tipEl.classList.remove('is-open'); }
+    tipFor = null;
+  }
+
+  /* ----------------------------------------------------------------------
+     Cross-highlighting between map and list
+     ---------------------------------------------------------------------- */
+
+  function setLinked(id) {
+    if (linkedId === id) { return; }
+    linkedId = id;
+    deskOrder.forEach(function (did) {
+      var rec = deskNodes[did];
+      if (rec) { rec.group.classList.toggle('is-linked', did === id); }
+    });
+    var list = $('picks-list');
+    if (list) {
+      toArray(list.querySelectorAll('.pick[data-desk-id]')).forEach(function (row) {
+        row.classList.toggle('is-linked', row.getAttribute('data-desk-id') === id);
+      });
+    }
+  }
+
+  /* ----------------------------------------------------------------------
+     Desk activation
+     ---------------------------------------------------------------------- */
+
+  function activateDesk(id) {
+    var status = APP.deskStatus(id);
+    if (!status.ok) {
+      /* Do not spam a banner for something the map already shows as blocked;
+         say why, right where they tapped. */
+      showTipFor(id);
+      live(APP.deskTitle(id) + ' cannot be ranked. ' + status.reason);
+      return;
+    }
+    if (APP.isPicked(id)) {
+      var was = APP.rankOf(id);
+      APP.removePick(id);
+      live(APP.deskTitle(id) + ' removed from rank ' + was + '.');
+    } else {
+      if (APP.addPick(id)) {
+        live(APP.deskTitle(id) + ' added as your ' + ordinal(APP.rankOf(id)) + ' choice.');
+      }
+    }
+  }
+
+  function setFocusDesk(id, doFocus) {
+    if (!deskNodes[id]) { return; }
+    focusDeskId = id;
+    deskOrder.forEach(function (did) {
+      var rec = deskNodes[did];
+      if (rec) { rec.shape.setAttribute('tabindex', did === id ? '0' : '-1'); }
+    });
+    if (doFocus) {
+      try { deskNodes[id].shape.focus({ preventScroll: true }); }
+      catch (e) { try { deskNodes[id].shape.focus(); } catch (e2) { /* ignore */ } }
+      centerOnDesk(id, false);
+      showTipFor(id);
+      setLinked(id);
+    }
+  }
+
+  function moveFocusDirection(dx, dy) {
+    var cur = deskNodes[focusDeskId];
+    if (!cur) {
+      if (deskOrder.length) { setFocusDesk(deskOrder[0], true); }
+      return;
+    }
+    var best = null, bestScore = Infinity;
+    deskOrder.forEach(function (id) {
+      if (id === focusDeskId) { return; }
+      var rec = deskNodes[id];
+      var vx = rec.center.x - cur.center.x;
+      var vy = rec.center.y - cur.center.y;
+      var along = vx * dx + vy * dy;
+      if (along <= 0) { return; }
+      var perp = Math.abs(vx * dy - vy * dx);
+      var score = along + perp * 2.5;
+      if (score < bestScore) { bestScore = score; best = id; }
+    });
+    if (best) { setFocusDesk(best, true); }
+  }
+
+  /* ----------------------------------------------------------------------
+     Ranked list
+     ---------------------------------------------------------------------- */
+
+  function concentrationStats() {
+    var conc = APP.concentration();
+    var maxCount = 0;
+    var keys = Object.keys(conc);
+    keys.forEach(function (k) {
+      var v = Number(conc[k]) || 0;
+      if (v > maxCount) { maxCount = v; }
+    });
+    /* A single submission makes every desk look "most requested"; require
+       enough signal before saying anything at all. */
+    var threshold = Math.max(2, maxCount * 0.5);
+    return { maxCount: maxCount, threshold: threshold, usable: maxCount >= 2 };
+  }
+
+  function isHotDesk(id, stats) {
+    stats = stats || concentrationStats();
+    if (!stats.usable) { return false; }
+    return APP.concentrationFor(id) >= stats.threshold;
+  }
+
+  function pickRow(id, index, total, stats) {
+    var title = APP.deskTitle(id);
+    var sub = APP.deskSubtitle(id);
+    var status = APP.deskStatus(id);
+    var hot = isHotDesk(id, stats);
+    var first = index === 0;
+    var last = index === total - 1;
+
+    var flags = '';
+    if (hot) {
+      flags += '<span class="badge badge--warn" title="Several people who have already ' +
+               'submitted put this desk first. It does not change how your ranking is ' +
+               'treated.">In demand</span>';
+    }
+    if (!status.ok) {
+      flags += '<span class="badge badge--hot" title="' + esc(status.reason) +
+               '">Unavailable</span>';
+    }
+    if (flags) { flags = '<span class="pick__flags">' + flags + '</span>'; }
+
+    return '<li class="pick" data-desk-id="' + esc(id) + '" data-rank="' + (index + 1) + '">' +
+      '<button type="button" class="iconbtn pick__handle" data-act="grab" ' +
+        'aria-label="Reorder ' + esc(title) + ', currently your ' + ordinal(index + 1) +
+        ' choice. Drag, or press the up and down arrow keys.">' + IC.grip + '</button>' +
+      '<span class="pick__rank" aria-hidden="true">' + (index + 1) + '</span>' +
+      '<span class="pick__body">' +
+        '<span class="pick__title"><span class="sr-only">Choice ' + (index + 1) + ': </span>' +
+          esc(title) + ' <span class="deskid">' + esc(id) + '</span></span>' +
+        '<span class="pick__meta">' + esc(sub) + '</span>' + flags +
+      '</span>' +
+      '<span class="pick__actions">' +
+        '<button type="button" class="iconbtn" data-act="up"' + (first ? ' disabled' : '') +
+          ' aria-label="Move ' + esc(title) + ' up to your ' + ordinal(index) +
+          ' choice">' + IC.up + '</button>' +
+        '<button type="button" class="iconbtn" data-act="down"' + (last ? ' disabled' : '') +
+          ' aria-label="Move ' + esc(title) + ' down to your ' + ordinal(index + 2) +
+          ' choice">' + IC.down + '</button>' +
+        '<button type="button" class="iconbtn" data-act="remove"' +
+          ' aria-label="Remove ' + esc(title) + ' from your ranking">' + IC.x + '</button>' +
+      '</span>' +
+    '</li>';
+  }
+
+  function emptyRow(index) {
+    return '<li class="pick pick--empty" data-rank="' + (index + 1) + '">' +
+      '<span class="pick__rank" aria-hidden="true">' + (index + 1) + '</span>' +
+      '<span class="pick__body">' +
+        '<span class="pick__title">Your ' + ordinal(index + 1) + ' choice</span>' +
+        '<span class="pick__meta">Not chosen yet &mdash; tap a desk on the plan</span>' +
+      '</span></li>';
+  }
+
+  function renderPicks() {
+    var list = $('picks-list');
+    if (!list) { return; }
+    var picks = APP.state.picks;
+    var k = APP.K;
+    var rows = Math.max(k, picks.length);
+    var stats = concentrationStats();
+    var html = '';
+
+    for (var i = 0; i < rows; i++) {
+      if (i < picks.length) { html += pickRow(picks[i], i, picks.length, stats); }
+      else { html += emptyRow(i); }
+    }
+    if (!rows) {
+      html = '<li class="pick pick--empty"><span class="pick__body">' +
+             '<span class="pick__title">The server has not said how many desks to rank.' +
+             '</span></span></li>';
+    }
+    list.innerHTML = html;
+
+    toArray(list.querySelectorAll('.pick[data-desk-id]')).forEach(function (row) {
+      var d = APP.deskById(row.getAttribute('data-desk-id'));
+      if (d) { APP.applyZoneVars(row, d.zone); }
+    });
+
+    var count = $('picks-count');
+    var of = $('picks-of');
+    var required = APP.requiredPicks();
+    if (count) { count.textContent = String(picks.length); }
+    if (of) { of.textContent = 'of ' + (required || k || '—'); }
+
+    var clear = $('picks-clear');
+    if (clear) { clear.disabled = picks.length === 0; }
+
+    if (pendingFocus) {
+      var target = list.querySelector(pendingFocus);
+      if (target) { try { target.focus(); } catch (e) { /* ignore */ } }
+      pendingFocus = null;
+    }
+    if (linkedId) {
+      var row2 = list.querySelector('.pick[data-desk-id="' + cssEscape(linkedId) + '"]');
+      if (row2) { row2.classList.add('is-linked'); }
+    }
+  }
+
+  function cssEscape(v) { return String(v).replace(/["\\]/g, '\\$&'); }
+
+  /* ----------------------------------------------------------------------
+     Validation strip
+     ---------------------------------------------------------------------- */
+
+  function renderValidation() {
+    var v = APP.validate();
+    var picks = APP.state.picks;
+    var required = v.required;
+    var strip = $('select-validation');
+    var msgEl = $('select-validation-msg');
+    var meter = $('select-meter');
+    var cont = $('select-continue');
+
+    if (meter) {
+      var pct = required > 0 ? clamp(0, (picks.length / required) * 100, 100) : 0;
+      meter.style.width = pct + '%';
+      meter.classList.toggle('is-complete', v.ok);
+    }
+
+    if (strip && msgEl) {
+      strip.classList.remove('is-ok', 'is-warn', 'is-error');
+      var msg;
+      if (v.ok) {
+        strip.classList.add('is-ok');
+        msg = 'All ' + required + ' choices ranked, in order. Ready to review.';
+      } else {
+        var onlyIncomplete = true;
+        for (var i = 0; i < v.errors.length; i++) {
+          if (v.errors[i].code !== 'incomplete') { onlyIncomplete = false; break; }
+        }
+        strip.classList.add(onlyIncomplete ? 'is-warn' : 'is-error');
+        msg = v.errors.length ? v.errors[0].message : v.summary;
+        if (v.errors.length > 1) { msg += ' (+' + (v.errors.length - 1) + ' more)'; }
+      }
+      msgEl.textContent = msg;
+    }
+
+    if (cont) {
+      cont.disabled = !v.ok;
+      cont.setAttribute('title', v.ok ? 'Check your ranking, then submit'
+                                      : (v.errors.length ? v.errors[0].message : ''));
+    }
+
+    var stripEl = $('rankstrip');
+    if (stripEl) {
+      var slots = required > 0 ? required : APP.K;
+      var html = '';
+      for (var s = 0; s < slots; s++) {
+        var filled = s < picks.length;
+        html += '<span class="rankstrip__slot ' + (filled ? 'is-filled' : 'is-empty') + '">' +
+                (s + 1) + '</span>';
+      }
+      stripEl.innerHTML = html;
+    }
+  }
+
+  /* ----------------------------------------------------------------------
+     Concentration warning — advisory, never blocking, never a nudge to
+     misreport. See the copy: it says plainly that honest ranking is still the
+     right strategy, because telling people what is popular is exactly the sort
+     of information that distorts reporting.
+     ---------------------------------------------------------------------- */
+
+  function renderConcentration() {
+    var slot = $('conc-slot');
+    if (!slot) { return; }
+    var picks = APP.state.picks;
+    var stats = concentrationStats();
+
+    if (!picks.length || !stats.usable) { slot.innerHTML = ''; return; }
+
+    var hot = [];
+    picks.forEach(function (id) { if (isHotDesk(id, stats)) { hot.push(id); } });
+
+    var share = hot.length / picks.length;
+    if (hot.length < 2 || share < HOT_SHARE) { slot.innerHTML = ''; return; }
+
+    var names = hot.map(function (id) { return APP.deskTitle(id); });
+
+    slot.innerHTML =
+      '<div class="note note--warn conc" role="note">' +
+        '<span class="conc__title">Several of your choices are also popular with others</span>' +
+        '<p>' + hot.length + ' of the ' + picks.length + ' desks you have ranked (' +
+          esc(U.joinList(names)) + ') are top choices for a number of people who have ' +
+          'already submitted. That is a snapshot of the submissions received so far and ' +
+          'it will keep changing until the form closes.</p>' +
+        '<p><strong>This does not change how your ranking is treated, and it is not a ' +
+        'suggestion to reorder anything.</strong> Ranking the desks in your genuine order ' +
+        'of preference is still your best strategy: the algorithm cannot reward you for ' +
+        'putting a desk you like less above one you like more.</p>' +
+        '<p>What it does mean is practical: your lower-ranked choices are more likely to ' +
+        'be the ones that decide where you sit, and there is a somewhat higher chance that ' +
+        'a second round will be needed for the people this affects.</p>' +
+      '</div>';
+  }
+
+  /* ----------------------------------------------------------------------
+     Header text that depends on K and on who the person is
+     ---------------------------------------------------------------------- */
+
+  function renderHeader() {
+    var lede = $('select-lede');
+    var k = APP.K;
+    var required = APP.requiredPicks();
+    if (lede) {
+      if (!k) {
+        lede.textContent = 'The server did not say how many desks to rank, so this ' +
+                           'page is read-only.';
+      } else {
+        lede.textContent = 'Rank ' + required + ' desk' + (required === 1 ? '' : 's') +
+          ', best first. Order is all that matters — the algorithm is published and seeded, ' +
+          'and submitting early does not help you.';
+      }
+    }
+
+    var elig = $('select-eligibility');
+    if (elig) {
+      var person = APP.state.person;
+      var zones = APP.zones();
+      var allowed = (person && isArr(person.allowedZones)) ? person.allowedZones : [];
+      var all = APP.zoneIds();
+      if (person && allowed.length && allowed.length < all.length) {
+        var labels = allowed.map(function (z) { return (zones[z] && zones[z].label) || z; });
+        elig.hidden = false;
+        elig.textContent = 'You can be seated in: ' + U.joinList(labels) +
+          '. Desks elsewhere are shown crossed out on the plan.';
+      } else {
+        elig.hidden = true;
+        elig.textContent = '';
+      }
+    }
+  }
+
+  /* ----------------------------------------------------------------------
+     Drag reordering — pointer events, with a touch-event fallback.
+
+     The handle is the drag source (Style.html already gives it
+     touch-action: none). The pointer is captured on the list, not on the row,
+     because the dragged row is hidden mid-drag; the list element survives the
+     re-render that ends the gesture.
+     ---------------------------------------------------------------------- */
+
+  /* Returns true when a drag actually started, so the caller only attaches
+     move/up listeners it will get to remove again. */
+  function beginDrag(row, clientY, src) {
+    var list = $('picks-list');
+    if (!list || drag) { return false; }
+    var rows = toArray(list.querySelectorAll('.pick[data-desk-id]'));
+    var from = rows.indexOf(row);
+    if (from < 0 || rows.length < 2) { return false; }
+
+    var rects = rows.map(function (r) { return r.getBoundingClientRect(); });
+
+    var ghost = row.cloneNode(true);
+    ghost.removeAttribute('id');
+    ghost.className = 'pick pick-ghost';
+    ghost.setAttribute('data-rank', row.getAttribute('data-rank') || '');
+    ghost.style.width = rects[from].width + 'px';
+    ghost.style.left = rects[from].left + 'px';
+    ghost.style.top = rects[from].top + 'px';
+    doc.body.appendChild(ghost);
+
+    drag = {
+      id: row.getAttribute('data-desk-id'),
+      row: row, rows: rows, rects: rects,
+      from: from, to: from, ghost: ghost,
+      grabDy: clientY - rects[from].top,
+      y: clientY,
+      startScroll: global.pageYOffset || doc.documentElement.scrollTop || 0,
+      src: src, raf: 0
+    };
+
+    row.classList.add('is-dragging');
+    doc.body.style.userSelect = 'none';
+    live('Moving ' + APP.deskTitle(drag.id) + '. Drag up or down, then let go.');
+    autoscroll();
+    return true;
+  }
+
+  function dragTargetIndex() {
+    var scrolled = (global.pageYOffset || doc.documentElement.scrollTop || 0) - drag.startScroll;
+    var y = drag.y + scrolled;
+    var idx = 0;
+    for (var k = 0; k < drag.rows.length; k++) {
+      if (k === drag.from) { continue; }
+      var r = drag.rects[k];
+      if (y > r.top + r.height / 2) { idx++; }
+    }
+    return idx;
+  }
+
+  /* Rows are not all the same height (a badge adds a line), so each displaced
+     row is moved by the pitch to its actual neighbour rather than by one
+     nominal row height. */
+  function shiftFor(k) {
+    var r = drag.rects;
+    if (drag.to > drag.from && k > drag.from && k <= drag.to) {
+      return -(r[k].top - r[k - 1].top);
+    }
+    if (drag.to < drag.from && k >= drag.to && k < drag.from) {
+      return r[k + 1].top - r[k].top;
+    }
+    return 0;
+  }
+
+  function applyShift() {
+    for (var k = 0; k < drag.rows.length; k++) {
+      if (k === drag.from) { continue; }
+      var t = shiftFor(k);
+      drag.rows[k].classList.add('is-shifting');
+      drag.rows[k].style.transform = t ? 'translateY(' + t + 'px)' : '';
+    }
+  }
+
+  function onDragMove(clientY) {
+    if (!drag) { return; }
+    drag.y = clientY;
+    drag.ghost.style.top = (clientY - drag.grabDy) + 'px';
+    var to = dragTargetIndex();
+    if (to !== drag.to) {
+      drag.to = to;
+      applyShift();
+      drag.ghost.setAttribute('data-rank', String(to + 1));
+      var badge = drag.ghost.querySelector('.pick__rank');
+      if (badge) { badge.textContent = String(to + 1); }
+    }
+  }
+
+  function autoscroll() {
+    if (!drag) { return; }
+    var vh = global.innerHeight || doc.documentElement.clientHeight;
+    var d = 0;
+    if (drag.y < AUTOSCROLL_EDGE) {
+      d = -((AUTOSCROLL_EDGE - drag.y) / AUTOSCROLL_EDGE) * AUTOSCROLL_SPEED;
+    } else if (drag.y > vh - AUTOSCROLL_EDGE) {
+      d = ((drag.y - (vh - AUTOSCROLL_EDGE)) / AUTOSCROLL_EDGE) * AUTOSCROLL_SPEED;
+    }
+    if (d) { global.scrollBy(0, d); onDragMove(drag.y); }
+    drag.raf = global.requestAnimationFrame(autoscroll);
+  }
+
+  function endDrag(commit) {
+    if (!drag) { return; }
+    var d = drag;
+    drag = null;
+
+    if (d.raf) { global.cancelAnimationFrame(d.raf); }
+    detachDrag(d.src);
+    if (d.ghost && d.ghost.parentNode) { d.ghost.parentNode.removeChild(d.ghost); }
+    d.rows.forEach(function (r) {
+      r.classList.remove('is-shifting');
+      r.style.transform = '';
+    });
+    d.row.classList.remove('is-dragging');
+    doc.body.style.userSelect = '';
+
+    if (commit && d.to !== d.from) {
+      pendingFocus = '.pick[data-desk-id="' + cssEscape(d.id) + '"] .pick__handle';
+      APP.movePick(d.from, d.to);
+      live(APP.deskTitle(d.id) + ' is now your ' + ordinal(d.to + 1) + ' choice.');
+    } else {
+      renderPicks();
+      live('Move cancelled.');
+    }
+  }
+
+  function detachDrag(src) {
+    if (!src) { return; }
+    src.target.removeEventListener(src.move, src.onMove, src.opts);
+    src.target.removeEventListener(src.up, src.onUp, src.opts);
+    if (src.cancel) { src.target.removeEventListener(src.cancel, src.onCancel, src.opts); }
+    if (src.release) { src.release(); }
+  }
+
+  function wireDrag() {
+    var list = $('picks-list');
+    if (!list) { return; }
+
+    function handleFor(target) {
+      var h = closest(target, '.pick__handle');
+      if (!h) { return null; }
+      var row = closest(h, '.pick');
+      return (row && row.getAttribute('data-desk-id')) ? { handle: h, row: row } : null;
+    }
+
+    function attach(src) {
+      src.target.addEventListener(src.move, src.onMove, src.opts);
+      src.target.addEventListener(src.up, src.onUp, src.opts);
+      if (src.cancel) { src.target.addEventListener(src.cancel, src.onCancel, src.opts); }
+    }
+
+    if (global.PointerEvent) {
+      list.addEventListener('pointerdown', function (e) {
+        if (e.button !== undefined && e.button > 0) { return; }
+        var found = handleFor(e.target);
+        if (!found || drag) { return; }
+        e.preventDefault();
+        var pid = e.pointerId;
+        var src = {
+          target: list, move: 'pointermove', up: 'pointerup', cancel: 'pointercancel',
+          opts: { passive: false }
+        };
+        src.onMove = function (ev) {
+          if (ev.pointerId !== pid) { return; }
+          if (ev.cancelable) { ev.preventDefault(); }
+          onDragMove(ev.clientY);
+        };
+        src.onUp = function (ev) { if (ev.pointerId === pid) { endDrag(true); } };
+        src.onCancel = function (ev) { if (ev.pointerId === pid) { endDrag(false); } };
+        if (!beginDrag(found.row, e.clientY, src)) { return; }
+        /* Capture on the list, not the row: the row is hidden for the length
+           of the drag and is replaced wholesale when it ends. */
+        try { list.setPointerCapture(pid); } catch (err) { /* ignore */ }
+        src.release = function () { try { list.releasePointerCapture(pid); } catch (e2) {} };
+        attach(src);
+      });
+      return;
+    }
+
+    /* Pointer Events missing (older iOS Safari): touch and mouse by hand. */
+    list.addEventListener('touchstart', function (e) {
+      var found = handleFor(e.target);
+      if (!found || drag || e.touches.length !== 1) { return; }
+      e.preventDefault();
+      var src = {
+        target: doc, move: 'touchmove', up: 'touchend', cancel: 'touchcancel',
+        opts: { passive: false }
+      };
+      src.onMove = function (ev) {
+        if (ev.cancelable) { ev.preventDefault(); }
+        if (ev.touches[0]) { onDragMove(ev.touches[0].clientY); }
+      };
+      src.onUp = function () { endDrag(true); };
+      src.onCancel = function () { endDrag(false); };
+      if (beginDrag(found.row, e.touches[0].clientY, src)) { attach(src); }
+    }, { passive: false });
+
+    list.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) { return; }
+      var found = handleFor(e.target);
+      if (!found || drag) { return; }
+      e.preventDefault();
+      var src = { target: doc, move: 'mousemove', up: 'mouseup', cancel: null, opts: false };
+      src.onMove = function (ev) { onDragMove(ev.clientY); };
+      src.onUp = function () { endDrag(true); };
+      if (beginDrag(found.row, e.clientY, src)) { attach(src); }
+    });
+  }
+
+  /* ----------------------------------------------------------------------
+     Wiring
+     ---------------------------------------------------------------------- */
+
+  function wireList() {
+    var list = $('picks-list');
+    if (!list) { return; }
+
+    list.addEventListener('click', function (e) {
+      var btn = closest(e.target, '[data-act]');
+      var row = closest(e.target, '.pick[data-desk-id]');
+      if (!row) { return; }
+      var id = row.getAttribute('data-desk-id');
+      var act = btn && btn.getAttribute('data-act');
+
+      if (act === 'up' || act === 'down') {
+        pendingFocus = '.pick[data-desk-id="' + cssEscape(id) + '"] [data-act="' + act + '"]';
+        if (APP.movePickBy(id, act === 'up' ? -1 : 1)) {
+          live(APP.deskTitle(id) + ' is now your ' + ordinal(APP.rankOf(id)) + ' choice.');
+        } else {
+          pendingFocus = null;
+        }
+        return;
+      }
+      if (act === 'remove') {
+        var was = APP.rankOf(id);
+        APP.removePick(id);
+        live(APP.deskTitle(id) + ' removed from rank ' + was + '.');
+        return;
+      }
+      if (act === 'grab') { return; }
+
+      /* Clicking the row itself points at the desk on the plan. */
+      var d = APP.deskById(id);
+      if (d && String(d.roomId) !== String(activeRoomId)) { switchRoom(d.roomId); }
+      centerOnDesk(id, true);
+      setLinked(id);
+    });
+
+    /* Arrow keys on the handle reorder without needing a pointer at all. */
+    list.addEventListener('keydown', function (e) {
+      var h = closest(e.target, '.pick__handle');
+      if (!h) { return; }
+      var dir = e.key === 'ArrowUp' ? -1 : (e.key === 'ArrowDown' ? 1 : 0);
+      if (!dir) { return; }
+      e.preventDefault();
+      var row = closest(h, '.pick');
+      var id = row && row.getAttribute('data-desk-id');
+      if (!id) { return; }
+      pendingFocus = '.pick[data-desk-id="' + cssEscape(id) + '"] .pick__handle';
+      if (APP.movePickBy(id, dir)) {
+        live(APP.deskTitle(id) + ' is now your ' + ordinal(APP.rankOf(id)) + ' choice.');
+      } else {
+        pendingFocus = null;
+      }
+    });
+
+    list.addEventListener('mouseover', function (e) {
+      var row = closest(e.target, '.pick[data-desk-id]');
+      if (row) { setLinked(row.getAttribute('data-desk-id')); }
+    });
+    list.addEventListener('mouseleave', function () { if (!drag) { setLinked(null); } });
+    list.addEventListener('focusin', function (e) {
+      var row = closest(e.target, '.pick[data-desk-id]');
+      if (row) { setLinked(row.getAttribute('data-desk-id')); }
+    });
+  }
+
+  function wireMap() {
+    var svg = $('map-svg');
+    var stage = $('map-stage');
+    if (!svg || !stage) { return; }
+
+    function deskIdFrom(target) {
+      var n = closest(target, '[data-desk-id]');
+      return n ? n.getAttribute('data-desk-id') : null;
+    }
+
+    svg.addEventListener('click', function (e) {
+      var id = deskIdFrom(e.target);
+      if (!id) { return; }
+      setFocusDesk(id, false);
+      activateDesk(id);
+      /* Keep the tooltip honest about the new state. */
+      if (deskNodes[id]) { showTipFor(id); }
+    });
+
+    svg.addEventListener('keydown', function (e) {
+      var id = deskIdFrom(e.target);
+      if (!id) { return; }
+      var key = e.key;
+      if (key === 'Enter' || key === ' ' || key === 'Spacebar') {
+        e.preventDefault();
+        activateDesk(id);
+        showTipFor(id);
+        return;
+      }
+      var dir = null;
+      if (key === 'ArrowRight') { dir = [1, 0]; }
+      else if (key === 'ArrowLeft') { dir = [-1, 0]; }
+      else if (key === 'ArrowDown') { dir = [0, 1]; }
+      else if (key === 'ArrowUp') { dir = [0, -1]; }
+      if (dir) { e.preventDefault(); moveFocusDirection(dir[0], dir[1]); return; }
+      if (key === 'Home' && deskOrder.length) { e.preventDefault(); setFocusDesk(deskOrder[0], true); return; }
+      if (key === 'End' && deskOrder.length) { e.preventDefault(); setFocusDesk(deskOrder[deskOrder.length - 1], true); return; }
+      if (key === 'Escape') { hideTip(); }
+    });
+
+    svg.addEventListener('mouseover', function (e) {
+      var id = deskIdFrom(e.target);
+      if (id) { setLinked(id); showTipFor(id); }
+    });
+    svg.addEventListener('mouseout', function (e) {
+      var id = deskIdFrom(e.target);
+      var to = e.relatedTarget ? closest(e.relatedTarget, '[data-desk-id]') : null;
+      if (id && (!to || to.getAttribute('data-desk-id') !== id)) { setLinked(null); hideTip(); }
+    });
+    svg.addEventListener('focusin', function (e) {
+      var id = deskIdFrom(e.target);
+      if (id) { setFocusDesk(id, false); setLinked(id); showTipFor(id); }
+    });
+    svg.addEventListener('focusout', function () { hideTip(); setLinked(null); });
+
+    stage.addEventListener('scroll', function () {
+      if (tipFor) { showTipFor(tipFor); }
+    }, { passive: true });
+
+    /* Zoom buttons. */
+    var zi = $('map-zoom-in'), zo = $('map-zoom-out'), zf = $('map-zoom-fit');
+    if (zi) { zi.addEventListener('click', function () { setZoom(view.zoom * ZOOM_STEP); }); }
+    if (zo) { zo.addEventListener('click', function () { setZoom(view.zoom / ZOOM_STEP); }); }
+    if (zf) { zf.addEventListener('click', function () { setZoom(1); }); }
+
+    /* Trackpad pinch / ctrl+wheel. Plain wheel keeps scrolling the stage. */
+    stage.addEventListener('wheel', function (e) {
+      if (!e.ctrlKey && !e.metaKey) { return; }
+      e.preventDefault();
+      setZoom(view.zoom * Math.pow(0.99, e.deltaY), e.clientX, e.clientY);
+    }, { passive: false });
+
+    /* Two-finger pinch. */
+    stage.addEventListener('touchstart', function (e) {
+      if (e.touches.length !== 2) { return; }
+      var a = e.touches[0], b = e.touches[1];
+      pinch = {
+        dist: Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY),
+        zoom: view.zoom
+      };
+      hideTip();
+    }, { passive: true });
+
+    stage.addEventListener('touchmove', function (e) {
+      if (!pinch || e.touches.length !== 2) { return; }
+      if (e.cancelable) { e.preventDefault(); }
+      var a = e.touches[0], b = e.touches[1];
+      var d = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+      if (!pinch.dist) { return; }
+      setZoom(pinch.zoom * (d / pinch.dist),
+              (a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2);
+    }, { passive: false });
+
+    stage.addEventListener('touchend', function (e) {
+      if (e.touches.length < 2) { pinch = null; }
+
+      /* Double-tap to zoom, but only on empty plan — a second tap on a desk
+         has to mean "remove it", not "zoom". */
+      if (e.changedTouches.length !== 1 || e.touches.length !== 0) { return; }
+      var t = e.changedTouches[0];
+      if (closest(t.target, '[data-desk-id]')) { lastTap.t = 0; return; }
+      var now = Date.now();
+      if (now - lastTap.t < DBLTAP_MS &&
+          Math.abs(t.clientX - lastTap.x) < DBLTAP_PX &&
+          Math.abs(t.clientY - lastTap.y) < DBLTAP_PX) {
+        if (e.cancelable) { e.preventDefault(); }
+        setZoom(view.zoom > 1.05 ? 1 : DBLTAP_ZOOM, t.clientX, t.clientY);
+        lastTap.t = 0;
+      } else {
+        lastTap.t = now; lastTap.x = t.clientX; lastTap.y = t.clientY;
+      }
+    }, { passive: false });
+  }
+
+  function wireRoomTabs() {
+    var host = $('map-rooms');
+    if (!host) { return; }
+    host.addEventListener('click', function (e) {
+      var tab = closest(e.target, '[data-room-id]');
+      if (tab) { switchRoom(tab.getAttribute('data-room-id')); }
+    });
+    host.addEventListener('keydown', function (e) {
+      var tabs = toArray(host.querySelectorAll('[data-room-id]'));
+      if (!tabs.length) { return; }
+      var i = tabs.indexOf(closest(e.target, '[data-room-id]'));
+      if (i < 0) { return; }
+      var j = -1;
+      if (e.key === 'ArrowRight') { j = (i + 1) % tabs.length; }
+      else if (e.key === 'ArrowLeft') { j = (i - 1 + tabs.length) % tabs.length; }
+      else if (e.key === 'Home') { j = 0; }
+      else if (e.key === 'End') { j = tabs.length - 1; }
+      if (j < 0) { return; }
+      e.preventDefault();
+      switchRoom(tabs[j].getAttribute('data-room-id'));
+      var again = host.querySelectorAll('[data-room-id]')[j];
+      if (again) { again.focus(); }
+    });
+  }
+
+  function wireChrome() {
+    var clear = $('picks-clear');
+    if (clear) {
+      clear.addEventListener('click', function () {
+        if (!APP.state.picks.length) { return; }
+        var n = APP.state.picks.length;
+        APP.clearPicks();
+        live('Cleared ' + n + ' ranked desk' + (n === 1 ? '' : 's') + '.');
+      });
+    }
+    var back = $('select-back');
+    if (back) { back.addEventListener('click', function () { APP.go('explainer'); }); }
+    var cont = $('select-continue');
+    if (cont) {
+      cont.addEventListener('click', function () {
+        /* Hand off only. Nothing here writes to the server. */
+        APP.go('confirm');
+      });
+    }
+  }
+
+  function wireResize() {
+    var stage = $('map-stage');
+    if (!stage) { return; }
+    var pending = false;
+    function onResize() {
+      if (pending) { return; }
+      pending = true;
+      global.requestAnimationFrame(function () {
+        pending = false;
+        if (APP.state.view === 'select') { measure(); }
+      });
+    }
+    global.addEventListener('resize', onResize);
+    global.addEventListener('orientationchange', onResize);
+    if (global.ResizeObserver) {
+      try { new global.ResizeObserver(onResize).observe(stage); } catch (e) { /* ignore */ }
+    }
+  }
+
+  function wireOnce() {
+    if (wired) { return; }
+    wired = true;
+    wireMap();
+    wireList();
+    wireDrag();
+    wireRoomTabs();
+    wireChrome();
+    wireResize();
+    doc.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hideTip(); }
+    });
+  }
+
+  /* ----------------------------------------------------------------------
+     Render orchestration
+     ---------------------------------------------------------------------- */
+
+  function ensureBuilt() {
+    var wantRoom = pickInitialRoom();
+    if (wantRoom === null) {
+      buildRoom(null);
+      return;
+    }
+    if (builtFor !== wantRoom) { buildRoom(wantRoom); }
+  }
+
+  function renderAll() {
+    renderHeader();
+    renderRoomTabs();
+    renderLegend();
+    paintDesks();
+    renderPicks();
+    renderValidation();
+    renderConcentration();
+  }
+
+  function isActive() { return APP.state.view === 'select'; }
+
+  APP.on('select', {
+    onEnter: function () {
+      wireOnce();
+      ensureBuilt();
+      renderAll();
+      measure();
+      /* Layout settles a frame later on some mobile browsers. */
+      global.requestAnimationFrame(function () { measure(); });
+    },
+    onLeave: function () {
+      hideTip();
+      setLinked(null);
+      if (drag) { endDrag(false); }
+    }
+  });
+
+  APP.listen('bootstrap:ready', function () {
+    wireOnce();
+    builtFor = null;
+    if (!roomById(activeRoomId)) { activeRoomId = null; }
+    if (isActive()) {
+      ensureBuilt();
+      renderAll();
+      measure(true);
+    }
+  });
+
+  APP.listen('person:set', function () {
+    if (!isActive()) { builtFor = null; return; }
+    renderHeader();
+    renderLegend();
+    renderRoomTabs();
+    paintDesks();
+    renderPicks();
+    renderValidation();
+    renderConcentration();
+  });
+
+  APP.listen('picks:changed', function () {
+    if (!isActive() && builtFor === null) { return; }
+    paintDesks();
+    renderPicks();
+    renderValidation();
+    renderConcentration();
+    renderRoomTabs();
+  });
+
+  APP.listen('zones:changed', function () {
+    if (isActive()) { renderLegend(); }
+  });
+
+  APP.listen('deadline:passed', function () {
+    if (isActive()) { renderValidation(); }
+  });
+
+}(window, document));
+</script>

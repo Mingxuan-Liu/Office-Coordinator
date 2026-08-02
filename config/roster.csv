@@ -1,0 +1,11 @@
+name,email,year,candidacy,keeps_desk,current_desk
+Ada Lovelace,alovelace@umich.edu,5,candidate,no,
+Vera Rubin,vrubin@umich.edu,1,precandidate,no,
+Cecilia Payne,cpayne@umich.edu,2,precandidate,no,
+Jocelyn Bell,jbell@umich.edu,6,candidate,yes,D07
+Subrahmanyan Chandrasekhar,schandra@umich.edu,4,candidate,no,
+Annie Cannon,acannon@umich.edu,3,candidate,no,
+Henrietta Leavitt,hleavitt@umich.edu,1,precandidate,no,
+Fritz Zwicky,fzwicky@umich.edu,4,candidate,no,
+Nancy Roman,nroman@umich.edu,2,precandidate,no,
+Edwin Hubble,ehubble@umich.edu,3,candidate,no,

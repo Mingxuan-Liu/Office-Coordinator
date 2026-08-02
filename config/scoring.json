@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "_comment": [
+    "K is not declared anywhere. K = len(curves[primary_curve]). Every curve must",
+    "have the same length. Changing K means editing these lists and nothing else.",
+    "",
+    "Curves must be strictly decreasing and strictly positive. A zero last rank",
+    "would make 'got my 5th choice' worth the same as 'got nothing', which breaks",
+    "the meaning of the K-floor.",
+    "",
+    "tie_break_seed: ANNOUNCE THIS ON DISCORD BEFORE THE FORM OPENS, then set",
+    "seed_committed_at to when you announced it. The seed only ever chooses among",
+    "assignments that are already exactly tied for optimal (see docs/SPEC.md 5.4),",
+    "but publishing it first is what makes that claim checkable."
+  ],
+  "curves": {
+    "linear_borda": [5, 4, 3, 2, 1],
+    "convex": [16, 8, 4, 2, 1],
+    "concave": [5, 4.5, 4, 3.5, 3]
+  },
+  "primary_curve": "linear_borda",
+  "comparison_curves": ["convex", "concave"],
+  "tie_break_seed": "REPLACE-ME-AND-ANNOUNCE-BEFORE-THE-FORM-OPENS",
+  "seed_committed_at": null,
+  "sensitivity_seeds": [
+    "sensitivity-alpha",
+    "sensitivity-beta",
+    "sensitivity-gamma",
+    "sensitivity-delta"
+  ]
+}

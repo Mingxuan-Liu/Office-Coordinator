@@ -1,0 +1,7 @@
+# Environment that produced byte-identical PDFs. Reproducing the
+# assignment (results.json) needs only numpy+scipy; reproducing the
+# PDF byte-for-byte needs this exact matplotlib.
+python==3.12.2
+numpy==1.26.4
+scipy==1.17.1
+matplotlib==3.8.4

@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Solver outputs. Regenerate with `deskmatch solve`; publish via `deskmatch publish`.
+out/
+publish/
+examples/*/out/
+
+# Scratch
+.DS_Store
+
+# Local preview build artefact (tools/build_local_preview.py)
+frontend/_preview.html

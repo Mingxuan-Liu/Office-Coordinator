@@ -1,0 +1,453 @@
+<!-- ==========================================================================
+     ViewSelect.html — the desk selection view (markup only).
+
+     Everything dynamic in here is built by JsMap.html from bootstrap.rooms:
+     the room tabs, the SVG floor plan, the legend, the ranked list, the
+     validation strip. This file contains no desk, zone, room or rank literals
+     and no counts of anything — every "N" you see below is a placeholder that
+     JsMap overwrites from APP.K / APP.rooms() / APP.zones().
+
+     Included by Index.html via  include('ViewSelect')  inside <main>.
+     ========================================================================== -->
+
+<section class="view view--select"
+         id="view-select"
+         data-view-name="select"
+         hidden
+         aria-labelledby="select-title">
+
+<!-- --------------------------------------------------------------------------
+     Supplement to Style.html.
+
+     Style.html owns the design system and already provides .map-wrap,
+     .map-stage, .desk, .pick, .validation and friends. What is below is only
+     what this view adds on top and could not be expressed with the existing
+     classes: the two-pane layout, the aspect-locked map box, the SVG state
+     textures (Style.html deliberately gives .desk.is-locked and
+     .desk.is-ineligible the same treatment; the brief requires them to be
+     visually distinct), the drag affordances and the rank strip.
+
+     No colour literals, no zone colours, no counts. Tokens only. When these
+     files are merged for a release, this block can be pasted into Style.html
+     section 10 verbatim.
+     -------------------------------------------------------------------------- -->
+<style id="deskmatch-select-style">
+
+/* --- two-pane layout ---------------------------------------------------- */
+
+.selectgrid {
+  display: grid;
+  gap: var(--s-4);
+  align-items: start;
+}
+@media (min-width: 62rem) {
+  .selectgrid {
+    grid-template-columns: minmax(0, 1fr) minmax(20rem, 24rem);
+    gap: var(--s-5);
+  }
+  .selectgrid__side { position: sticky; top: calc(var(--header-h) + var(--s-3)); }
+}
+.selectgrid__map, .selectgrid__side { min-width: 0; }
+.selectgrid__side { display: grid; gap: var(--s-4); }
+
+/* --- map chrome --------------------------------------------------------- */
+
+.map-rooms {
+  display: flex;
+  gap: var(--s-1);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.map-rooms__tab {
+  min-height: var(--tap);
+  padding: var(--s-1) var(--s-3);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.map-rooms__tab:hover { background: var(--surface-2); border-color: var(--ink-3); }
+.map-rooms__tab[aria-selected="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.map-rooms__count {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+.map-roomname {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--ink-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-zoom { display: flex; align-items: center; gap: var(--s-1); }
+.map-zoom__level {
+  min-width: 3.25rem;
+  text-align: center;
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.map-note {
+  display: flex;
+  gap: var(--s-2);
+  align-items: flex-start;
+  margin: 0;
+  padding: var(--s-2) var(--s-3);
+  border-bottom: 1px solid var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+}
+
+/* --- the aspect-locked stage -------------------------------------------
+   The ratio box is a percentage-padding frame, so the image and the SVG
+   overlay share one box that is exactly image_size wide-to-tall at every
+   viewport size. Nothing has to be recomputed on resize for the overlay to
+   stay registered with the image; JS only sets the *width* (for zoom).
+   ------------------------------------------------------------------------ */
+
+.map-stage {
+  height: clamp(14rem, 52vh, 34rem);
+  display: flex;
+}
+/* `margin: auto` on a flex item centres it without making overflow
+   unreachable, which `align-items: center` would. */
+.map-stage__inner { width: 100%; flex: 0 0 auto; margin: auto; }
+.map-ratio { position: relative; height: 0; }   /* padding-bottom set by JS */
+.map-ratio > .map-img,
+.map-ratio > .map-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.map-ratio > .map-img { object-fit: fill; }
+.map-svg { overflow: hidden; }
+.map-svg.is-grabbing { cursor: grabbing; }
+
+/* --- desk states --------------------------------------------------------
+   Four states, each with a texture AND a glyph AND a label treatment, so none
+   of them depends on hue:
+     available   translucent zone tint, solid hairline, plain number
+     picked      solid zone fill, heavy dark outline, numbered rank medal
+     unavailable diagonal hatch, padlock glyph
+     ineligible  dotted stipple, dashed outline, no-entry glyph
+   ------------------------------------------------------------------------ */
+
+#view-select .map-svg .desk {
+  vector-effect: non-scaling-stroke;
+  stroke-width: 1.25;
+}
+#view-select .map-svg .desk.is-picked { stroke-width: 3; }
+#view-select .map-svg .desk.is-locked {
+  fill: url(#dm-pat-locked);
+  stroke: var(--ink-3);
+  stroke-dasharray: none;
+  stroke-width: 1.5;
+}
+#view-select .map-svg .desk.is-ineligible {
+  fill: url(#dm-pat-ineligible);
+  stroke: var(--line-2);
+  stroke-dasharray: 5 4;
+  stroke-width: 1.5;
+}
+/* Hover / focus / list-hover cross-highlight. */
+#view-select .map-svg .deskgroup.is-linked .desk {
+  stroke: var(--focus);
+  stroke-width: 3.5;
+}
+#view-select .map-svg .desk:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+#view-select .map-svg .deskgroup.is-flash .desk { animation: dm-desk-flash 900ms var(--ease) 2; }
+@keyframes dm-desk-flash { 50% { stroke: var(--focus); stroke-width: 4.5; } }
+
+#view-select .map-svg .desk__label { paint-order: stroke fill; }
+#view-select .map-svg .deskgroup.is-muted .desk__label { fill: var(--ink-3); }
+#view-select .map-svg .desk__glyph {
+  fill: none;
+  stroke: var(--ink-3);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;                /* inherited by the glyph's children */
+}
+/* vector-effect does not inherit, so it has to be named on every stroked node. */
+#view-select .map-svg .desk__glyph,
+#view-select .map-svg .desk__glyph * { vector-effect: non-scaling-stroke; }
+#view-select .map-svg .desk__glyph--fill { fill: var(--ink-3); stroke: none; }
+#view-select .map-svg .desk__medalwrap { pointer-events: none; }
+#view-select .map-svg .desk__medal {
+  fill: var(--ink);
+  stroke: var(--zone-ink, #fff);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+#view-select .map-svg .desk__rank { fill: var(--surface); dominant-baseline: central; text-anchor: middle; }
+#view-select .map-svg .map-frame {
+  fill: none;
+  stroke: var(--line-2);
+  stroke-dasharray: 8 6;
+  vector-effect: non-scaling-stroke;
+}
+
+/* --- legend ------------------------------------------------------------- */
+
+.map-legend { align-items: flex-start; }
+.map-legend__group { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-4); }
+.map-legend__title {
+  flex: 0 0 100%;
+  margin: 0;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.map-legend__sample { flex: 0 0 auto; width: 1.5rem; height: 1.1rem; }
+.map-legend__note { color: var(--ink-3); font-size: var(--fs-xs); }
+
+/* --- ranked list -------------------------------------------------------- */
+
+.picks-card__body { container-type: inline-size; }
+
+#view-select .pick {
+  grid-template-columns: auto auto minmax(0, 1fr);
+  grid-template-areas: "handle rank body" "handle rank actions";
+  gap: var(--s-1) var(--s-2);
+  align-items: center;
+  touch-action: manipulation;
+}
+#view-select .pick__handle  { grid-area: handle; align-self: stretch; height: auto; }
+#view-select .pick__rank    { grid-area: rank; }
+#view-select .pick__body    { grid-area: body; }
+#view-select .pick__actions { grid-area: actions; justify-self: end; }
+
+/* Roomy single-row layout once the list itself is wide enough for it. */
+@container (min-width: 21rem) {
+  #view-select .pick {
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    grid-template-areas: "handle rank body actions";
+  }
+}
+@supports not (container-type: inline-size) {
+  @media (min-width: 62rem) {
+    #view-select .pick {
+      grid-template-columns: auto auto minmax(0, 1fr) auto;
+      grid-template-areas: "handle rank body actions";
+    }
+  }
+}
+
+#view-select .pick--empty {
+  cursor: default;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas: "rank body";
+}
+#view-select .pick.is-linked { border-color: var(--focus); box-shadow: 0 0 0 2px var(--accent-soft); }
+#view-select .pick.is-dragging { visibility: hidden; }   /* leaves its slot as the hole */
+#view-select .pick.is-shifting { transition: transform var(--dur-2) var(--ease); }
+#view-select .pick__handle svg { pointer-events: none; }
+
+.pick-ghost {
+  position: fixed;
+  z-index: 200;
+  margin: 0;
+  pointer-events: none;
+  box-shadow: var(--shadow-2);
+  transform: scale(1.02);
+  background: var(--surface);
+  border-radius: var(--r-2);
+}
+
+.pick__flags { display: flex; flex-wrap: wrap; gap: var(--s-1); margin-top: 2px; }
+.pick__pos { font-variant-numeric: tabular-nums; }
+
+.picks-hint { font-size: var(--fs-xs); color: var(--ink-3); line-height: var(--lh-snug); }
+
+/* --- rank strip in the action bar --------------------------------------- */
+
+.rankstrip {
+  display: flex;
+  gap: var(--s-1);
+  flex-wrap: wrap;
+  margin-bottom: var(--s-2);
+}
+.rankstrip__slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 2.25rem;
+  height: 1.5rem;
+  padding: 0 var(--s-2);
+  border: 1px dashed var(--line-2);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.rankstrip__slot.is-filled {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.rankstrip__slot.is-filled::before { content: "\2713"; font-weight: 700; }
+.rankstrip__slot.is-empty::before { content: "\2013"; }
+
+/* --- concentration note -------------------------------------------------- */
+
+.conc__title { display: block; font-weight: 700; margin-bottom: var(--s-1); }
+.conc p { margin-bottom: var(--s-2); font-size: var(--fs-sm); line-height: var(--lh-snug); }
+.conc p:last-child { margin-bottom: 0; }
+
+/* --- floating tooltip (SVG cannot use the ::after tooltip) --------------- */
+
+.tip--float { position: fixed; }
+.tip__row { display: block; font-size: var(--fs-xs); opacity: 0.85; }
+.tip__reason { display: block; margin-top: var(--s-1); }
+
+@media (prefers-reduced-motion: reduce) {
+  #view-select .pick.is-shifting { transition: none; }
+  #view-select .map-svg .deskgroup.is-flash .desk { animation: none; }
+}
+</style>
+
+
+  <!-- ====================== heading ====================== -->
+  <header class="view__head">
+    <h1 class="view__title" id="select-title" data-view-focus tabindex="-1">Choose your desks</h1>
+    <p class="view__lede" id="select-lede">
+      Pick your desks on the floor plan, then put them in the order you actually want them.
+    </p>
+    <p class="small muted" id="select-eligibility" hidden></p>
+  </header>
+
+  <div class="selectgrid">
+
+    <!-- ====================== floor plan ====================== -->
+    <section class="selectgrid__map" aria-labelledby="map-heading">
+      <h2 class="sr-only" id="map-heading">Floor plan</h2>
+
+      <div class="map-wrap" id="map-wrap">
+
+        <div class="map-toolbar">
+          <div class="map-rooms" id="map-rooms" role="tablist" aria-label="Rooms" hidden></div>
+          <span class="map-roomname" id="map-roomname"></span>
+          <span class="spacer"></span>
+          <div class="map-zoom" role="group" aria-label="Zoom">
+            <button type="button" class="iconbtn" id="map-zoom-out" aria-label="Zoom out">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" aria-hidden="true"><path d="M4 10h12"></path></svg>
+            </button>
+            <span class="map-zoom__level" id="map-zoom-level">100%</span>
+            <button type="button" class="iconbtn" id="map-zoom-in" aria-label="Zoom in">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" aria-hidden="true"><path d="M10 4v12M4 10h12"></path></svg>
+            </button>
+            <button type="button" class="btn btn--sm btn--secondary" id="map-zoom-fit">Fit</button>
+          </div>
+        </div>
+
+        <p class="map-note" id="map-note" hidden role="status"></p>
+
+        <div class="map-stage" id="map-stage">
+          <div class="map-stage__inner" id="map-stage-inner">
+            <div class="map-ratio" id="map-ratio">
+              <!-- src set by JsMap from bootstrap.floorplans[roomId]; stays
+                   hidden when there is no image and the SVG carries the plan. -->
+              <img class="map-img" id="map-img" alt="" hidden draggable="false">
+              <svg class="map-svg" id="map-svg" xmlns="http://www.w3.org/2000/svg"
+                   role="group" aria-describedby="map-hint"></svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="map-legend" id="map-legend" aria-label="Legend"></div>
+
+        <p class="map-hint" id="map-hint">
+          Tap a desk to add it to your ranking; tap it again to take it off.
+          Pinch, or double-tap an empty part of the plan, to zoom.
+          With a keyboard: tab to the plan, move between desks with the arrow keys,
+          and press Enter or Space to add or remove one.
+        </p>
+      </div>
+    </section>
+
+    <!-- ====================== ranked list ====================== -->
+    <section class="selectgrid__side" aria-labelledby="picks-heading">
+
+      <div class="card">
+        <div class="card__head">
+          <h2 id="picks-heading">Your ranking</h2>
+          <span class="spacer"></span>
+          <span class="picks-summary">
+            <span class="picks-summary__count" id="picks-count">0</span>
+            <span id="picks-of">of &mdash;</span>
+          </span>
+        </div>
+
+        <div class="card__body picks-card__body">
+          <ol class="picks" id="picks-list" aria-describedby="picks-hint"></ol>
+        </div>
+
+        <div class="card__foot">
+          <div class="row row--between">
+            <p class="picks-hint" id="picks-hint">
+              Drag the handle to reorder, or use the arrow buttons.
+              Rank 1 is your first choice.
+            </p>
+            <button type="button" class="btn btn--sm btn--danger" id="picks-clear">Clear all</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Filled in by JsMap when the user's picks overlap heavily with what
+           others have ranked first. Advisory only; never blocks submission. -->
+      <div id="conc-slot"></div>
+
+    </section>
+  </div>
+
+  <!-- ====================== validation + hand-off ====================== -->
+  <div class="actionbar">
+    <div class="rankstrip" id="rankstrip" aria-hidden="true"></div>
+    <div class="meter" aria-hidden="true"><div class="meter__fill" id="select-meter"></div></div>
+    <div class="actionbar__inner" style="margin-top: var(--s-3);">
+      <p class="validation" id="select-validation">
+        <span class="validation__dot" aria-hidden="true"></span>
+        <span class="validation__msg" id="select-validation-msg">Loading&hellip;</span>
+      </p>
+      <div class="btn-row btn-row--stack">
+        <button type="button" class="btn btn--secondary" id="select-back">How it works</button>
+        <button type="button" class="btn btn--primary" id="select-continue" disabled>
+          Review &amp; submit
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <p class="sr-only" id="select-live" role="status" aria-live="polite"></p>
+</section>

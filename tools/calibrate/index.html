@@ -1,0 +1,3712 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>deskmatch · floor-plan calibration</title>
+<style>
+/* ============================================================
+   deskmatch calibrate — standalone, offline, no dependencies.
+   ============================================================ */
+*,*::before,*::after{box-sizing:border-box}
+:root{
+  --bg:#0f1216; --chrome:#161b22; --panel:#1a202a; --panel2:#212a36;
+  --line:#2a3340; --line2:#3a4757;
+  --txt:#e3e9f1; --dim:#95a3b4; --dim2:#6d7c8e;
+  --accent:#4f9cf9; --accent-dim:#1d3a5c;
+  --danger:#ff6b6b; --danger-dim:#4a1f24;
+  --warn:#f0a747; --ok:#57c98b; --sugg:#e263d6;
+  --stage:#616a78;
+  --r:6px;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --ui:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Helvetica,Arial,sans-serif;
+}
+html,body{margin:0;padding:0;height:100%}
+body{
+  background:var(--bg); color:var(--txt);
+  font:13px/1.45 var(--ui);
+  -webkit-text-size-adjust:100%;
+  overscroll-behavior:none;
+}
+#app{display:grid;grid-template-rows:auto minmax(0,1fr) auto;height:100dvh;height:100vh}
+@supports (height:100dvh){#app{height:100dvh}}
+
+/* ---------- topbar ---------- */
+#topbar{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:6px 10px;background:var(--chrome);border-bottom:1px solid var(--line);
+}
+.brand{display:flex;align-items:center;gap:7px;font-weight:600;letter-spacing:.2px;white-space:nowrap}
+.brand .logo{color:var(--accent);font-size:15px}
+.brand small{color:var(--dim2);font-weight:400}
+.bargroup{display:flex;gap:4px;align-items:center;flex-wrap:nowrap}
+.bargroup.scroll{overflow-x:auto;scrollbar-width:thin}
+.spacer{flex:1 1 auto;min-width:4px}
+
+/* ---------- controls ---------- */
+button,.btn{
+  font:inherit;color:var(--txt);background:var(--panel2);
+  border:1px solid var(--line2);border-radius:var(--r);
+  padding:6px 10px;min-height:32px;cursor:pointer;white-space:nowrap;
+  display:inline-flex;align-items:center;gap:6px;justify-content:center;
+}
+button:hover{background:#2b3543;border-color:#4a5a6d}
+button:active{transform:translateY(1px)}
+button:disabled{opacity:.4;cursor:not-allowed;transform:none}
+button.on{background:var(--accent-dim);border-color:var(--accent);color:#dbeaff}
+button.prim{background:#1e4f86;border-color:#3f7fc4;color:#eaf3ff}
+button.prim:hover{background:#265f9f}
+button.danger{border-color:#6b3339;color:#ffc9c9}
+button.danger:hover{background:var(--danger-dim)}
+button.mini{min-height:26px;padding:2px 7px;font-size:12px}
+button.icon{min-width:32px;padding:6px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
+input[type=text],input[type=number],input[type=search],select,textarea{
+  font:inherit;color:var(--txt);background:#12171e;border:1px solid var(--line2);
+  border-radius:var(--r);padding:5px 7px;min-height:30px;width:100%;
+}
+textarea{font-family:var(--mono);font-size:11.5px;line-height:1.4;resize:vertical}
+input[type=color]{
+  -webkit-appearance:none;appearance:none;width:30px;height:28px;padding:0;
+  border:1px solid var(--line2);border-radius:4px;background:transparent;cursor:pointer;flex:0 0 auto;
+}
+input[type=color]::-webkit-color-swatch-wrapper{padding:2px}
+input[type=color]::-webkit-color-swatch{border:none;border-radius:3px}
+input.bad,select.bad{border-color:var(--danger);background:#201416}
+label.ck{display:flex;align-items:center;gap:7px;cursor:pointer;min-height:30px}
+input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent);flex:0 0 auto;margin:0}
+
+/* ---------- layout ---------- */
+#main{display:grid;grid-template-columns:352px minmax(0,1fr);min-height:0}
+#side{
+  background:var(--panel);border-right:1px solid var(--line);
+  overflow-y:auto;overflow-x:hidden;min-height:0;
+  scrollbar-width:thin;
+}
+#stage{position:relative;min-height:0;background:var(--stage);overflow:hidden;touch-action:none}
+#cv{display:block;width:100%;height:100%;touch-action:none;cursor:crosshair}
+#cv.tool-select{cursor:default}
+#cv.tool-pan,#cv.panning{cursor:grab}
+#cv.panning{cursor:grabbing}
+
+/* ---------- sections ---------- */
+details.sec{border-bottom:1px solid var(--line)}
+details.sec>summary{
+  list-style:none;cursor:pointer;padding:9px 11px;min-height:38px;
+  display:flex;align-items:center;gap:8px;
+  font-weight:600;font-size:12px;letter-spacing:.5px;text-transform:uppercase;color:var(--dim);
+  user-select:none;background:var(--panel);position:sticky;top:0;z-index:2;
+}
+details.sec>summary::-webkit-details-marker{display:none}
+details.sec>summary::before{content:"▸";color:var(--dim2);font-size:10px;transition:transform .12s}
+details.sec[open]>summary::before{transform:rotate(90deg)}
+details.sec>summary:hover{color:var(--txt)}
+.secbody{padding:2px 11px 12px}
+.badge{
+  margin-left:auto;font-size:10.5px;font-weight:700;letter-spacing:0;
+  background:var(--panel2);border:1px solid var(--line2);border-radius:99px;padding:1px 7px;color:var(--dim);
+}
+.badge.err{background:var(--danger-dim);border-color:#7a3b42;color:#ffc9c9}
+.badge.warn{background:#3d2f14;border-color:#6b5426;color:#f5d08c}
+.badge.ok{background:#123324;border-color:#2b6146;color:#9fe3c1}
+
+.row{display:flex;gap:6px;align-items:center;margin:6px 0}
+.row>.grow{flex:1 1 auto;min-width:0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:6px 0}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin:6px 0}
+.fld{display:block;margin:7px 0}
+.fld>span{display:block;font-size:11px;color:var(--dim);margin-bottom:3px;letter-spacing:.3px}
+.hint{color:var(--dim2);font-size:11.5px;line-height:1.5;margin:6px 0}
+.hint code{font-family:var(--mono);background:#0d1116;padding:1px 4px;border-radius:3px;color:var(--dim)}
+.sep{height:1px;background:var(--line);margin:10px 0}
+
+/* ---------- lists ---------- */
+.list{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:#141a22}
+.list.scroll{max-height:260px;overflow-y:auto;scrollbar-width:thin}
+.li{
+  display:flex;align-items:center;gap:7px;padding:5px 7px;min-height:36px;
+  border-bottom:1px solid #1d242e;cursor:pointer;
+}
+.li:last-child{border-bottom:none}
+.li:hover{background:#1a222c}
+.li.sel{background:var(--accent-dim)}
+.li .sw{width:12px;height:12px;border-radius:3px;flex:0 0 auto;border:1px solid rgba(255,255,255,.25)}
+.li .id{font-family:var(--mono);font-size:12px;flex:0 0 auto}
+.li .nm{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto;min-width:0}
+.li .tag{font-size:10.5px;color:var(--dim2);flex:0 0 auto;max-width:44%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.li .dot{width:7px;height:7px;border-radius:99px;flex:0 0 auto}
+.dot.err{background:var(--danger)} .dot.warn{background:var(--warn)}
+.zrow{display:flex;align-items:center;gap:5px;padding:6px 7px;border-bottom:1px solid #1d242e}
+.zrow:last-child{border-bottom:none}
+.zrow input[type=text]{min-height:28px;padding:3px 6px;font-size:12px}
+.zrow .zid{font-family:var(--mono);flex:0 0 34%}
+.eye{
+  min-height:28px;min-width:28px;padding:0;font-size:13px;
+  background:transparent;border:1px solid transparent;color:var(--dim2)
+}
+.eye.on{color:var(--accent)}
+.eye:hover{background:var(--panel2);border-color:var(--line2)}
+.empty{padding:12px;color:var(--dim2);text-align:center;font-size:12px}
+
+/* ---------- validation ---------- */
+.vitem{
+  display:flex;gap:7px;padding:7px 8px;border-bottom:1px solid #1d242e;
+  font-size:11.5px;line-height:1.45;cursor:pointer;
+}
+.vitem:last-child{border-bottom:none}
+.vitem:hover{background:#1a222c}
+.vitem .k{flex:0 0 auto;font-weight:700;font-size:10px;letter-spacing:.5px;padding-top:1px}
+.vitem.e .k{color:var(--danger)} .vitem.w .k{color:var(--warn)}
+.vitem .m{flex:1 1 auto;min-width:0;color:var(--dim);word-break:break-word}
+.vitem .m b{color:var(--txt);font-weight:600}
+
+/* ---------- suggestions ---------- */
+.sgrow{display:flex;align-items:center;gap:6px;padding:5px 7px;border-bottom:1px solid #1d242e;min-height:38px}
+.sgrow:last-child{border-bottom:none}
+.sgrow:hover{background:#1a222c}
+.sgrow.hot{background:#2a1c33}
+.sgrow .px{font-family:var(--mono);font-size:11px;color:var(--dim);flex:1 1 auto;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ---------- stage overlays ---------- */
+.overlay{position:absolute;z-index:5;pointer-events:none}
+#legend{
+  left:10px;bottom:10px;background:rgba(16,20,26,.93);border:1px solid var(--line2);
+  border-radius:var(--r);padding:8px 10px;max-width:min(300px,60vw);pointer-events:auto;
+  box-shadow:0 6px 22px rgba(0,0,0,.45);
+}
+#legend h4{margin:0 0 6px;font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--dim)}
+#legend .lg{display:flex;align-items:center;gap:7px;min-height:30px;cursor:pointer;font-size:12px}
+#legend .lg.off{opacity:.4}
+#legend .sw{width:13px;height:13px;border-radius:3px;border:1px solid rgba(255,255,255,.3);flex:0 0 auto}
+#legend .ct{margin-left:auto;color:var(--dim2);font-family:var(--mono);font-size:11px}
+#modebadge{
+  right:10px;top:10px;background:rgba(16,20,26,.93);border:1px solid var(--line2);
+  border-radius:var(--r);padding:5px 10px;font-size:11.5px;color:var(--dim);
+}
+#drawhint{
+  left:50%;top:10px;transform:translateX(-50%);background:rgba(16,20,26,.93);
+  border:1px solid var(--line2);border-radius:var(--r);padding:5px 11px;font-size:12px;color:var(--accent2)
+}
+#veil{
+  inset:0;background:rgba(31,78,134,.55);border:3px dashed var(--accent2);
+  display:none;align-items:center;justify-content:center;font-size:16px;font-weight:600;z-index:20;
+}
+#veil.on{display:flex}
+#restore{
+  left:10px;right:10px;top:10px;background:#1b2534;border:1px solid var(--accent);
+  border-radius:var(--r);padding:10px 12px;display:none;gap:10px;align-items:center;
+  flex-wrap:wrap;pointer-events:auto;z-index:15;box-shadow:0 8px 26px rgba(0,0,0,.5);
+}
+#restore.on{display:flex}
+#restore .msg{flex:1 1 220px;font-size:12.5px;min-width:0}
+
+/* ---------- statusbar ---------- */
+#statusbar{
+  display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+  padding:4px 10px;background:var(--chrome);border-top:1px solid var(--line);
+  font-family:var(--mono);font-size:11px;color:var(--dim2);min-height:26px;
+}
+#statusbar b{color:var(--dim);font-weight:600}
+#statusbar .st-err{color:var(--danger)} #statusbar .st-warn{color:var(--warn)}
+
+/* ---------- modal ---------- */
+#modalRoot{position:fixed;inset:0;z-index:100;display:none;align-items:center;justify-content:center;
+  background:rgba(6,9,13,.72);padding:16px}
+#modalRoot.on{display:flex}
+.modal{
+  background:var(--panel);border:1px solid var(--line2);border-radius:10px;
+  max-width:560px;width:100%;max-height:86dvh;overflow:auto;
+  box-shadow:0 20px 60px rgba(0,0,0,.6);
+}
+.modal h3{margin:0;padding:14px 16px;border-bottom:1px solid var(--line);font-size:14px}
+.modal .mbody{padding:14px 16px;font-size:12.5px;line-height:1.55;color:var(--dim)}
+.modal .mbody b{color:var(--txt)}
+.modal .mfoot{display:flex;gap:8px;justify-content:flex-end;padding:12px 16px;border-top:1px solid var(--line);flex-wrap:wrap}
+.modal ul{margin:8px 0;padding-left:20px}
+.modal li{margin:3px 0}
+
+/* ---------- toast ---------- */
+#toasts{position:fixed;left:50%;bottom:44px;transform:translateX(-50%);z-index:120;
+  display:flex;flex-direction:column;gap:6px;align-items:center;pointer-events:none}
+.toast{background:#20293a;border:1px solid var(--line2);border-radius:99px;padding:7px 16px;
+  font-size:12.5px;box-shadow:0 6px 20px rgba(0,0,0,.5);max-width:92vw}
+.toast.err{background:#3a1c20;border-color:#7a3b42;color:#ffd7d7}
+.toast.ok{background:#153a2a;border-color:#2b6146;color:#bdf0d6}
+
+/* ---------- help table ---------- */
+table.keys{width:100%;border-collapse:collapse;font-size:12px}
+table.keys td{padding:4px 6px;border-bottom:1px solid #1d242e;vertical-align:top}
+table.keys td:first-child{width:42%;white-space:nowrap}
+kbd{
+  font-family:var(--mono);font-size:10.5px;background:#0d1116;border:1px solid var(--line2);
+  border-bottom-width:2px;border-radius:4px;padding:1px 5px;color:var(--txt);display:inline-block
+}
+
+.only-narrow{display:none}
+#sideClose{display:none}
+
+/* ---------- narrow / touch ---------- */
+@media (max-width:900px){
+  #main{grid-template-columns:minmax(0,1fr)}
+  #side{
+    position:fixed;left:0;right:0;bottom:0;top:auto;height:min(78dvh,78vh);
+    border-right:none;border-top:1px solid var(--line2);border-radius:12px 12px 0 0;
+    transform:translateY(102%);transition:transform .2s ease;z-index:60;
+    box-shadow:0 -14px 40px rgba(0,0,0,.55);
+  }
+  #side.open{transform:none}
+  .only-narrow{display:inline-flex}
+  #sideClose{display:flex;position:sticky;top:0;z-index:5;justify-content:space-between;
+    align-items:center;padding:8px 11px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .brand span:last-child{display:none}
+  #legend{max-width:48vw}
+}
+/* Touch sizing keys off BOTH a coarse pointer and the narrow (drawer) layout.
+   Relying on `pointer:coarse` alone leaves 33px targets on any device that
+   reports a fine pointer while still being driven by a thumb. */
+@media (pointer:coarse), (max-width:900px){
+  button,.btn{min-height:44px;padding:8px 13px}
+  button.mini{min-height:44px;font-size:13px;padding:6px 10px}
+  button.icon{min-width:44px}
+  input[type=text],input[type=number],input[type=search],select,textarea,
+  .zrow input[type=text]{min-height:44px;font-size:16px;padding:8px 10px}
+  input[type=color],.zrow input[type=color]{width:44px;height:44px}
+  /* the box itself stays small; the whole label is the tap target */
+  input[type=checkbox]{width:22px;height:22px}
+  label.ck{min-height:44px}
+  .li{min-height:48px}
+  .zrow{min-height:52px;flex-wrap:wrap}
+  .zrow .zid{flex:1 1 46%}
+  details.sec>summary{min-height:52px}
+  .secbody details>summary{min-height:44px;display:flex;align-items:center}
+  .eye{min-height:44px;min-width:44px;font-size:16px}
+  .sgrow{min-height:48px}
+  .vitem{padding:10px 8px}
+  #legend .lg{min-height:40px}
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <div class="brand"><span class="logo">▦</span><span>deskmatch <small>· calibrate</small></span></div>
+    <div class="bargroup scroll" role="toolbar" aria-label="Drawing tools">
+      <button class="tool" data-tool="select" title="Select and edit regions (V)">Select</button>
+      <button class="tool" data-tool="rect" title="Drag a rectangle (R)">Rect</button>
+      <button class="tool" data-tool="poly" title="Click points, Enter or double-click to close (P)">Polygon</button>
+      <button class="tool" data-tool="pan" title="Pan the view (H, or hold Space)">Pan</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="bargroup scroll">
+      <button id="btnUndo" class="icon" title="Undo (Ctrl/Cmd+Z)" aria-label="Undo">↶</button>
+      <button id="btnRedo" class="icon" title="Redo (Ctrl/Cmd+Shift+Z)" aria-label="Redo">↷</button>
+      <button id="btnFit" title="Fit image in view (0)">Fit</button>
+      <button id="btnPreview" title="Preview mode (Tab)">Preview</button>
+      <button id="btnHelp" class="icon" title="Keyboard shortcuts (?)" aria-label="Help">?</button>
+      <button id="btnPanels" class="only-narrow prim">Panels</button>
+    </div>
+  </header>
+
+  <div id="main">
+
+    <aside id="side">
+      <div id="sideClose">
+        <b>Panels</b><button id="btnSideClose" class="mini">Close</button>
+      </div>
+
+      <!-- ============ DOCUMENT ============ -->
+      <details class="sec" open>
+        <summary>Document <span class="badge" id="badgeDoc">—</span></summary>
+        <div class="secbody">
+          <div class="row">
+            <button id="btnImport" class="grow">Import rooms.json…</button>
+            <button id="btnPaste" title="Paste JSON text instead of picking a file">Paste</button>
+          </div>
+          <div class="row">
+            <button id="btnNew" class="grow">New empty document</button>
+          </div>
+          <div class="sep"></div>
+          <label class="fld"><span>Export coordinate space</span>
+            <select id="expSpace">
+              <option value="normalized">normalized (0–1) — recommended</option>
+              <option value="pixels">pixels</option>
+            </select>
+          </label>
+          <div class="grid2">
+            <label class="fld"><span>Decimals</span><input type="number" id="expDp" min="0" max="8" step="1" value="6"></label>
+            <label class="fld"><span>schema_version</span><input type="number" id="docSchema" min="0" step="1" value="1"></label>
+          </div>
+          <label class="fld"><span>File name</span><input type="text" id="expName" value="rooms.json"></label>
+          <div class="row">
+            <button id="btnExport" class="prim grow">Export rooms.json</button>
+            <button id="btnCopy">Copy</button>
+          </div>
+          <p class="hint" id="expNote"></p>
+          <details><summary style="cursor:pointer;color:var(--dim);font-size:11.5px;padding:4px 0">Show JSON preview</summary>
+            <textarea id="expOut" rows="12" readonly spellcheck="false"></textarea>
+          </details>
+        </div>
+      </details>
+
+      <!-- ============ ROOMS ============ -->
+      <details class="sec" open>
+        <summary>Rooms <span class="badge" id="badgeRooms">0</span></summary>
+        <div class="secbody">
+          <label class="fld"><span>Active room ( [ / ] to switch )</span>
+            <select id="roomSel"></select>
+          </label>
+          <div class="row">
+            <button id="btnRoomAdd" class="mini grow">+ Room</button>
+            <button id="btnRoomDup" class="mini grow">Duplicate</button>
+            <button id="btnRoomDel" class="mini danger grow">Delete</button>
+          </div>
+          <div class="sep"></div>
+          <label class="fld"><span>room.id (stable key)</span><input type="text" id="roomId" spellcheck="false"></label>
+          <label class="fld"><span>room.label (shown to students)</span><input type="text" id="roomLabel"></label>
+          <label class="fld"><span>image (path relative to config/)</span><input type="text" id="roomImage" spellcheck="false" placeholder="floorplans/main_office.png"></label>
+          <div class="row">
+            <button id="btnPickImage" class="grow">Load image file…</button>
+            <button id="btnDropImage" title="Forget the loaded bitmap (keeps the path and size)">Unload</button>
+          </div>
+          <div class="grid2">
+            <label class="fld"><span>image_size w</span><input type="number" id="roomW" min="1" step="1"></label>
+            <label class="fld"><span>image_size h</span><input type="number" id="roomH" min="1" step="1"></label>
+          </div>
+          <p class="hint" id="imgNote"></p>
+        </div>
+      </details>
+
+      <!-- ============ ZONES ============ -->
+      <details class="sec" open>
+        <summary>Zones <span class="badge" id="badgeZones">0</span></summary>
+        <div class="secbody">
+          <div class="list" id="zoneList"></div>
+          <div class="row"><button id="btnZoneAdd" class="grow">+ Add zone</button></div>
+          <p class="hint">Zone ids are arbitrary strings — whatever <code>eligibility.json</code> refers to.
+            Renaming an id here rewrites every desk that uses it.</p>
+        </div>
+      </details>
+
+      <!-- ============ REGIONS ============ -->
+      <details class="sec" open>
+        <summary>Regions <span class="badge" id="badgeDesks">0</span></summary>
+        <div class="secbody">
+          <input type="search" id="deskSearch" placeholder="Filter by id, label or zone…" spellcheck="false">
+          <div style="height:6px"></div>
+          <div class="list scroll" id="deskList"></div>
+          <div class="row">
+            <button id="btnSelAll" class="mini grow">Select all</button>
+            <button id="btnSelNone" class="mini grow">Deselect</button>
+            <button id="btnRenumber" class="mini grow" title="Rewrite every id in this room in reading order using the id pattern below">Renumber</button>
+          </div>
+        </div>
+      </details>
+
+      <!-- ============ INSPECTOR ============ -->
+      <details class="sec" open>
+        <summary>Inspector <span class="badge" id="badgeSel">none</span></summary>
+        <div class="secbody" id="inspBody"></div>
+      </details>
+
+      <!-- ============ GRID / REPLICATE ============ -->
+      <details class="sec" id="secRep">
+        <summary>Grid &amp; replicate</summary>
+        <div class="secbody">
+          <div class="row">
+            <label class="ck grow"><input type="checkbox" id="ckGrid"> Show grid (G)</label>
+            <label class="ck grow"><input type="checkbox" id="ckSnap"> Snap (⇧G)</label>
+          </div>
+          <label class="fld"><span>Grid size (image px)</span><input type="number" id="gridPx" min="1" step="1" value="10"></label>
+          <div class="sep"></div>
+          <p class="hint"><b>Replicate</b> copies the selected region along a row or column.
+            This is the fastest way to lay out a bank of identical desks.</p>
+          <div class="grid2">
+            <label class="fld"><span>Copies</span><input type="number" id="repN" min="1" step="1" value="4"></label>
+            <label class="fld"><span>Direction</span>
+              <select id="repDir">
+                <option value="right">→ right</option>
+                <option value="left">← left</option>
+                <option value="down">↓ down</option>
+                <option value="up">↑ up</option>
+              </select>
+            </label>
+          </div>
+          <div class="grid2">
+            <label class="fld"><span>Spacing mode</span>
+              <select id="repMode">
+                <option value="pitch">pitch (origin→origin)</option>
+                <option value="gap">gap (edge→edge)</option>
+              </select>
+            </label>
+            <label class="fld"><span>Value (image px)</span><input type="number" id="repVal" step="0.5" value="80"></label>
+          </div>
+          <div class="row">
+            <button id="btnRepAuto" class="mini grow" title="Pitch = size of the source along the direction; or, with two regions selected, the distance between them">Derive spacing</button>
+            <button id="btnRepApply" class="prim grow">Replicate</button>
+          </div>
+          <p class="hint" id="repNote">Select exactly one region to enable replication.</p>
+        </div>
+      </details>
+
+      <!-- ============ SUGGEST ============ -->
+      <details class="sec">
+        <summary>Assist: suggest rectangles</summary>
+        <div class="secbody">
+          <p class="hint"><b>Heuristic suggestion only — never the source of truth.</b>
+            It grayscales the loaded bitmap, thresholds it, and finds light regions fully enclosed by
+            dark lines. On a clean line-drawing plan that finds desk outlines; it will also miss desks
+            and invent false ones wherever a line has a gap or a label crosses a border.
+            Nothing here enters the export until you accept it.</p>
+          <div class="grid2">
+            <label class="fld"><span>Threshold (0 = auto/Otsu)</span><input type="number" id="cvThr" min="0" max="255" step="1" value="0"></label>
+            <label class="fld"><span>Close line gaps (px)</span><input type="number" id="cvDil" min="0" max="4" step="1" value="1"></label>
+          </div>
+          <div class="grid2">
+            <label class="fld"><span>Min area (% of image)</span><input type="number" id="cvMin" min="0" max="100" step="0.01" value="0.05"></label>
+            <label class="fld"><span>Max area (% of image)</span><input type="number" id="cvMax" min="0" max="100" step="0.1" value="8"></label>
+          </div>
+          <div class="grid2">
+            <label class="fld"><span>Min rectangularity</span><input type="number" id="cvFill" min="0" max="1" step="0.01" value="0.72"></label>
+            <label class="fld"><span>Max suggestions</span><input type="number" id="cvCap" min="1" step="1" value="400"></label>
+          </div>
+          <div class="row">
+            <button id="btnSuggest" class="prim grow">Suggest rectangles</button>
+            <button id="btnSuggClear">Clear</button>
+          </div>
+          <div class="row">
+            <button id="btnSuggAll" class="mini grow">Accept all</button>
+            <button id="btnSuggNone" class="mini grow">Reject all</button>
+          </div>
+          <div class="list scroll" id="suggList"></div>
+        </div>
+      </details>
+
+      <!-- ============ VALIDATION ============ -->
+      <details class="sec" open>
+        <summary>Validation <span class="badge" id="badgeVal">—</span></summary>
+        <div class="secbody">
+          <div class="list scroll" id="valList"></div>
+          <p class="hint">These mirror the checks in <code>docs/SPEC.md</code> §2.1 that
+            <code>deskmatch.validate</code> runs. Click a row to jump to the region.</p>
+        </div>
+      </details>
+
+      <!-- ============ HELP ============ -->
+      <details class="sec" id="secHelp">
+        <summary>Keyboard shortcuts</summary>
+        <div class="secbody">
+          <table class="keys">
+            <tr><td><kbd>V</kbd> <kbd>R</kbd> <kbd>P</kbd> <kbd>H</kbd></td><td>Select / Rectangle / Polygon / Pan tool</td></tr>
+            <tr><td><kbd>Space</kbd>-drag, middle-drag</td><td>Pan the view</td></tr>
+            <tr><td>Wheel, pinch</td><td>Zoom at the cursor</td></tr>
+            <tr><td><kbd>⇧</kbd>+wheel</td><td>Pan horizontally</td></tr>
+            <tr><td><kbd>0</kbd> / <kbd>1</kbd> / <kbd>+</kbd> / <kbd>−</kbd></td><td>Fit / 100% / zoom in / zoom out</td></tr>
+            <tr><td><kbd>Enter</kbd></td><td>Close the polygon being drawn</td></tr>
+            <tr><td><kbd>Esc</kbd></td><td>Cancel draw · clear selection · close dialog</td></tr>
+            <tr><td><kbd>⌫</kbd> while drawing</td><td>Remove the last polygon point</td></tr>
+            <tr><td><kbd>Delete</kbd> / <kbd>⌫</kbd></td><td>Delete the selected regions</td></tr>
+            <tr><td><kbd>⌘/Ctrl</kbd>+<kbd>Z</kbd> · <kbd>⇧⌘/Ctrl</kbd>+<kbd>Z</kbd></td><td>Undo · redo (200 steps)</td></tr>
+            <tr><td><kbd>⌘/Ctrl</kbd>+<kbd>A</kbd> · <kbd>⌘/Ctrl</kbd>+<kbd>D</kbd></td><td>Select all in room · duplicate</td></tr>
+            <tr><td>Arrows · <kbd>⇧</kbd>+arrows</td><td>Nudge selection 1 px · 10 px</td></tr>
+            <tr><td><kbd>⇧</kbd>+click · drag empty space</td><td>Add to selection · marquee select</td></tr>
+            <tr><td><kbd>Alt</kbd>+click a vertex</td><td>Delete that polygon vertex</td></tr>
+            <tr><td>Double-click a polygon edge</td><td>Insert a vertex there</td></tr>
+            <tr><td><kbd>Tab</kbd> · <kbd>L</kbd></td><td>Preview mode · cycle label mode</td></tr>
+            <tr><td><kbd>G</kbd> · <kbd>⇧</kbd>+<kbd>G</kbd></td><td>Toggle grid · toggle snap</td></tr>
+            <tr><td><kbd>[</kbd> / <kbd>]</kbd></td><td>Previous / next room</td></tr>
+            <tr><td><kbd>⌘/Ctrl</kbd>+<kbd>O</kbd></td><td>Import rooms.json</td></tr>
+            <tr><td><kbd>⌘/Ctrl</kbd>+<kbd>E</kbd> or <kbd>S</kbd></td><td>Export rooms.json</td></tr>
+            <tr><td><kbd>?</kbd></td><td>Open this panel</td></tr>
+          </table>
+          <div class="sep"></div>
+          <p class="hint">Drag a PNG/JPG onto the canvas to load it as the active room's floor plan.
+            Drag a <code>.json</code> onto the canvas to import it.</p>
+        </div>
+      </details>
+
+      <!-- ============ SESSION ============ -->
+      <details class="sec">
+        <summary>Session</summary>
+        <div class="secbody">
+          <p class="hint" id="autoNote">Autosave: —</p>
+          <div class="row">
+            <button id="btnSaveNow" class="mini grow">Save now</button>
+            <button id="btnRestore" class="mini grow">Restore last</button>
+            <button id="btnWipe" class="mini danger grow">Clear autosave</button>
+          </div>
+          <p class="hint">Everything is kept in this browser's <code>localStorage</code> for this page only.
+            Nothing is uploaded anywhere; this file has no network access at all.</p>
+        </div>
+      </details>
+    </aside>
+
+    <section id="stage">
+      <canvas id="cv" tabindex="0" aria-label="Floor plan canvas"></canvas>
+      <div class="overlay" id="modebadge"></div>
+      <div class="overlay" id="drawhint" style="display:none"></div>
+      <div class="overlay" id="legend" style="display:none"></div>
+      <div class="overlay" id="restore">
+        <div class="msg" id="restoreMsg"></div>
+        <button id="btnRestoreYes" class="prim">Restore</button>
+        <button id="btnRestoreNo">Discard</button>
+      </div>
+      <div class="overlay" id="veil">Drop a floor-plan image or a rooms.json here</div>
+    </section>
+
+  </div>
+
+  <footer id="statusbar">
+    <span id="stRoom">—</span>
+    <span id="stCursor">—</span>
+    <span id="stZoom">—</span>
+    <span id="stSel">—</span>
+    <span id="stVal">—</span>
+    <span class="spacer"></span>
+    <span id="stAuto">—</span>
+  </footer>
+</div>
+
+<div id="modalRoot"></div>
+<div id="toasts"></div>
+<input type="file" id="fileImg" accept="image/*" style="display:none">
+<input type="file" id="fileJson" accept=".json,application/json" style="display:none">
+
+<script id="app-script">
+(function(){
+'use strict';
+/* ============================================================================
+ * PART 1 — pure core.  Nothing in this section touches the DOM, so it can be
+ * (and is) exercised headlessly.  See the round-trip harness in the repo notes.
+ *
+ * INVARIANT (docs/SPEC.md I1): nothing here knows how many desks, zones, rooms
+ * or people exist.  Every count is derived from the data it is handed.
+ * ==========================================================================*/
+
+var VERSION = 'calibrate-1.0.0';
+
+/* Fallback canvas extent for a room that has no bitmap yet.  This is a drawing
+ * surface size, not a problem dimension; it is overwritten by the image's
+ * natural size the moment one is loaded. */
+var DEFAULT_CANVAS = [1200, 800];
+
+var HISTORY_CAP = 200;          /* >= the 50 steps required */
+
+function clone(o){ return o === undefined ? o : JSON.parse(JSON.stringify(o)); }
+function clamp(v,a,b){ return v < a ? a : (v > b ? b : v); }
+function isNum(v){ return typeof v === 'number' && isFinite(v); }
+function numOr(v,d){ var n = Number(v); return isFinite(n) ? n : d; }
+
+var _uidSeq = 0;
+function uid(){ _uidSeq += 1; return 'r' + _uidSeq; }
+
+/* Round for export.  6 dp on normalized coords is lossless for anything a
+ * human or this tool ever produces, and reproduces hand-written 4 dp values
+ * byte-for-byte. */
+function round(v, dp){
+  var f = Math.pow(10, dp);
+  var n = Math.round(v * f) / f;
+  if (Object.is(n, -0)) n = 0;
+  return n;
+}
+
+/* ---------------------------------------------------------------- colours */
+function normHex(c){
+  if (typeof c !== 'string') return null;
+  var s = c.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(s)) return s.toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(s)) {
+    return ('#' + s[1] + s[1] + s[2] + s[2] + s[3] + s[3]).toLowerCase();
+  }
+  return null;
+}
+/* Golden-angle hue walk: any number of zones gets a distinct colour without
+ * anyone anywhere writing down how many zones there are. */
+function autoColor(i){
+  var h = (i * 137.508) % 360;
+  return hslHex(h / 360, 0.44, 0.46);
+}
+function hslHex(h,s,l){
+  function hue(p,q,t){
+    if (t < 0) t += 1; if (t > 1) t -= 1;
+    if (t < 1/6) return p + (q - p) * 6 * t;
+    if (t < 1/2) return q;
+    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+    return p;
+  }
+  var q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+  var rgb = [hue(p,q,h + 1/3), hue(p,q,h), hue(p,q,h - 1/3)];
+  return '#' + rgb.map(function(v){
+    var t = Math.round(clamp(v,0,1) * 255).toString(16);
+    return t.length < 2 ? '0' + t : t;
+  }).join('');
+}
+function hexRgb(hex){
+  var h = normHex(hex) || '#888888';
+  return [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)];
+}
+function rgba(hex, a){ var c = hexRgb(hex); return 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + a + ')'; }
+function contrastInk(hex){
+  var c = hexRgb(hex);
+  var lum = (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255;
+  return lum > 0.58 ? '#10151c' : '#ffffff';
+}
+
+/* ------------------------------------------------------------ data model */
+/* Internal coordinates are ALWAYS normalized 0..1 against the room's
+ * image_size, whatever space the file on disk used.  Export converts. */
+function newDoc(){
+  return { schemaVersion:1, extraKeys:[], extra:{}, zones:[], rooms:[] };
+}
+function newRoom(id, label){
+  return {
+    id: id, label: label,
+    image: '', imageSize: DEFAULT_CANVAS.slice(),
+    desks: [], extraKeys: [], extra: {}
+  };
+}
+function newZone(id, label, color){
+  return { id:id, label:label, color:color, extraKeys:[], extra:{} };
+}
+function newDesk(id, label, zone, shape){
+  return {
+    uid: uid(), id:id, label:label, zone:zone, shape:shape,
+    notes:'', hasNotes:false, extraKeys:[], extra:{}
+  };
+}
+
+/* A starter document: one room, one zone.  Both are placeholders the
+ * coordinator renames; neither is a count the code relies on. */
+function starterDoc(){
+  var d = newDoc();
+  d.rooms.push(newRoom('main_office', 'Main Office'));
+  d.zones.push(newZone('zone_1', 'Zone 1', autoColor(0)));
+  return d;
+}
+
+function allDesks(d){
+  var out = [];
+  d.rooms.forEach(function(r){ r.desks.forEach(function(dk){ out.push({ room:r, desk:dk }); }); });
+  return out;
+}
+function findDesk(d, u){
+  for (var i = 0; i < d.rooms.length; i++) {
+    var ds = d.rooms[i].desks;
+    for (var j = 0; j < ds.length; j++) if (ds[j].uid === u) return { room: d.rooms[i], desk: ds[j], ri: i, di: j };
+  }
+  return null;
+}
+function zoneById(d, id){
+  for (var i = 0; i < d.zones.length; i++) if (d.zones[i].id === id) return d.zones[i];
+  return null;
+}
+
+/* --------------------------------------------------- id pattern inference */
+/* Derives "next id" from whatever ids already exist.  No literal count of
+ * anything: prefix, digit width and the running maximum are all observed. */
+function idPattern(d){
+  var counts = Object.create(null), width = 0, best = null, bestN = -1;
+  allDesks(d).forEach(function(e){
+    var m = /^(.*?)(\d+)$/.exec(e.desk.id || '');
+    if (!m) return;
+    var pre = m[1];
+    counts[pre] = (counts[pre] || 0) + 1;
+    if (m[2].length > width) width = m[2].length;
+  });
+  Object.keys(counts).forEach(function(p){ if (counts[p] > bestN) { bestN = counts[p]; best = p; } });
+  if (best === null) return { prefix:'D', width:2 };
+  return { prefix: best, width: Math.max(1, width) };
+}
+function nextDeskId(d, pat){
+  pat = pat || idPattern(d);
+  var used = Object.create(null), max = 0;
+  allDesks(d).forEach(function(e){
+    used[e.desk.id] = true;
+    var m = new RegExp('^' + escRe(pat.prefix) + '(\\d+)$').exec(e.desk.id || '');
+    if (m) { var n = parseInt(m[1], 10); if (n > max) max = n; }
+  });
+  var n = max;
+  for (;;) {
+    n += 1;
+    var cand = pat.prefix + pad(n, pat.width);
+    if (!used[cand]) return cand;
+    if (n > max + 100000) return pat.prefix + pad(n, pat.width);   /* paranoia */
+  }
+}
+function nextZoneId(d){
+  var used = Object.create(null), max = 0;
+  d.zones.forEach(function(z){
+    used[z.id] = true;
+    var m = /^zone_(\d+)$/.exec(z.id);
+    if (m) { var n = parseInt(m[1], 10); if (n > max) max = n; }
+  });
+  var k = max;
+  for (;;) { k += 1; if (!used['zone_' + k]) return 'zone_' + k; }
+}
+function escRe(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function pad(n, w){ var s = String(n); while (s.length < w) s = '0' + s; return s; }
+/* Human label default: the numeric tail of the id if there is one. */
+function labelFromId(id){ var m = /(\d+)$/.exec(id || ''); return m ? String(parseInt(m[1], 10)) : (id || ''); }
+
+/* ------------------------------------------------------------- geometry */
+function shapePoly(sh){
+  if (sh.kind === 'rect') {
+    return [[sh.x, sh.y], [sh.x + sh.w, sh.y], [sh.x + sh.w, sh.y + sh.h], [sh.x, sh.y + sh.h]];
+  }
+  return sh.pts;
+}
+function polyBBox(pts){
+  var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  pts.forEach(function(p){
+    if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0];
+    if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1];
+  });
+  return { x:x0, y:y0, w:x1 - x0, h:y1 - y0, x1:x1, y1:y1 };
+}
+function shapeBBox(sh){
+  if (sh.kind === 'rect') {
+    var x = Math.min(sh.x, sh.x + sh.w), y = Math.min(sh.y, sh.y + sh.h);
+    var w = Math.abs(sh.w), h = Math.abs(sh.h);
+    return { x:x, y:y, w:w, h:h, x1:x + w, y1:y + h };
+  }
+  return polyBBox(sh.pts);
+}
+function shapeCentroid(sh){ var b = shapeBBox(sh); return [b.x + b.w / 2, b.y + b.h / 2]; }
+
+function pointInPoly(px, py, poly){
+  var inside = false;
+  for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    var xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+    if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / ((yj - yi) || 1e-30) + xi)) inside = !inside;
+  }
+  return inside;
+}
+function segHit(a, b, c, d){
+  function o(p,q,r){
+    var v = (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1]);
+    return v > 1e-14 ? 1 : (v < -1e-14 ? 2 : 0);
+  }
+  function on(p,q,r){
+    return q[0] <= Math.max(p[0], r[0]) + 1e-14 && q[0] >= Math.min(p[0], r[0]) - 1e-14 &&
+           q[1] <= Math.max(p[1], r[1]) + 1e-14 && q[1] >= Math.min(p[1], r[1]) - 1e-14;
+  }
+  var o1 = o(a,b,c), o2 = o(a,b,d), o3 = o(c,d,a), o4 = o(c,d,b);
+  if (o1 !== o2 && o3 !== o4) return true;
+  if (o1 === 0 && on(a,c,b)) return true;
+  if (o2 === 0 && on(a,d,b)) return true;
+  if (o3 === 0 && on(c,a,d)) return true;
+  if (o4 === 0 && on(c,b,d)) return true;
+  return false;
+}
+/* Shrink toward the centroid so that regions merely *touching* along an edge
+ * are not reported as overlapping — the validator's warning should mean real
+ * double-booking, not a shared boundary line. */
+function shrink(poly, f){
+  var cx = 0, cy = 0;
+  poly.forEach(function(p){ cx += p[0]; cy += p[1]; });
+  cx /= poly.length; cy /= poly.length;
+  return poly.map(function(p){ return [cx + (p[0] - cx) * f, cy + (p[1] - cy) * f]; });
+}
+function polysOverlap(A, B){
+  var ba = polyBBox(A), bb = polyBBox(B);
+  if (ba.x1 <= bb.x || bb.x1 <= ba.x || ba.y1 <= bb.y || bb.y1 <= ba.y) return false;
+  var a = shrink(A, 0.9999), b = shrink(B, 0.9999);
+  for (var i = 0; i < a.length; i++) {
+    var a2 = a[(i + 1) % a.length];
+    for (var j = 0; j < b.length; j++) {
+      if (segHit(a[i], a2, b[j], b[(j + 1) % b.length])) return true;
+    }
+  }
+  if (pointInPoly(a[0][0], a[0][1], b)) return true;
+  if (pointInPoly(b[0][0], b[0][1], a)) return true;
+  return false;
+}
+function rectOverlapArea(a, b){
+  var w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+  var h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  return (w > 0 && h > 0) ? w * h : 0;
+}
+function distToSeg(px, py, a, b){
+  var vx = b[0] - a[0], vy = b[1] - a[1];
+  var L = vx * vx + vy * vy;
+  var t = L > 0 ? clamp(((px - a[0]) * vx + (py - a[1]) * vy) / L, 0, 1) : 0;
+  var dx = px - (a[0] + t * vx), dy = py - (a[1] + t * vy);
+  return { d: Math.sqrt(dx * dx + dy * dy), t: t };
+}
+
+/* ------------------------------------------------------------ IMPORT */
+/* Accepts any document shaped like SPEC 2.1 and preserves every key it does
+ * not itself understand, so a round-trip is non-destructive. */
+function importRooms(src){
+  var warn = [];
+  if (!src || typeof src !== 'object' || Array.isArray(src)) {
+    throw new Error('rooms.json: top level must be a JSON object.');
+  }
+  var d = newDoc();
+  d.schemaVersion = ('schema_version' in src) ? src.schema_version : 1;
+
+  var TOP = { schema_version:1, coord_space:1, zones:1, rooms:1 };
+  Object.keys(src).forEach(function(k){
+    if (!TOP[k]) { d.extraKeys.push(k); d.extra[k] = clone(src[k]); }
+  });
+
+  var space = src.coord_space === undefined ? 'normalized' : src.coord_space;
+  if (space !== 'normalized' && space !== 'pixels') {
+    throw new Error('rooms.json: coord_space must be "normalized" or "pixels", got ' +
+                    JSON.stringify(src.coord_space) + '.');
+  }
+
+  var zsrc = src.zones;
+  if (zsrc === undefined) { zsrc = {}; warn.push('rooms.json: no "zones" object; starting with none.'); }
+  if (typeof zsrc !== 'object' || Array.isArray(zsrc)) {
+    throw new Error('rooms.json: "zones" must be an object keyed by zone id.');
+  }
+  Object.keys(zsrc).forEach(function(zid, i){
+    var z = zsrc[zid] || {};
+    var rec = newZone(String(zid),
+                      z.label !== undefined && z.label !== null ? String(z.label) : String(zid),
+                      normHex(z.color) || autoColor(i));
+    if (z.color !== undefined && !normHex(z.color)) {
+      warn.push('rooms.json: zones.' + zid + '.color ' + JSON.stringify(z.color) +
+                ' is not a #rrggbb hex; substituted ' + rec.color + '.');
+    }
+    Object.keys(z).forEach(function(k){
+      if (k !== 'label' && k !== 'color') { rec.extraKeys.push(k); rec.extra[k] = clone(z[k]); }
+    });
+    d.zones.push(rec);
+  });
+
+  var rsrc = Array.isArray(src.rooms) ? src.rooms : [];
+  if (!Array.isArray(src.rooms)) warn.push('rooms.json: "rooms" is missing or not an array.');
+
+  rsrc.forEach(function(r, ri){
+    r = r || {};
+    var rid = r.id !== undefined && r.id !== null ? String(r.id) : '';
+    var room = newRoom(rid, r.label !== undefined && r.label !== null ? String(r.label) : rid);
+    room.image = r.image !== undefined && r.image !== null ? String(r.image) : '';
+
+    var W, H, sizeOk = Array.isArray(r.image_size) && r.image_size.length >= 2 &&
+                       isFinite(r.image_size[0]) && isFinite(r.image_size[1]) &&
+                       Number(r.image_size[0]) > 0 && Number(r.image_size[1]) > 0;
+    if (sizeOk) { W = Number(r.image_size[0]); H = Number(r.image_size[1]); }
+    else {
+      W = DEFAULT_CANVAS[0]; H = DEFAULT_CANVAS[1];
+      warn.push('rooms.json: rooms[' + ri + '] ("' + rid + '"): image_size missing or invalid; ' +
+                'assumed ' + W + '×' + H + '. Load the image to correct it.');
+      if (space === 'pixels') {
+        warn.push('rooms.json: rooms[' + ri + '] ("' + rid + '"): pixel coordinates were converted ' +
+                  'with the assumed image size — check every region before exporting.');
+      }
+    }
+    room.imageSize = [W, H];
+
+    var RKN = { id:1, label:1, image:1, image_size:1, desks:1 };
+    Object.keys(r).forEach(function(k){
+      if (!RKN[k]) { room.extraKeys.push(k); room.extra[k] = clone(r[k]); }
+    });
+
+    var sx = space === 'pixels' ? 1 / W : 1;
+    var sy = space === 'pixels' ? 1 / H : 1;
+    var dsrc = Array.isArray(r.desks) ? r.desks : [];
+    if (!Array.isArray(r.desks)) warn.push('rooms.json: rooms[' + ri + '] ("' + rid + '"): "desks" is missing or not an array.');
+
+    dsrc.forEach(function(dk, di){
+      dk = dk || {};
+      var where = 'rooms[' + ri + '].desks[' + di + '] ("' + (dk.id === undefined ? '' : dk.id) + '")';
+      var sh = dk.shape || {};
+      var shape = null;
+      var hasR = Array.isArray(sh.rect), hasP = Array.isArray(sh.polygon);
+      if (hasR && hasP) {
+        warn.push('rooms.json: ' + where + ': shape has both "rect" and "polygon"; SPEC 2.1 allows exactly one. Kept "rect".');
+      }
+      if (hasR) {
+        if (sh.rect.length !== 4 || !sh.rect.every(function(v){ return isFinite(v); })) {
+          warn.push('rooms.json: ' + where + ': shape.rect must be four finite numbers [x, y, w, h]; got ' +
+                    JSON.stringify(sh.rect) + '. Substituted a placeholder.');
+          shape = { kind:'rect', x:0, y:0, w:0.05 , h:0.05 };
+        } else {
+          shape = { kind:'rect',
+                    x:Number(sh.rect[0]) * sx, y:Number(sh.rect[1]) * sy,
+                    w:Number(sh.rect[2]) * sx, h:Number(sh.rect[3]) * sy };
+        }
+      } else if (hasP) {
+        var pts = sh.polygon.filter(function(p){
+          return Array.isArray(p) && p.length >= 2 && isFinite(p[0]) && isFinite(p[1]);
+        }).map(function(p){ return [Number(p[0]) * sx, Number(p[1]) * sy]; });
+        if (pts.length !== sh.polygon.length) {
+          warn.push('rooms.json: ' + where + ': dropped ' + (sh.polygon.length - pts.length) +
+                    ' malformed polygon point(s).');
+        }
+        if (pts.length < 3) {
+          warn.push('rooms.json: ' + where + ': shape.polygon needs at least 3 points, has ' + pts.length + '.');
+        }
+        shape = { kind:'poly', pts: pts };
+      } else {
+        warn.push('rooms.json: ' + where + ': shape has neither "rect" nor "polygon". Substituted a placeholder rectangle.');
+        shape = { kind:'rect', x:0, y:0, w:0.05, h:0.05 };
+      }
+
+      var desk = newDesk(dk.id !== undefined && dk.id !== null ? String(dk.id) : '',
+                         dk.label !== undefined && dk.label !== null ? String(dk.label) : '',
+                         dk.zone !== undefined && dk.zone !== null ? String(dk.zone) : '',
+                         shape);
+      if ('notes' in dk) { desk.hasNotes = true; desk.notes = dk.notes === null ? '' : String(dk.notes); }
+      var DKN = { id:1, label:1, zone:1, shape:1, notes:1 };
+      Object.keys(dk).forEach(function(k){
+        if (!DKN[k]) { desk.extraKeys.push(k); desk.extra[k] = clone(dk[k]); }
+      });
+      /* Preserve any unrecognised keys inside shape too, rather than dropping them. */
+      var SKN = { rect:1, polygon:1 };
+      var shExtra = Object.keys(sh).filter(function(k){ return !SKN[k]; });
+      if (shExtra.length) {
+        desk.shapeExtraKeys = shExtra;
+        desk.shapeExtra = {};
+        shExtra.forEach(function(k){ desk.shapeExtra[k] = clone(sh[k]); });
+      }
+      room.desks.push(desk);
+    });
+    d.rooms.push(room);
+  });
+
+  if (!d.rooms.length) {
+    d.rooms.push(newRoom('main_office', 'Main Office'));
+    warn.push('rooms.json: contained no rooms; created an empty one.');
+  }
+  return { doc: d, warnings: warn, sourceSpace: space };
+}
+
+/* ------------------------------------------------------------ EXPORT */
+/* Emits exactly the SPEC 2.1 schema, in the same key order the hand-written
+ * config uses, so `JSON.stringify(out, null, 2) + "\n"` round-trips byte for
+ * byte on an untouched document. */
+function buildExport(d, space, opts){
+  opts = opts || {};
+  var dp = opts.decimals !== undefined && opts.decimals !== null
+         ? opts.decimals : (space === 'pixels' ? 2 : 6);
+  var out = {};
+  out.schema_version = d.schemaVersion;
+  d.extraKeys.forEach(function(k){ out[k] = clone(d.extra[k]); });
+  out.coord_space = space;
+
+  out.zones = {};
+  d.zones.forEach(function(z){
+    var zo = { label: z.label, color: z.color };
+    z.extraKeys.forEach(function(k){ zo[k] = clone(z.extra[k]); });
+    out.zones[z.id] = zo;
+  });
+
+  out.rooms = d.rooms.map(function(r){
+    var W = r.imageSize[0], H = r.imageSize[1];
+    var fx = space === 'pixels' ? W : 1, fy = space === 'pixels' ? H : 1;
+    var ro = { id:r.id, label:r.label, image:r.image, image_size:[W, H] };
+    r.extraKeys.forEach(function(k){ ro[k] = clone(r.extra[k]); });
+    ro.desks = r.desks.map(function(dk){
+      var o = { id:dk.id, label:dk.label, zone:dk.zone };
+      var sh = {};
+      if (dk.shape.kind === 'rect') {
+        var b = shapeBBox(dk.shape);   /* normalises negative w/h from a reverse drag */
+        sh.rect = [round(b.x * fx, dp), round(b.y * fy, dp), round(b.w * fx, dp), round(b.h * fy, dp)];
+      } else {
+        sh.polygon = dk.shape.pts.map(function(p){ return [round(p[0] * fx, dp), round(p[1] * fy, dp)]; });
+      }
+      if (dk.shapeExtraKeys) dk.shapeExtraKeys.forEach(function(k){ sh[k] = clone(dk.shapeExtra[k]); });
+      o.shape = sh;
+      if (dk.hasNotes || (dk.notes && dk.notes.length)) o.notes = dk.notes;
+      dk.extraKeys.forEach(function(k){ o[k] = clone(dk.extra[k]); });
+      return o;
+    });
+    return ro;
+  });
+  return out;
+}
+function exportText(d, space, opts){
+  return JSON.stringify(buildExport(d, space, opts), null, 2) + '\n';
+}
+
+/* ------------------------------------------------------------ VALIDATE */
+/* Mirrors the checks docs/SPEC.md §2.1 attributes to deskmatch.validate, with
+ * the same message shape, so a clean run here means a clean run there. */
+function validate(d){
+  var errors = [], warnings = [], overlapping = Object.create(null);
+  var zoneIds = d.zones.map(function(z){ return z.id; });
+  var zoneSet = Object.create(null);
+  zoneIds.forEach(function(z){ zoneSet[z] = true; });
+  var zoneList = zoneIds.length ? zoneIds.join(', ') : '(none defined)';
+
+  var seenZone = Object.create(null), zoneDupe = Object.create(null);
+  d.zones.forEach(function(z, i){
+    if (!z.id.length) errors.push({ msg:'rooms.json: zones[' + i + ']: zone id is empty.', zoneId:z.id });
+    if (seenZone[z.id]) zoneDupe[z.id] = true;
+    seenZone[z.id] = true;
+    if (!normHex(z.color)) {
+      warnings.push({ msg:'rooms.json: zones.' + z.id + '.color is not a #rrggbb hex value.', zoneId:z.id });
+    }
+  });
+  Object.keys(zoneDupe).forEach(function(z){
+    errors.push({ msg:'rooms.json: zone id "' + z + '" is defined more than once.', zoneId:z });
+  });
+
+  var seenRoom = Object.create(null);
+  var seenDesk = Object.create(null);
+  var zoneUse = Object.create(null);
+
+  d.rooms.forEach(function(r, ri){
+    var at = 'rooms[' + ri + '] ("' + r.id + '")';
+    if (!r.id.length) errors.push({ msg:'rooms.json: rooms[' + ri + ']: room id is empty.', roomIdx:ri });
+    else if (seenRoom[r.id]) errors.push({ msg:'rooms.json: room id "' + r.id + '" is used by more than one room.', roomIdx:ri });
+    seenRoom[r.id] = true;
+
+    if (!(r.imageSize[0] > 0 && r.imageSize[1] > 0)) {
+      errors.push({ msg:'rooms.json: ' + at + ': image_size must be two positive numbers.', roomIdx:ri });
+    }
+    if (!r.image || !r.image.length) {
+      warnings.push({ msg:'rooms.json: ' + at + ': no "image" path set. The solver can render on a blank ' +
+                          'canvas but the frontend cannot.', roomIdx:ri });
+    }
+    if (!r.desks.length) {
+      warnings.push({ msg:'rooms.json: ' + at + ': has no desks.', roomIdx:ri });
+    }
+
+    r.desks.forEach(function(dk, di){
+      var where = 'rooms[' + ri + '].desks[' + di + '] ("' + dk.id + '")';
+      if (!dk.id.length) {
+        errors.push({ msg:'rooms.json: rooms[' + ri + '].desks[' + di + ']: desk id is empty.', roomIdx:ri, uid:dk.uid });
+      } else if (seenDesk[dk.id]) {
+        errors.push({ msg:'rooms.json: ' + where + ': duplicate desk id. Desk ids must be unique across ALL rooms; ' +
+                          '"' + dk.id + '" is already used by ' + seenDesk[dk.id] + '.', roomIdx:ri, uid:dk.uid });
+      }
+      if (dk.id.length) seenDesk[dk.id] = where;
+
+      if (!dk.label.length) {
+        warnings.push({ msg:'rooms.json: ' + where + ': empty label. Students see this string.', roomIdx:ri, uid:dk.uid });
+      }
+      if (!dk.zone.length) {
+        errors.push({ msg:'rooms.json: ' + where + ': no zone assigned. Defined zones are: ' + zoneList + '.',
+                      roomIdx:ri, uid:dk.uid });
+      } else if (!zoneSet[dk.zone]) {
+        errors.push({ msg:'rooms.json: ' + where + ': references zone \'' + dk.zone + '\', which is not defined ' +
+                          'in rooms.json:zones. Defined zones are: ' + zoneList + '.', roomIdx:ri, uid:dk.uid });
+      } else {
+        zoneUse[dk.zone] = (zoneUse[dk.zone] || 0) + 1;
+      }
+
+      if (dk.shape.kind === 'poly' && dk.shape.pts.length < 3) {
+        errors.push({ msg:'rooms.json: ' + where + ': shape.polygon has ' + dk.shape.pts.length +
+                          ' point(s); at least 3 are required.', roomIdx:ri, uid:dk.uid });
+      }
+      var b = shapeBBox(dk.shape);
+      if (b.w <= 0 || b.h <= 0) {
+        errors.push({ msg:'rooms.json: ' + where + ': shape has zero width or height.', roomIdx:ri, uid:dk.uid });
+      }
+      var eps = 1e-9;
+      if (b.x < -eps || b.y < -eps || b.x1 > 1 + eps || b.y1 > 1 + eps) {
+        errors.push({ msg:'rooms.json: ' + where + ': shape falls outside the image bounds ' +
+                          '(normalized x ' + b.x.toFixed(4) + '…' + b.x1.toFixed(4) +
+                          ', y ' + b.y.toFixed(4) + '…' + b.y1.toFixed(4) + ').', roomIdx:ri, uid:dk.uid });
+      }
+    });
+
+    /* Overlap is only meaningful within one room's image. */
+    var polys = r.desks.map(function(dk){ return shapePoly(dk.shape); });
+    for (var i = 0; i < r.desks.length; i++) {
+      for (var j = i + 1; j < r.desks.length; j++) {
+        if (polysOverlap(polys[i], polys[j])) {
+          overlapping[r.desks[i].uid] = true;
+          overlapping[r.desks[j].uid] = true;
+          warnings.push({
+            msg:'rooms.json: ' + at + ': desks "' + r.desks[i].id + '" and "' + r.desks[j].id +
+                '" overlap. Two desks cannot occupy the same floor space.',
+            roomIdx:ri, uid:r.desks[i].uid, uid2:r.desks[j].uid, overlap:true
+          });
+        }
+      }
+    }
+  });
+
+  d.zones.forEach(function(z){
+    if (!zoneUse[z.id]) {
+      warnings.push({ msg:'rooms.json: zone \'' + z.id + '\' is defined but no desk uses it. ' +
+                          'An empty zone is legal but is almost always a typo.', zoneId:z.id });
+    }
+  });
+
+  return { errors:errors, warnings:warnings, overlapping:overlapping };
+}
+
+/* ------------------------------------------------------ replicate offsets */
+/* Returns `count` translation vectors in normalized space.  `count`, pitch and
+ * direction all come from the operator. */
+function replicateOffsets(shape, room, count, dir, mode, valuePx){
+  var W = room.imageSize[0], H = room.imageSize[1];
+  var b = shapeBBox(shape);
+  var horiz = (dir === 'right' || dir === 'left');
+  var alongPx = horiz ? b.w * W : b.h * H;
+  var pitch = mode === 'gap' ? alongPx + valuePx : valuePx;
+  var sign = (dir === 'right' || dir === 'down') ? 1 : -1;
+  var out = [];
+  for (var i = 1; i <= count; i++) {
+    var dpx = sign * pitch * i;
+    out.push(horiz ? [dpx / W, 0] : [0, dpx / H]);
+  }
+  return out;
+}
+function translateShape(sh, dx, dy){
+  if (sh.kind === 'rect') return { kind:'rect', x:sh.x + dx, y:sh.y + dy, w:sh.w, h:sh.h };
+  return { kind:'poly', pts: sh.pts.map(function(p){ return [p[0] + dx, p[1] + dy]; }) };
+}
+
+/* --------------------------------------------------- assist: suggest rects */
+/* Pure pixel work: grayscale -> threshold -> optional dilate of the ink ->
+ * flood-fill the *background* -> keep enclosed, roughly rectangular blobs.
+ * On a line-drawing floor plan those blobs are the insides of drawn desks.
+ * Deliberately conservative and deliberately advisory. */
+function otsu(hist, total){
+  var sum = 0, i;
+  for (i = 0; i < hist.length; i++) sum += i * hist[i];
+  var sumB = 0, wB = 0, best = 0, thr = 0;
+  for (i = 0; i < hist.length; i++) {
+    wB += hist[i];
+    if (!wB) continue;
+    var wF = total - wB;
+    if (wF <= 0) break;
+    sumB += i * hist[i];
+    var mB = sumB / wB, mF = (sum - sumB) / wF;
+    var between = wB * wF * (mB - mF) * (mB - mF);
+    if (between > best) { best = between; thr = i; }
+  }
+  return thr;
+}
+function dilateInk(ink, w, h, times){
+  var a = ink, t, x, y;
+  for (t = 0; t < times; t++) {
+    var b = new Uint8Array(a.length);
+    for (y = 0; y < h; y++) {
+      for (x = 0; x < w; x++) {
+        var i = y * w + x;
+        if (a[i] || (x > 0 && a[i - 1]) || (x < w - 1 && a[i + 1]) ||
+            (y > 0 && a[i - w]) || (y < h - 1 && a[i + w])) b[i] = 1;
+      }
+    }
+    a = b;
+  }
+  return a;
+}
+/* rgba: Uint8ClampedArray from getImageData; returns rects in 0..1 of (w,h). */
+function suggestFromPixels(rgbaBuf, w, h, opt){
+  opt = opt || {};
+  var n = w * h, i;
+  var gray = new Uint8Array(n), hist = new Uint32Array(256);
+  for (i = 0; i < n; i++) {
+    var o = i * 4, a = rgbaBuf[o + 3] / 255;
+    /* composite over white — transparent PNG backgrounds must read as paper */
+    var g = (0.299 * rgbaBuf[o] + 0.587 * rgbaBuf[o + 1] + 0.114 * rgbaBuf[o + 2]) * a + 255 * (1 - a);
+    var v = g < 0 ? 0 : (g > 255 ? 255 : g | 0);
+    gray[i] = v; hist[v]++;
+  }
+  var thr = opt.threshold && opt.threshold > 0 ? (opt.threshold | 0) : otsu(hist, n);
+  /* Otsu's convention: class 0 (the ink) is the closed range [0, thr].  Using a
+   * strict `<` here silently classifies nothing as ink on a pure black-and-white
+   * drawing, where the optimal threshold really is 0. */
+  var ink = new Uint8Array(n);
+  for (i = 0; i < n; i++) ink[i] = gray[i] <= thr ? 1 : 0;
+  var grow = Math.max(0, Math.min(4, opt.dilate === undefined ? 1 : opt.dilate | 0));
+  if (grow) ink = dilateInk(ink, w, h, grow);
+
+  var labels = new Int32Array(n);           /* 0 = unvisited background */
+  var queue = new Int32Array(n);
+  var cands = [], lab = 0;
+  var minA = (opt.minAreaFrac === undefined ? 0.0005 : opt.minAreaFrac) * n;
+  var maxA = (opt.maxAreaFrac === undefined ? 0.08 : opt.maxAreaFrac) * n;
+  var minFill = opt.minFill === undefined ? 0.72 : opt.minFill;
+  var minSide = 5;
+
+  for (var start = 0; start < n; start++) {
+    if (ink[start] || labels[start]) continue;
+    lab++;
+    var head = 0, tail = 0;
+    queue[tail++] = start; labels[start] = lab;
+    var area = 0, x0 = w, y0 = h, x1 = -1, y1 = -1, touches = false;
+    while (head < tail) {
+      var p = queue[head++];
+      var px = p % w, py = (p / w) | 0;
+      area++;
+      if (px < x0) x0 = px; if (px > x1) x1 = px;
+      if (py < y0) y0 = py; if (py > y1) y1 = py;
+      if (px === 0 || py === 0 || px === w - 1 || py === h - 1) touches = true;
+      if (px > 0     && !ink[p - 1] && !labels[p - 1]) { labels[p - 1] = lab; queue[tail++] = p - 1; }
+      if (px < w - 1 && !ink[p + 1] && !labels[p + 1]) { labels[p + 1] = lab; queue[tail++] = p + 1; }
+      if (py > 0     && !ink[p - w] && !labels[p - w]) { labels[p - w] = lab; queue[tail++] = p - w; }
+      if (py < h - 1 && !ink[p + w] && !labels[p + w]) { labels[p + w] = lab; queue[tail++] = p + w; }
+    }
+    if (touches) continue;                       /* open to the outside world */
+    if (area < minA || area > maxA) continue;
+    var bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+    if (bw < minSide || bh < minSide) continue;
+    var fill = area / (bw * bh);
+    if (fill < minFill) continue;
+    var ar = bw / bh;
+    if (ar < 0.1 || ar > 10) continue;
+    /* give back the pixels the dilation ate */
+    var gx0 = Math.max(0, x0 - grow), gy0 = Math.max(0, y0 - grow);
+    var gx1 = Math.min(w - 1, x1 + grow), gy1 = Math.min(h - 1, y1 + grow);
+    cands.push({ x: gx0 / w, y: gy0 / h, w: (gx1 - gx0 + 1) / w, h: (gy1 - gy0 + 1) / h,
+                 area: area, fill: fill });
+  }
+  cands.sort(function(a, b){ return b.area - a.area; });
+  var cap = opt.cap === undefined ? 400 : Math.max(1, opt.cap | 0);
+  return { rects: cands.slice(0, cap), threshold: thr, considered: lab, found: cands.length };
+}
+
+/* ============================================================================
+ * PART 2 — application state, view transform, renderer.
+ * ==========================================================================*/
+
+var DOC = starterDoc();
+
+/* Bitmaps live outside DOC so that undo snapshots stay small.  Keyed by
+ * room.id, re-associated whenever a room id changes. */
+var IMAGES = Object.create(null);          /* roomId -> {img, dataUrl, w, h, name} */
+
+var UI = {
+  roomIdx: 0,
+  tool: 'select',
+  preview: false,
+  labelMode: 'label',                      /* label | id | both | none */
+  showGrid: false,
+  snap: false,
+  gridPx: 10,
+  sel: [],                                 /* desk uids, current room only */
+  hover: null,
+  hiddenZones: Object.create(null),
+  suggestions: Object.create(null),        /* roomId -> [{x,y,w,h,state}] */
+  suggHover: -1,
+  filter: '',
+  storageOK: true,
+  dirty: false
+};
+
+var VIEWS = Object.create(null);           /* roomId -> {k, tx, ty} */
+var VAL = { errors: [], warnings: [], overlapping: Object.create(null) };
+
+/* ------------------------------------------------------------- history */
+var HIST = [], HI = -1, commitTimer = null;
+
+function historyReset(){ HIST = [clone(DOC)]; HI = 0; }
+function commit(){
+  if (commitTimer) { clearTimeout(commitTimer); commitTimer = null; }
+  var snap = clone(DOC);
+  if (HI >= 0 && JSON.stringify(HIST[HI]) === JSON.stringify(snap)) return;
+  HIST = HIST.slice(0, HI + 1);
+  HIST.push(snap);
+  if (HIST.length > HISTORY_CAP) HIST.shift();
+  HI = HIST.length - 1;
+  afterChange();
+}
+function scheduleCommit(){
+  if (commitTimer) clearTimeout(commitTimer);
+  commitTimer = setTimeout(function(){ commitTimer = null; commit(); }, 900);
+}
+function undo(){
+  if (commitTimer) { clearTimeout(commitTimer); commitTimer = null; commit(); }
+  if (HI <= 0) { toast('Nothing left to undo'); return; }
+  HI--; DOC = clone(HIST[HI]); afterRestore('Undo');
+}
+function redo(){
+  if (HI >= HIST.length - 1) { toast('Nothing to redo'); return; }
+  HI++; DOC = clone(HIST[HI]); afterRestore('Redo');
+}
+function afterRestore(what){
+  UI.roomIdx = clamp(UI.roomIdx, 0, Math.max(0, DOC.rooms.length - 1));
+  /* UI.sel is deliberately NOT pruned here.  uids are never reused, so a uid
+   * that vanished on undo is inert, and keeping it means redo brings the
+   * selection back with the region instead of silently dropping it.  Every
+   * consumer resolves uids through selDesks(), which ignores dead ones. */
+  afterChange();
+  renderAll();
+  toast(what);
+}
+function afterChange(){
+  UI.dirty = true;
+  VAL = validate(DOC);
+  scheduleAutosave();
+}
+
+/* ------------------------------------------------------------- accessors */
+function room(){ return DOC.rooms[UI.roomIdx] || null; }
+function roomImage(){ var r = room(); return r ? IMAGES[r.id] || null : null; }
+function selDesks(){
+  var r = room(); if (!r) return [];
+  return UI.sel.map(function(u){
+    for (var i = 0; i < r.desks.length; i++) if (r.desks[i].uid === u) return r.desks[i];
+    return null;
+  }).filter(Boolean);
+}
+function zoneVisible(z){ return !UI.hiddenZones[z]; }
+
+/* ------------------------------------------------------------- view math */
+function view(){
+  var r = room();
+  if (!r) return { k:1, tx:0, ty:0 };
+  if (!VIEWS[r.id]) VIEWS[r.id] = { k:1, tx:0, ty:0, fitted:false };
+  return VIEWS[r.id];
+}
+/* image px -> css px */
+function w2s(x, y){ var v = view(); return [x * v.k + v.tx, y * v.k + v.ty]; }
+/* css px -> image px */
+function s2w(x, y){ var v = view(); return [(x - v.tx) / v.k, (y - v.ty) / v.k]; }
+/* normalized -> image px, and back */
+function n2i(nx, ny){ var r = room(); return [nx * r.imageSize[0], ny * r.imageSize[1]]; }
+function i2n(ix, iy){ var r = room(); return [ix / r.imageSize[0], iy / r.imageSize[1]]; }
+/* normalized -> css px */
+function n2s(nx, ny){ var p = n2i(nx, ny); return w2s(p[0], p[1]); }
+function s2n(sx, sy){ var p = s2w(sx, sy); return i2n(p[0], p[1]); }
+
+function fitView(){
+  var r = room(); if (!r) return;
+  var v = view();
+  var rect = stageSize();
+  var k = Math.min(rect.w / r.imageSize[0], rect.h / r.imageSize[1]) * 0.93;
+  if (!isFinite(k) || k <= 0) k = 1;
+  v.k = k;
+  v.tx = (rect.w - r.imageSize[0] * k) / 2;
+  v.ty = (rect.h - r.imageSize[1] * k) / 2;
+  v.fitted = true;
+  requestDraw();
+}
+function zoomAt(sx, sy, factor){
+  var v = view();
+  var nk = clamp(v.k * factor, 0.02, 80);
+  factor = nk / v.k;
+  v.tx = sx - (sx - v.tx) * factor;
+  v.ty = sy - (sy - v.ty) * factor;
+  v.k = nk;
+  requestDraw();
+}
+function zoomTo(k){
+  var rect = stageSize();
+  var v = view();
+  var f = clamp(k, 0.02, 80) / v.k;
+  zoomAt(rect.w / 2, rect.h / 2, f);
+}
+function centerOn(nx, ny){
+  var rect = stageSize(), v = view(), p = n2i(nx, ny);
+  v.tx = rect.w / 2 - p[0] * v.k;
+  v.ty = rect.h / 2 - p[1] * v.k;
+  requestDraw();
+}
+
+/* ------------------------------------------------------------- snapping */
+function snapImg(px){
+  if (!UI.snap) return px;
+  var g = Math.max(0.25, numOr(UI.gridPx, 10));
+  return Math.round(px / g) * g;
+}
+function snapPointN(nx, ny){
+  if (!UI.snap) return [nx, ny];
+  var p = n2i(nx, ny);
+  return i2n(snapImg(p[0]), snapImg(p[1]));
+}
+
+/* ============================== RENDERER ============================== */
+var cv, ctx, stage, DPR = 1, drawQueued = false;
+
+function stageSize(){
+  if (!stage) return { w:800, h:600 };
+  var r = stage.getBoundingClientRect();
+  return { w: Math.max(1, r.width), h: Math.max(1, r.height) };
+}
+function fitCanvas(){
+  if (!cv) return;
+  var s = stageSize();
+  DPR = Math.min(3, window.devicePixelRatio || 1);
+  var W = Math.round(s.w * DPR), H = Math.round(s.h * DPR);
+  if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+  cv.style.width = s.w + 'px';
+  cv.style.height = s.h + 'px';
+}
+function requestDraw(){
+  if (drawQueued) return;
+  drawQueued = true;
+  requestAnimationFrame(function(){ drawQueued = false; draw(); });
+}
+
+var HANDLE = 5;
+function handleR(){ return coarse() ? 9 : HANDLE; }
+/* Matches the CSS touch-sizing query, so canvas handles and the panel controls
+ * grow together rather than one of them staying mouse-sized. */
+function coarse(){
+  try {
+    return (window.matchMedia && window.matchMedia('(pointer:coarse)').matches) ||
+           window.innerWidth <= 900;
+  } catch (e) { return false; }
+}
+
+function draw(){
+  if (!ctx) return;
+  fitCanvas();
+  var s = stageSize(), r = room(), v = view();
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, s.w, s.h);
+  ctx.fillStyle = '#616a78';
+  ctx.fillRect(0, 0, s.w, s.h);
+  if (!r) return;
+
+  var W = r.imageSize[0], H = r.imageSize[1];
+  var img = IMAGES[r.id];
+
+  /* page */
+  ctx.save();
+  ctx.translate(v.tx, v.ty);
+  ctx.scale(v.k, v.k);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+  if (img && img.img) {
+    ctx.imageSmoothingEnabled = v.k < 2;
+    try { ctx.drawImage(img.img, 0, 0, W, H); } catch (e) { /* decoding race */ }
+  }
+  ctx.restore();
+
+  /* page border */
+  var o = w2s(0, 0), o2 = w2s(W, H);
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(0,0,0,.55)';
+  ctx.strokeRect(o[0] + .5, o[1] + .5, o2[0] - o[0], o2[1] - o[1]);
+
+  if (!img) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(30,40,52,.45)';
+    ctx.font = '500 14px ' + uiFont();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('No bitmap loaded for "' + r.id + '" — drop a PNG here, or keep working: ' +
+                 'coordinates are normalized.', (o[0] + o2[0]) / 2, (o[1] + o2[1]) / 2);
+    ctx.restore();
+  }
+
+  if (UI.showGrid) drawGrid(W, H);
+
+  var overl = VAL.overlapping;
+  var zmap = Object.create(null);
+  DOC.zones.forEach(function(z){ zmap[z.id] = z; });
+  var selSet = Object.create(null);
+  UI.sel.forEach(function(u){ selSet[u] = true; });
+
+  /* regions */
+  r.desks.forEach(function(dk){
+    if (!zoneVisible(dk.zone)) return;
+    var z = zmap[dk.zone];
+    var col = z ? z.color : '#ff3b30';
+    var pts = shapePoly(dk.shape).map(function(p){ return n2s(p[0], p[1]); });
+    var isSel = !!selSet[dk.uid];
+    var isHot = UI.hover === dk.uid;
+    var bad = !z || badId(dk);
+    var over = !!overl[dk.uid];
+
+    ctx.beginPath();
+    pts.forEach(function(p, i){ if (i) ctx.lineTo(p[0], p[1]); else ctx.moveTo(p[0], p[1]); });
+    ctx.closePath();
+
+    ctx.fillStyle = rgba(col, UI.preview ? 0.42 : (isSel ? 0.34 : (isHot ? 0.26 : 0.18)));
+    ctx.fill();
+
+    if (over) { ctx.save(); ctx.clip(); hatch(pts, '#ff5a5a'); ctx.restore(); }
+
+    ctx.lineJoin = 'round';
+    if (bad) { ctx.setLineDash([5, 3]); ctx.strokeStyle = '#ff4d4d'; ctx.lineWidth = 2.5; }
+    else if (over) { ctx.setLineDash([]); ctx.strokeStyle = '#ff7a7a'; ctx.lineWidth = 2.5; }
+    else if (isSel && !UI.preview) { ctx.setLineDash([]); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2.5; }
+    else { ctx.setLineDash([]); ctx.strokeStyle = rgba(col, 0.95); ctx.lineWidth = UI.preview ? 1.75 : 1.4; }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (isSel && !UI.preview) {
+      ctx.strokeStyle = 'rgba(20,25,32,.85)'; ctx.lineWidth = 1; ctx.stroke();
+    }
+  });
+
+  /* suggestions */
+  var sug = UI.suggestions[r.id] || [];
+  if (!UI.preview) {
+    sug.forEach(function(sg, i){
+      if (sg.state !== 'open') return;
+      var a = n2s(sg.x, sg.y), b = n2s(sg.x + sg.w, sg.y + sg.h);
+      ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = i === UI.suggHover ? '#ffffff' : '#e263d6';
+      ctx.lineWidth = i === UI.suggHover ? 2.5 : 1.6;
+      ctx.fillStyle = 'rgba(226,99,214,.16)';
+      ctx.fillRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+      ctx.strokeRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+      ctx.setLineDash([]);
+    });
+  }
+
+  /* replicate ghosts */
+  drawGhosts();
+
+  /* in-progress geometry */
+  drawPending();
+
+  /* handles */
+  if (!UI.preview) drawHandles();
+
+  /* marquee */
+  if (DRAG && DRAG.mode === 'marquee') {
+    var m = DRAG;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = '#dbeaff'; ctx.lineWidth = 1;
+    ctx.fillStyle = 'rgba(79,156,249,.16)';
+    var x = Math.min(m.sx, m.cx), y = Math.min(m.sy, m.cy);
+    ctx.fillRect(x, y, Math.abs(m.cx - m.sx), Math.abs(m.cy - m.sy));
+    ctx.strokeRect(x + .5, y + .5, Math.abs(m.cx - m.sx), Math.abs(m.cy - m.sy));
+    ctx.setLineDash([]);
+  }
+
+  drawLabels(zmap);
+}
+
+function uiFont(){
+  return '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif';
+}
+function badId(dk){
+  if (!dk.id.length) return true;
+  var c = 0;
+  allDesks(DOC).forEach(function(e){ if (e.desk.id === dk.id) c++; });
+  return c > 1;
+}
+function hatch(pts, color){
+  var b = { x:Infinity, y:Infinity, x1:-Infinity, y1:-Infinity };
+  pts.forEach(function(p){
+    b.x = Math.min(b.x, p[0]); b.y = Math.min(b.y, p[1]);
+    b.x1 = Math.max(b.x1, p[0]); b.y1 = Math.max(b.y1, p[1]);
+  });
+  ctx.save();
+  ctx.strokeStyle = rgba(color, .55);
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  var step = 7, span = (b.x1 - b.x) + (b.y1 - b.y);
+  for (var t = 0; t <= span; t += step) {
+    ctx.moveTo(b.x + t, b.y);
+    ctx.lineTo(b.x + t - (b.y1 - b.y), b.y1);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+function drawGrid(W, H){
+  var v = view();
+  var g = Math.max(1, numOr(UI.gridPx, 10));
+  if (g * v.k < 4) return;                          /* unreadable, skip */
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0,0,0,.16)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  var x, y, p;
+  for (x = 0; x <= W + 0.001; x += g) { p = w2s(x, 0); ctx.moveTo(p[0] + .5, w2s(0, 0)[1]); ctx.lineTo(p[0] + .5, w2s(0, H)[1]); }
+  for (y = 0; y <= H + 0.001; y += g) { p = w2s(0, y); ctx.moveTo(w2s(0, 0)[0], p[1] + .5); ctx.lineTo(w2s(W, 0)[0], p[1] + .5); }
+  ctx.stroke();
+  ctx.restore();
+}
+function drawPending(){
+  if (!PENDING) return;
+  if (PENDING.kind === 'rect') {
+    var a = n2s(PENDING.x0, PENDING.y0), b = n2s(PENDING.x1, PENDING.y1);
+    ctx.setLineDash([5, 3]);
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.6;
+    ctx.fillStyle = 'rgba(255,255,255,.14)';
+    ctx.fillRect(Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
+    ctx.strokeRect(Math.min(a[0], b[0]) + .5, Math.min(a[1], b[1]) + .5, Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
+    ctx.setLineDash([]);
+  } else if (PENDING.kind === 'poly') {
+    var pts = PENDING.pts.map(function(p){ return n2s(p[0], p[1]); });
+    if (!pts.length) return;
+    ctx.beginPath();
+    pts.forEach(function(p, i){ if (i) ctx.lineTo(p[0], p[1]); else ctx.moveTo(p[0], p[1]); });
+    if (PENDING.cursor) {
+      var c = n2s(PENDING.cursor[0], PENDING.cursor[1]);
+      ctx.lineTo(c[0], c[1]);
+    }
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.8; ctx.setLineDash([5, 3]);
+    ctx.stroke(); ctx.setLineDash([]);
+    if (pts.length > 1) {
+      ctx.beginPath();
+      pts.forEach(function(p, i){ if (i) ctx.lineTo(p[0], p[1]); else ctx.moveTo(p[0], p[1]); });
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fill();
+    }
+    var R = handleR();
+    pts.forEach(function(p, i){
+      ctx.beginPath(); ctx.arc(p[0], p[1], i === 0 ? R + 1.5 : R, 0, 6.2832);
+      ctx.fillStyle = i === 0 ? '#4f9cf9' : '#ffffff';
+      ctx.fill();
+      ctx.strokeStyle = '#10151c'; ctx.lineWidth = 1.2; ctx.stroke();
+    });
+  }
+}
+function drawGhosts(){
+  if (!GHOSTS || !GHOSTS.length) return;
+  ctx.save();
+  ctx.setLineDash([4, 3]);
+  ctx.strokeStyle = '#8ab8ff'; ctx.lineWidth = 1.4;
+  ctx.fillStyle = 'rgba(138,184,255,.14)';
+  GHOSTS.forEach(function(poly){
+    var pts = poly.map(function(p){ return n2s(p[0], p[1]); });
+    ctx.beginPath();
+    pts.forEach(function(p, i){ if (i) ctx.lineTo(p[0], p[1]); else ctx.moveTo(p[0], p[1]); });
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  });
+  ctx.restore();
+}
+function drawHandles(){
+  var ds = selDesks();
+  if (ds.length !== 1) return;
+  var dk = ds[0];
+  var R = handleR();
+  ctx.lineWidth = 1.2;
+  if (dk.shape.kind === 'rect') {
+    rectHandles(dk.shape).forEach(function(h){
+      var p = n2s(h.nx, h.ny);
+      ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#10151c';
+      ctx.fillRect(p[0] - R, p[1] - R, R * 2, R * 2);
+      ctx.strokeRect(p[0] - R + .5, p[1] - R + .5, R * 2 - 1, R * 2 - 1);
+    });
+  } else {
+    dk.shape.pts.forEach(function(pt){
+      var p = n2s(pt[0], pt[1]);
+      ctx.beginPath(); ctx.arc(p[0], p[1], R, 0, 6.2832);
+      ctx.fillStyle = '#ffffff'; ctx.fill();
+      ctx.strokeStyle = '#10151c'; ctx.stroke();
+    });
+  }
+}
+function rectHandles(sh){
+  var b = shapeBBox(sh);
+  return [
+    { id:'nw', nx:b.x,           ny:b.y },
+    { id:'n',  nx:b.x + b.w / 2, ny:b.y },
+    { id:'ne', nx:b.x1,          ny:b.y },
+    { id:'e',  nx:b.x1,          ny:b.y + b.h / 2 },
+    { id:'se', nx:b.x1,          ny:b.y1 },
+    { id:'s',  nx:b.x + b.w / 2, ny:b.y1 },
+    { id:'sw', nx:b.x,           ny:b.y1 },
+    { id:'w',  nx:b.x,           ny:b.y + b.h / 2 }
+  ];
+}
+function drawLabels(zmap){
+  if (UI.labelMode === 'none') return;
+  var r = room(); if (!r) return;
+  ctx.save();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  var fs = coarse() ? 12 : 11;
+  ctx.font = '600 ' + fs + 'px ' + uiFont();
+  r.desks.forEach(function(dk){
+    if (!zoneVisible(dk.zone)) return;
+    var b = shapeBBox(dk.shape);
+    var a = n2s(b.x, b.y), c = n2s(b.x1, b.y1);
+    var wpx = c[0] - a[0], hpx = c[1] - a[1];
+    if (wpx < 14 || hpx < 11) return;
+    var txt = UI.labelMode === 'id' ? dk.id
+            : UI.labelMode === 'both' ? (dk.id + ' · ' + dk.label)
+            : (dk.label || dk.id);
+    if (!txt) return;
+    var z = zmap[dk.zone];
+    var m = ctx.measureText(txt);
+    var padx = 4, w = Math.min(m.width + padx * 2, Math.max(18, wpx - 2)), h = fs + 6;
+    if (h > hpx - 1) h = Math.max(10, hpx - 1);
+    var cx = (a[0] + c[0]) / 2, cy = (a[1] + c[1]) / 2;
+    ctx.fillStyle = z ? rgba(z.color, .92) : 'rgba(200,40,40,.92)';
+    roundRect(cx - w / 2, cy - h / 2, w, h, 3);
+    ctx.fill();
+    ctx.fillStyle = z ? contrastInk(z.color) : '#ffffff';
+    ctx.save();
+    ctx.beginPath(); ctx.rect(cx - w / 2, cy - h / 2, w, h); ctx.clip();
+    ctx.fillText(txt, cx, cy + 0.5);
+    ctx.restore();
+  });
+  ctx.restore();
+}
+function roundRect(x, y, w, h, r){
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/* ============================================================================
+ * PART 3 — pointer interaction, hit testing, edit operations.
+ * ==========================================================================*/
+
+var DRAG = null;        /* {mode:'pan'|'rect'|'move'|'resize'|'vertex'|'marquee', ...} */
+var PENDING = null;     /* in-progress rect / polygon */
+var GHOSTS = null;      /* replicate preview polygons */
+var SPACE = false;
+var POINTERS = Object.create(null);
+var PINCH = null;
+
+function localPt(e){
+  var r = cv.getBoundingClientRect();
+  return [e.clientX - r.left, e.clientY - r.top];
+}
+function pointerCount(){ return Object.keys(POINTERS).length; }
+
+/* ------------------------------------------------------------ hit tests */
+function hitHandle(sx, sy){
+  var ds = selDesks();
+  if (ds.length !== 1 || UI.preview) return null;
+  var dk = ds[0], R = handleR() + 4;
+  if (dk.shape.kind === 'rect') {
+    var hs = rectHandles(dk.shape);
+    for (var i = 0; i < hs.length; i++) {
+      var p = n2s(hs[i].nx, hs[i].ny);
+      if (Math.abs(p[0] - sx) <= R && Math.abs(p[1] - sy) <= R) {
+        return { type:'resize', desk:dk, h:hs[i].id };
+      }
+    }
+  } else {
+    for (var j = 0; j < dk.shape.pts.length; j++) {
+      var q = n2s(dk.shape.pts[j][0], dk.shape.pts[j][1]);
+      if (Math.abs(q[0] - sx) <= R && Math.abs(q[1] - sy) <= R) {
+        return { type:'vertex', desk:dk, i:j };
+      }
+    }
+  }
+  return null;
+}
+function hitDesk(sx, sy){
+  var r = room(); if (!r) return null;
+  var n = s2n(sx, sy);
+  for (var i = r.desks.length - 1; i >= 0; i--) {
+    var dk = r.desks[i];
+    if (!zoneVisible(dk.zone)) continue;
+    if (pointInPoly(n[0], n[1], shapePoly(dk.shape))) return dk;
+  }
+  return null;
+}
+function hitSuggestion(sx, sy){
+  var r = room(); if (!r) return -1;
+  var list = UI.suggestions[r.id] || [];
+  var n = s2n(sx, sy);
+  for (var i = list.length - 1; i >= 0; i--) {
+    var g = list[i];
+    if (g.state !== 'open') continue;
+    if (n[0] >= g.x && n[0] <= g.x + g.w && n[1] >= g.y && n[1] <= g.y + g.h) return i;
+  }
+  return -1;
+}
+/* Nearest edge of the single selected polygon, for vertex insertion. */
+function hitPolyEdge(sx, sy){
+  var ds = selDesks();
+  if (ds.length !== 1 || ds[0].shape.kind !== 'poly') return null;
+  var pts = ds[0].shape.pts, best = null;
+  for (var i = 0; i < pts.length; i++) {
+    var a = n2s(pts[i][0], pts[i][1]);
+    var b = n2s(pts[(i + 1) % pts.length][0], pts[(i + 1) % pts.length][1]);
+    var d = distToSeg(sx, sy, a, b);
+    if (d.d <= handleR() + 6 && (!best || d.d < best.d)) best = { d:d.d, i:i, desk:ds[0] };
+  }
+  return best;
+}
+
+/* ------------------------------------------------------------ operations */
+function addDeskFromRect(x0, y0, x1, y1){
+  var r = room(); if (!r) return null;
+  var x = Math.min(x0, x1), y = Math.min(y0, y1);
+  var w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+  return addDesk(r, { kind:'rect', x:x, y:y, w:w, h:h });
+}
+function addDesk(r, shape){
+  if (!DOC.zones.length) {
+    DOC.zones.push(newZone(nextZoneId(DOC), 'Zone 1', autoColor(0)));
+    toast('Created a zone to hold the new region — rename it in the Zones panel');
+  }
+  var id = nextDeskId(DOC);
+  var zid = currentZoneId();
+  var dk = newDesk(id, labelFromId(id), zid, shape);
+  r.desks.push(dk);
+  UI.sel = [dk.uid];
+  commit();
+  renderAll();
+  focusIdField();
+  return dk;
+}
+/* Zone for a newly drawn region: the selected region's zone, else the last
+ * region's zone, else the first zone.  Never a hard-coded name. */
+var LAST_ZONE = null;
+function currentZoneId(){
+  if (LAST_ZONE && zoneById(DOC, LAST_ZONE)) return LAST_ZONE;
+  var r = room();
+  if (r && r.desks.length) {
+    var z = r.desks[r.desks.length - 1].zone;
+    if (zoneById(DOC, z)) return z;
+  }
+  return DOC.zones.length ? DOC.zones[0].id : '';
+}
+function deleteSelected(){
+  var r = room(); if (!r || !UI.sel.length) return;
+  var kill = Object.create(null);
+  UI.sel.forEach(function(u){ kill[u] = true; });
+  var n = r.desks.length;
+  r.desks = r.desks.filter(function(d){ return !kill[d.uid]; });
+  UI.sel = [];
+  commit(); renderAll();
+  toast('Deleted ' + (n - r.desks.length) + ' region(s)');
+}
+function duplicateSelected(){
+  var r = room(); if (!r || !UI.sel.length) return;
+  var offN = i2n(8, 8);
+  var made = [];
+  selDesks().forEach(function(dk){
+    var id = nextDeskId(DOC);
+    var nd = newDesk(id, labelFromId(id), dk.zone, translateShape(dk.shape, offN[0], offN[1]));
+    nd.notes = dk.notes; nd.hasNotes = dk.hasNotes;
+    nd.extraKeys = dk.extraKeys.slice(); nd.extra = clone(dk.extra);
+    r.desks.push(nd); made.push(nd.uid);
+  });
+  UI.sel = made;
+  commit(); renderAll();
+  toast('Duplicated ' + made.length + ' region(s)');
+}
+function nudge(dxPx, dyPx){
+  if (!UI.sel.length) return;
+  var d = i2n(dxPx, dyPx);
+  selDesks().forEach(function(dk){
+    var s = translateShape(dk.shape, d[0], d[1]);
+    dk.shape = s;
+  });
+  scheduleCommit(); afterChange(); renderInspector(); requestDraw();
+}
+function applyResize(dk, h, nx, ny){
+  var b = shapeBBox(dk.shape);
+  var x0 = b.x, y0 = b.y, x1 = b.x1, y1 = b.y1;
+  if (h.indexOf('w') >= 0) x0 = nx;
+  if (h.indexOf('e') >= 0) x1 = nx;
+  if (h.indexOf('n') >= 0) y0 = ny;
+  if (h.indexOf('s') >= 0) y1 = ny;
+  dk.shape = { kind:'rect', x:Math.min(x0, x1), y:Math.min(y0, y1),
+               w:Math.abs(x1 - x0), h:Math.abs(y1 - y0) };
+}
+function rectToPoly(dk){
+  if (dk.shape.kind !== 'rect') return;
+  dk.shape = { kind:'poly', pts: shapePoly(dk.shape).map(function(p){ return [p[0], p[1]]; }) };
+  commit(); renderAll();
+}
+function polyToRect(dk){
+  if (dk.shape.kind !== 'poly') return;
+  var b = shapeBBox(dk.shape);
+  dk.shape = { kind:'rect', x:b.x, y:b.y, w:b.w, h:b.h };
+  commit(); renderAll();
+}
+
+/* ------------------------------------------------------------- pointers */
+function onPointerDown(e){
+  if (!cv) return;
+  cv.focus({ preventScroll:true });
+  POINTERS[e.pointerId] = localPt(e);
+  if (pointerCount() === 2) { startPinch(); return; }
+  if (pointerCount() > 2) return;
+  try { cv.setPointerCapture(e.pointerId); } catch (err) {}
+
+  var p = localPt(e);
+  var panBtn = (e.button === 1) || SPACE || UI.tool === 'pan';
+
+  if (panBtn) {
+    e.preventDefault();
+    DRAG = { mode:'pan', sx:p[0], sy:p[1], tx:view().tx, ty:view().ty, id:e.pointerId };
+    cv.style.cursor = 'grabbing';
+    return;
+  }
+  if (e.button !== 0 && e.pointerType === 'mouse') return;
+  if (UI.preview) {
+    DRAG = { mode:'pan', sx:p[0], sy:p[1], tx:view().tx, ty:view().ty, id:e.pointerId };
+    cv.style.cursor = 'grabbing';
+    return;
+  }
+
+  /* suggestion click: plain accepts, alt rejects */
+  var si = hitSuggestion(p[0], p[1]);
+  if (si >= 0 && UI.tool === 'select') {
+    e.preventDefault();
+    if (e.altKey) rejectSuggestion(si); else acceptSuggestion(si);
+    return;
+  }
+
+  if (UI.tool === 'rect') {
+    e.preventDefault();
+    var n = snapPointN.apply(null, s2n(p[0], p[1]));
+    PENDING = { kind:'rect', x0:n[0], y0:n[1], x1:n[0], y1:n[1] };
+    DRAG = { mode:'rect', id:e.pointerId };
+    requestDraw();
+    return;
+  }
+  if (UI.tool === 'poly') {
+    e.preventDefault();
+    DRAG = { mode:'polytap', sx:p[0], sy:p[1], id:e.pointerId, moved:false };
+    return;
+  }
+
+  /* select tool */
+  var hh = hitHandle(p[0], p[1]);
+  if (hh) {
+    e.preventDefault();
+    if (hh.type === 'vertex' && e.altKey) {
+      if (hh.desk.shape.pts.length > 3) {
+        hh.desk.shape.pts.splice(hh.i, 1);
+        commit(); renderAll();
+      } else toast('A polygon needs at least 3 points', 'err');
+      return;
+    }
+    DRAG = (hh.type === 'resize')
+      ? { mode:'resize', desk:hh.desk, h:hh.h, id:e.pointerId, moved:false, sx:p[0], sy:p[1] }
+      : { mode:'vertex', desk:hh.desk, i:hh.i, id:e.pointerId, moved:false, sx:p[0], sy:p[1] };
+    return;
+  }
+
+  var dk = hitDesk(p[0], p[1]);
+  if (dk) {
+    e.preventDefault();
+    if (e.shiftKey) {
+      var at = UI.sel.indexOf(dk.uid);
+      if (at >= 0) UI.sel.splice(at, 1); else UI.sel.push(dk.uid);
+      renderAll();
+      if (UI.sel.indexOf(dk.uid) < 0) return;
+    } else if (UI.sel.indexOf(dk.uid) < 0) {
+      UI.sel = [dk.uid];
+      LAST_ZONE = dk.zone;
+      renderAll();
+    }
+    var start = {};
+    selDesks().forEach(function(d){ start[d.uid] = clone(d.shape); });
+    DRAG = { mode:'move', sx:p[0], sy:p[1], id:e.pointerId, start:start, moved:false };
+    return;
+  }
+
+  DRAG = { mode:'marquee', sx:p[0], sy:p[1], cx:p[0], cy:p[1], id:e.pointerId,
+           add:e.shiftKey, base:UI.sel.slice(), moved:false };
+  requestDraw();
+}
+
+function onPointerMove(e){
+  if (!cv) return;
+  var p = localPt(e);
+  if (POINTERS[e.pointerId]) POINTERS[e.pointerId] = p;
+  if (PINCH && pointerCount() >= 2) { movePinch(); return; }
+
+  updateStatusCursor(p);
+
+  if (!DRAG) {
+    if (UI.preview) { cv.style.cursor = 'grab'; return; }
+    var prevH = UI.hover, prevS = UI.suggHover;
+    var d = hitDesk(p[0], p[1]);
+    UI.hover = d ? d.uid : null;
+    UI.suggHover = d ? -1 : hitSuggestion(p[0], p[1]);
+    if (UI.tool === 'poly' && PENDING && PENDING.kind === 'poly') {
+      PENDING.cursor = snapPointN.apply(null, s2n(p[0], p[1]));
+      requestDraw();
+    }
+    if (prevH !== UI.hover || prevS !== UI.suggHover) { syncSuggHighlight(); requestDraw(); }
+    updateCursorStyle(p);
+    return;
+  }
+  if (DRAG.id !== undefined && DRAG.id !== e.pointerId) return;
+
+  var dx = p[0] - (DRAG.sx || 0), dy = p[1] - (DRAG.sy || 0);
+  if (Math.abs(dx) > 3 || Math.abs(dy) > 3) DRAG.moved = true;
+
+  if (DRAG.mode === 'pan') {
+    var v = view();
+    v.tx = DRAG.tx + dx; v.ty = DRAG.ty + dy;
+    requestDraw();
+    return;
+  }
+  if (DRAG.mode === 'polytap') { return; }
+  if (DRAG.mode === 'rect') {
+    var n = snapPointN.apply(null, s2n(p[0], p[1]));
+    PENDING.x1 = n[0]; PENDING.y1 = n[1];
+    requestDraw();
+    return;
+  }
+  if (DRAG.mode === 'marquee') {
+    DRAG.cx = p[0]; DRAG.cy = p[1];
+    requestDraw();
+    return;
+  }
+  if (DRAG.mode === 'move') {
+    var dn = i2n(dx / view().k, dy / view().k);
+    var sxn = dn[0], syn = dn[1];
+    if (UI.snap) {
+      var first = selDesks()[0];
+      if (first) {
+        var b0 = shapeBBox(DRAG.start[first.uid]);
+        var tgt = n2i(b0.x + sxn, b0.y + syn);
+        var snapped = i2n(snapImg(tgt[0]), snapImg(tgt[1]));
+        sxn = snapped[0] - b0.x; syn = snapped[1] - b0.y;
+      }
+    }
+    selDesks().forEach(function(d){
+      var st = DRAG.start[d.uid];
+      if (st) d.shape = translateShape(st, sxn, syn);
+    });
+    afterChangeLite(); requestDraw();
+    return;
+  }
+  if (DRAG.mode === 'resize') {
+    var nr = snapPointN.apply(null, s2n(p[0], p[1]));
+    applyResize(DRAG.desk, DRAG.h, nr[0], nr[1]);
+    afterChangeLite(); requestDraw();
+    return;
+  }
+  if (DRAG.mode === 'vertex') {
+    var nv = snapPointN.apply(null, s2n(p[0], p[1]));
+    DRAG.desk.shape.pts[DRAG.i] = [nv[0], nv[1]];
+    afterChangeLite(); requestDraw();
+    return;
+  }
+}
+
+function afterChangeLite(){
+  VAL = validate(DOC);
+  updateStatusVal();
+  renderInspectorCoords();
+}
+
+function onPointerUp(e){
+  delete POINTERS[e.pointerId];
+  if (pointerCount() < 2) PINCH = null;
+  try { cv.releasePointerCapture(e.pointerId); } catch (err) {}
+  if (!DRAG) return;
+  if (DRAG.id !== undefined && DRAG.id !== e.pointerId) return;
+  var d = DRAG; DRAG = null;
+  cv.style.cursor = '';
+
+  if (d.mode === 'pan') { requestDraw(); return; }
+
+  if (d.mode === 'polytap') {
+    if (!d.moved) polyTap(d.sx, d.sy);
+    return;
+  }
+  if (d.mode === 'rect') {
+    if (!PENDING || PENDING.kind !== 'rect') { requestDraw(); return; }
+    var a = n2s(PENDING.x0, PENDING.y0), b = n2s(PENDING.x1, PENDING.y1);
+    var okSize = Math.abs(b[0] - a[0]) >= 4 && Math.abs(b[1] - a[1]) >= 4;
+    var pd = PENDING; PENDING = null;
+    if (okSize) addDeskFromRect(pd.x0, pd.y0, pd.x1, pd.y1);
+    else { requestDraw(); }
+    return;
+  }
+  if (d.mode === 'marquee') {
+    if (!d.moved) {
+      if (!d.add) { UI.sel = []; renderAll(); }
+      else requestDraw();
+      return;
+    }
+    var x0 = Math.min(d.sx, d.cx), y0 = Math.min(d.sy, d.cy);
+    var x1 = Math.max(d.sx, d.cx), y1 = Math.max(d.sy, d.cy);
+    var na = s2n(x0, y0), nb = s2n(x1, y1);
+    var box = { x:na[0], y:na[1], w:nb[0] - na[0], h:nb[1] - na[1] };
+    var r = room(), picked = d.add ? d.base.slice() : [];
+    r.desks.forEach(function(dk){
+      if (!zoneVisible(dk.zone)) return;
+      var bb = shapeBBox(dk.shape);
+      if (rectOverlapArea(bb, box) > 0 && picked.indexOf(dk.uid) < 0) picked.push(dk.uid);
+    });
+    UI.sel = picked;
+    renderAll();
+    return;
+  }
+  if (d.mode === 'move' || d.mode === 'resize' || d.mode === 'vertex') {
+    if (d.moved) { commit(); renderAll(); }
+    return;
+  }
+}
+
+function onPointerCancel(e){
+  delete POINTERS[e.pointerId];
+  if (pointerCount() < 2) PINCH = null;
+  if (DRAG && DRAG.id === e.pointerId) { DRAG = null; cv.style.cursor = ''; requestDraw(); }
+}
+
+function polyTap(sx, sy){
+  var n = snapPointN.apply(null, s2n(sx, sy));
+  if (!PENDING || PENDING.kind !== 'poly') {
+    PENDING = { kind:'poly', pts:[[n[0], n[1]]], cursor:[n[0], n[1]] };
+  } else {
+    var first = n2s(PENDING.pts[0][0], PENDING.pts[0][1]);
+    if (PENDING.pts.length >= 3 &&
+        Math.abs(first[0] - sx) <= handleR() + 6 && Math.abs(first[1] - sy) <= handleR() + 6) {
+      closePolygon();
+      return;
+    }
+    PENDING.pts.push([n[0], n[1]]);
+  }
+  updateDrawHint();
+  requestDraw();
+}
+function closePolygon(){
+  if (!PENDING || PENDING.kind !== 'poly') return;
+  if (PENDING.pts.length < 3) { toast('A polygon needs at least 3 points', 'err'); return; }
+  var pts = PENDING.pts.map(function(p){ return [p[0], p[1]]; });
+  PENDING = null;
+  updateDrawHint();
+  addDesk(room(), { kind:'poly', pts:pts });
+}
+function cancelPending(){
+  if (!PENDING) return false;
+  PENDING = null; updateDrawHint(); requestDraw();
+  return true;
+}
+
+/* ---------------------------------------------------------------- pinch */
+function startPinch(){
+  DRAG = null;
+  var ids = Object.keys(POINTERS);
+  var a = POINTERS[ids[0]], b = POINTERS[ids[1]];
+  var v = view();
+  PINCH = {
+    d0: Math.hypot(b[0] - a[0], b[1] - a[1]) || 1,
+    c0: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2],
+    k0: v.k, tx0: v.tx, ty0: v.ty
+  };
+}
+function movePinch(){
+  var ids = Object.keys(POINTERS);
+  if (ids.length < 2 || !PINCH) return;
+  var a = POINTERS[ids[0]], b = POINTERS[ids[1]];
+  var d = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+  var c = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  var f = clamp(PINCH.k0 * (d / PINCH.d0), 0.02, 80) / PINCH.k0;
+  var v = view();
+  v.k = PINCH.k0 * f;
+  v.tx = c[0] - (PINCH.c0[0] - PINCH.tx0) * f;
+  v.ty = c[1] - (PINCH.c0[1] - PINCH.ty0) * f;
+  requestDraw();
+}
+
+/* ---------------------------------------------------------------- wheel */
+function onWheel(e){
+  e.preventDefault();
+  var p = localPt(e);
+  if (e.shiftKey && !e.ctrlKey) {
+    var v = view();
+    v.tx -= (e.deltaY || e.deltaX);
+    requestDraw();
+    return;
+  }
+  var unit = e.deltaMode === 1 ? 16 : (e.deltaMode === 2 ? 100 : 1);
+  var dy = e.deltaY * unit;
+  var f = Math.pow(0.9987, dy * (e.ctrlKey ? 2.2 : 1));
+  zoomAt(p[0], p[1], f);
+  updateStatusZoom();
+}
+
+function onDblClick(e){
+  if (UI.preview) return;
+  var p = localPt(e);
+  if (UI.tool === 'poly' && PENDING) { closePolygon(); return; }
+  var edge = hitPolyEdge(p[0], p[1]);
+  if (edge) {
+    var n = s2n(p[0], p[1]);
+    edge.desk.shape.pts.splice(edge.i + 1, 0, [n[0], n[1]]);
+    commit(); renderAll();
+    toast('Vertex inserted');
+    return;
+  }
+  var dk = hitDesk(p[0], p[1]);
+  if (dk) { UI.sel = [dk.uid]; renderAll(); focusIdField(); }
+}
+
+function updateCursorStyle(p){
+  if (!cv) return;
+  if (UI.preview || UI.tool === 'pan' || SPACE) { cv.style.cursor = 'grab'; return; }
+  if (UI.tool === 'select') {
+    var hh = hitHandle(p[0], p[1]);
+    if (hh) { cv.style.cursor = hh.type === 'vertex' ? 'crosshair' : resizeCursor(hh.h); return; }
+    cv.style.cursor = UI.hover ? 'move' : 'default';
+    return;
+  }
+  cv.style.cursor = 'crosshair';
+}
+function resizeCursor(h){
+  if (h === 'n' || h === 's') return 'ns-resize';
+  if (h === 'e' || h === 'w') return 'ew-resize';
+  if (h === 'nw' || h === 'se') return 'nwse-resize';
+  return 'nesw-resize';
+}
+
+/* ============================================================================
+ * PART 4 — panel rendering.  All user-supplied text goes in via textContent
+ * or value, never innerHTML.
+ * ==========================================================================*/
+
+var $ = function(id){ return document.getElementById(id); };
+
+function el(tag, attrs, kids){
+  var n = document.createElement(tag);
+  if (attrs) Object.keys(attrs).forEach(function(k){
+    if (k === 'text') n.textContent = attrs[k];
+    else if (k === 'cls') n.className = attrs[k];
+    else if (k === 'style') n.setAttribute('style', attrs[k]);
+    else if (k.slice(0, 2) === 'on') n.addEventListener(k.slice(2), attrs[k]);
+    else if (attrs[k] !== null && attrs[k] !== undefined) n.setAttribute(k, attrs[k]);
+  });
+  (kids || []).forEach(function(c){ if (c) n.appendChild(c); });
+  return n;
+}
+function clear(node){ while (node.firstChild) node.removeChild(node.firstChild); }
+
+/* ------------------------------------------------------------- toast */
+function toast(msg, kind){
+  var box = $('toasts');
+  if (!box) return;
+  var t = el('div', { cls:'toast' + (kind ? ' ' + kind : ''), text:msg });
+  box.appendChild(t);
+  setTimeout(function(){ if (t.parentNode) t.parentNode.removeChild(t); }, kind === 'err' ? 5200 : 2600);
+}
+
+/* ------------------------------------------------------------- modal */
+var modalResolve = null;
+function modal(opts){
+  return new Promise(function(resolve){
+    var root = $('modalRoot');
+    clear(root);
+    var foot = el('div', { cls:'mfoot' });
+    (opts.buttons || [{ label:'OK', value:true, kind:'prim' }]).forEach(function(b){
+      foot.appendChild(el('button', {
+        cls: b.kind || '', text: b.label,
+        onclick: function(){ closeModal(b.value); }
+      }));
+    });
+    var body = el('div', { cls:'mbody' });
+    if (typeof opts.body === 'string') body.appendChild(el('p', { text:opts.body }));
+    else if (opts.body) body.appendChild(opts.body);
+    root.appendChild(el('div', { cls:'modal', role:'dialog', 'aria-modal':'true' },
+      [el('h3', { text:opts.title || '' }), body, foot]));
+    root.classList.add('on');
+    modalResolve = resolve;
+    var first = root.querySelector('input,select,textarea,button.prim,button');
+    if (first) setTimeout(function(){ try { first.focus(); } catch (e) {} }, 30);
+  });
+}
+function closeModal(v){
+  var root = $('modalRoot');
+  root.classList.remove('on');
+  clear(root);
+  if (modalResolve) { var r = modalResolve; modalResolve = null; r(v); }
+}
+function modalOpen(){ return $('modalRoot').classList.contains('on'); }
+function confirmBox(title, msg, okLabel, danger){
+  return modal({
+    title: title, body: msg,
+    buttons: [{ label:'Cancel', value:false }, { label:okLabel || 'OK', value:true, kind: danger ? 'danger' : 'prim' }]
+  });
+}
+
+/* ------------------------------------------------------------ renderAll */
+function renderAll(){
+  /* Never paint a stale verdict: whatever path got us here, the panel, the
+   * badges and the red outlines on the canvas all describe the document as it
+   * is right now. */
+  VAL = validate(DOC);
+  renderRooms();
+  renderZones();
+  renderDeskList();
+  renderInspector();
+  renderValidation();
+  renderLegend();
+  renderSuggList();
+  renderToolbar();
+  updateStatus();
+  refreshExport();
+  requestDraw();
+}
+
+function renderToolbar(){
+  Array.prototype.forEach.call(document.querySelectorAll('.tool'), function(b){
+    b.classList.toggle('on', b.getAttribute('data-tool') === UI.tool && !UI.preview);
+  });
+  $('btnPreview').classList.toggle('on', UI.preview);
+  $('btnUndo').disabled = HI <= 0;
+  $('btnRedo').disabled = HI >= HIST.length - 1;
+  var mb = $('modebadge');
+  mb.textContent = UI.preview
+    ? 'PREVIEW · ' + labelModeName() + ' · click a legend row to hide a zone'
+    : toolName() + ' · ' + labelModeName();
+  updateDrawHint();
+}
+function toolName(){
+  return UI.tool === 'select' ? 'Select' : UI.tool === 'rect' ? 'Rectangle'
+       : UI.tool === 'poly' ? 'Polygon' : 'Pan';
+}
+function labelModeName(){
+  return UI.labelMode === 'id' ? 'ids' : UI.labelMode === 'label' ? 'labels'
+       : UI.labelMode === 'both' ? 'id + label' : 'no labels';
+}
+function updateDrawHint(){
+  var h = $('drawhint');
+  if (PENDING && PENDING.kind === 'poly') {
+    h.style.display = '';
+    h.textContent = PENDING.pts.length + ' point(s) · click to add · Enter, double-click, or click the ' +
+                    'blue first point to close · Backspace removes the last · Esc cancels';
+  } else if (UI.tool === 'poly' && !UI.preview) {
+    h.style.display = '';
+    h.textContent = 'Polygon: click to place the first point';
+  } else if (UI.tool === 'rect' && !UI.preview) {
+    h.style.display = '';
+    h.textContent = 'Rectangle: drag to draw';
+  } else {
+    h.style.display = 'none';
+  }
+}
+
+/* -------------------------------------------------------------- rooms */
+function renderRooms(){
+  var sel = $('roomSel');
+  clear(sel);
+  DOC.rooms.forEach(function(r, i){
+    sel.appendChild(el('option', { value:String(i), text:(r.label || r.id || '(unnamed)') + '  —  ' + r.desks.length + ' desks' }));
+  });
+  sel.value = String(UI.roomIdx);
+  $('badgeRooms').textContent = String(DOC.rooms.length);
+  $('btnRoomDel').disabled = DOC.rooms.length <= 1;
+
+  var r = room();
+  if (!r) return;
+  setVal('roomId', r.id);
+  setVal('roomLabel', r.label);
+  setVal('roomImage', r.image);
+  setVal('roomW', r.imageSize[0]);
+  setVal('roomH', r.imageSize[1]);
+  var im = IMAGES[r.id];
+  $('imgNote').textContent = im
+    ? 'Bitmap loaded: ' + im.name + ' (' + im.w + '×' + im.h + ' px). image_size is taken from it.'
+    : 'No bitmap loaded. Coordinates are normalized, so you can still edit — but set image_size to the ' +
+      'real pixel dimensions of ' + (r.image || 'the plan') + ' before exporting.';
+  $('btnDropImage').disabled = !im;
+  $('badgeDoc').textContent = DOC.rooms.length + ' room / ' + allDesks(DOC).length + ' desk';
+  setVal('docSchema', DOC.schemaVersion);
+}
+function setVal(id, v){
+  var n = $(id);
+  if (!n) return;
+  if (document.activeElement === n) return;      /* never fight the typist */
+  n.value = v === null || v === undefined ? '' : String(v);
+}
+
+/* -------------------------------------------------------------- zones */
+function renderZones(){
+  var list = $('zoneList');
+  clear(list);
+  $('badgeZones').textContent = String(DOC.zones.length);
+  if (!DOC.zones.length) {
+    list.appendChild(el('div', { cls:'empty', text:'No zones yet. Add one — the id must match what eligibility.json refers to.' }));
+    return;
+  }
+  var use = Object.create(null);
+  allDesks(DOC).forEach(function(e){ use[e.desk.zone] = (use[e.desk.zone] || 0) + 1; });
+
+  DOC.zones.forEach(function(z, i){
+    var color = el('input', { type:'color', value: normHex(z.color) || '#888888',
+      title:'Zone colour', oninput:function(ev){ z.color = ev.target.value; scheduleCommit(); afterChange(); renderLegend(); requestDraw(); } });
+    var zid = el('input', { type:'text', cls:'zid', value:z.id, spellcheck:'false', title:'zone id (used by eligibility.json)' });
+    zid.addEventListener('change', function(){ renameZone(i, zid.value.trim()); });
+    var lab = el('input', { type:'text', value:z.label, title:'Display label',
+      oninput:function(ev){ z.label = ev.target.value; scheduleCommit(); afterChange(); renderLegend(); requestDraw(); } });
+    var eye = el('button', { cls:'eye' + (zoneVisible(z.id) ? ' on' : ''), title:'Show / hide this zone',
+      'aria-label':'Toggle visibility of zone ' + z.id, text: zoneVisible(z.id) ? '◉' : '◎',
+      onclick:function(){ toggleZone(z.id); } });
+    var del = el('button', { cls:'eye', title:'Delete zone', 'aria-label':'Delete zone ' + z.id, text:'✕',
+      onclick:function(){ deleteZone(i); } });
+    var cnt = el('span', { cls:'tag', text:(use[z.id] || 0) + '' , title:'desks using this zone' });
+    list.appendChild(el('div', { cls:'zrow' }, [color, zid, lab, cnt, eye, del]));
+  });
+}
+function renameZone(i, nid){
+  var z = DOC.zones[i];
+  if (!z || nid === z.id) { renderZones(); return; }
+  if (!nid.length) { toast('Zone id cannot be empty', 'err'); renderZones(); return; }
+  if (zoneById(DOC, nid)) { toast('Zone id "' + nid + '" already exists', 'err'); renderZones(); return; }
+  var old = z.id;
+  z.id = nid;
+  allDesks(DOC).forEach(function(e){ if (e.desk.zone === old) e.desk.zone = nid; });
+  if (UI.hiddenZones[old]) { delete UI.hiddenZones[old]; UI.hiddenZones[nid] = true; }
+  if (LAST_ZONE === old) LAST_ZONE = nid;
+  commit(); renderAll();
+  toast('Zone renamed; every desk that used "' + old + '" now uses "' + nid + '"');
+}
+function toggleZone(id){
+  if (UI.hiddenZones[id]) delete UI.hiddenZones[id]; else UI.hiddenZones[id] = true;
+  pruneHiddenSelection();
+  renderZones(); renderLegend(); requestDraw();
+}
+function pruneHiddenSelection(){
+  var r = room(); if (!r) return;
+  UI.sel = UI.sel.filter(function(u){
+    for (var i = 0; i < r.desks.length; i++) if (r.desks[i].uid === u) return zoneVisible(r.desks[i].zone);
+    return false;
+  });
+}
+function addZone(){
+  var id = nextZoneId(DOC);
+  DOC.zones.push(newZone(id, 'Zone ' + (DOC.zones.length + 1), autoColor(DOC.zones.length)));
+  commit(); renderAll();
+  toast('Zone "' + id + '" added — rename it to whatever eligibility.json uses');
+}
+function deleteZone(i){
+  var z = DOC.zones[i];
+  if (!z) return;
+  var users = allDesks(DOC).filter(function(e){ return e.desk.zone === z.id; });
+  if (!users.length) {
+    DOC.zones.splice(i, 1);
+    commit(); renderAll();
+    toast('Zone "' + z.id + '" deleted');
+    return;
+  }
+  var others = DOC.zones.filter(function(o){ return o.id !== z.id; });
+  if (!others.length) {
+    modal({ title:'Cannot delete the only zone',
+      body:'"' + z.id + '" is used by ' + users.length + ' desk(s) and there is nowhere to move them. ' +
+           'Create another zone first.', buttons:[{ label:'OK', value:true, kind:'prim' }] });
+    return;
+  }
+  var pick = el('select', {});
+  others.forEach(function(o){ pick.appendChild(el('option', { value:o.id, text:o.id + '  —  ' + o.label })); });
+  var body = el('div', {}, [
+    el('p', { text:'Zone "' + z.id + '" is used by ' + users.length + ' desk(s). Move them to:' }),
+    pick
+  ]);
+  modal({ title:'Delete zone', body:body,
+    buttons:[{ label:'Cancel', value:false }, { label:'Reassign and delete', value:true, kind:'danger' }] })
+  .then(function(ok){
+    if (!ok) return;
+    var target = pick.value;
+    users.forEach(function(e){ e.desk.zone = target; });
+    var at = DOC.zones.indexOf(z);
+    if (at >= 0) DOC.zones.splice(at, 1);
+    if (LAST_ZONE === z.id) LAST_ZONE = target;
+    commit(); renderAll();
+    toast(users.length + ' desk(s) moved to "' + target + '"');
+  });
+}
+
+/* ---------------------------------------------------------- desk list */
+function renderDeskList(){
+  var list = $('deskList');
+  clear(list);
+  var r = room();
+  $('badgeDesks').textContent = r ? String(r.desks.length) : '0';
+  if (!r || !r.desks.length) {
+    list.appendChild(el('div', { cls:'empty', text:'No regions in this room. Pick the Rect or Polygon tool and draw one.' }));
+    return;
+  }
+  var q = UI.filter.trim().toLowerCase();
+  var zmap = Object.create(null);
+  DOC.zones.forEach(function(z){ zmap[z.id] = z; });
+  var shown = 0;
+  r.desks.forEach(function(dk){
+    if (q && (dk.id + ' ' + dk.label + ' ' + dk.zone).toLowerCase().indexOf(q) < 0) return;
+    shown++;
+    var z = zmap[dk.zone];
+    var kids = [
+      el('span', { cls:'sw', style:'background:' + (z ? z.color : '#ff3b30') }),
+      el('span', { cls:'id', text:dk.id || '(no id)' }),
+      el('span', { cls:'nm', text:dk.label || '—' }),
+      el('span', { cls:'tag', text:dk.zone || '(no zone)' })
+    ];
+    if (badId(dk) || !z) kids.push(el('span', { cls:'dot err', title:'invalid id or zone' }));
+    else if (VAL.overlapping[dk.uid]) kids.push(el('span', { cls:'dot warn', title:'overlaps another region' }));
+    var row = el('div', { cls:'li' + (UI.sel.indexOf(dk.uid) >= 0 ? ' sel' : '') }, kids);
+    row.addEventListener('click', function(ev){
+      if (ev.shiftKey) {
+        var at = UI.sel.indexOf(dk.uid);
+        if (at >= 0) UI.sel.splice(at, 1); else UI.sel.push(dk.uid);
+      } else {
+        UI.sel = [dk.uid];
+        LAST_ZONE = dk.zone;
+        var c = shapeCentroid(dk.shape);
+        centerOn(c[0], c[1]);
+      }
+      renderAll();
+    });
+    list.appendChild(row);
+  });
+  if (!shown) list.appendChild(el('div', { cls:'empty', text:'Nothing matches "' + q + '".' }));
+}
+
+/* ---------------------------------------------------------- inspector */
+function renderInspector(){
+  var box = $('inspBody');
+  clear(box);
+  var ds = selDesks();
+  $('badgeSel').textContent = ds.length === 0 ? 'none' : (ds.length === 1 ? ds[0].id || '(no id)' : ds.length + ' selected');
+  updateRepNote();
+
+  if (!ds.length) {
+    box.appendChild(el('p', { cls:'hint',
+      text:'Nothing selected. Click a region on the plan or in the list above. ' +
+           'Shift-click or drag a marquee to select several.' }));
+    return;
+  }
+  if (ds.length > 1) {
+    box.appendChild(el('p', { cls:'hint', text:ds.length + ' regions selected: ' +
+      ds.map(function(d){ return d.id; }).join(', ') }));
+    var zsel = el('select', {});
+    zsel.appendChild(el('option', { value:'', text:'— assign zone to all —' }));
+    DOC.zones.forEach(function(z){ zsel.appendChild(el('option', { value:z.id, text:z.id + '  (' + z.label + ')' })); });
+    zsel.addEventListener('change', function(){
+      if (!zsel.value) return;
+      ds.forEach(function(d){ d.zone = zsel.value; });
+      LAST_ZONE = zsel.value;
+      commit(); renderAll();
+    });
+    box.appendChild(el('label', { cls:'fld' }, [el('span', { text:'Zone' }), zsel]));
+    box.appendChild(el('div', { cls:'row' }, [
+      el('button', { cls:'grow', text:'Duplicate', onclick:duplicateSelected }),
+      el('button', { cls:'danger grow', text:'Delete', onclick:deleteSelected })
+    ]));
+    return;
+  }
+
+  var dk = ds[0];
+  var dupWarn = badId(dk);
+
+  var idIn = el('input', { type:'text', id:'inspId', value:dk.id, spellcheck:'false' });
+  if (dupWarn) idIn.classList.add('bad');
+  idIn.addEventListener('input', function(){
+    dk.id = idIn.value.trim();
+    afterChange();
+    idIn.classList.toggle('bad', badId(dk));
+    idMsg.textContent = idNote(dk);
+    idMsg.style.color = badId(dk) ? 'var(--danger)' : 'var(--dim2)';
+    renderDeskList(); updateStatusVal(); renderValidation(); requestDraw();
+  });
+  idIn.addEventListener('change', commit);
+  var idMsg = el('p', { cls:'hint', text:idNote(dk) });
+  if (dupWarn) idMsg.style.color = 'var(--danger)';
+
+  var labIn = el('input', { type:'text', value:dk.label });
+  labIn.addEventListener('input', function(){
+    dk.label = labIn.value; afterChange(); renderDeskList(); requestDraw();
+  });
+  labIn.addEventListener('change', commit);
+
+  var zsel2 = el('select', {});
+  DOC.zones.forEach(function(z){ zsel2.appendChild(el('option', { value:z.id, text:z.id + '  (' + z.label + ')' })); });
+  if (!zoneById(DOC, dk.zone)) {
+    zsel2.appendChild(el('option', { value:dk.zone, text:dk.zone + '  ← UNDEFINED' }));
+    zsel2.classList.add('bad');
+  }
+  zsel2.value = dk.zone;
+  zsel2.addEventListener('change', function(){
+    dk.zone = zsel2.value; LAST_ZONE = dk.zone; commit(); renderAll();
+  });
+
+  var notes = el('textarea', { rows:'2', placeholder:'Shown as a tooltip in the picker' });
+  notes.value = dk.notes;
+  notes.addEventListener('input', function(){
+    dk.notes = notes.value;
+    dk.hasNotes = dk.hasNotes || notes.value.length > 0;
+    afterChange();
+  });
+  notes.addEventListener('change', commit);
+
+  var availOn = dk.extra.available !== false;
+  var avail = el('input', { type:'checkbox' });
+  avail.checked = availOn;
+  avail.addEventListener('change', function(){
+    if (avail.checked) {
+      delete dk.extra.available;
+      dk.extraKeys = dk.extraKeys.filter(function(k){ return k !== 'available'; });
+    } else {
+      if (dk.extraKeys.indexOf('available') < 0) dk.extraKeys.push('available');
+      dk.extra.available = false;
+    }
+    commit(); renderAll();
+  });
+
+  box.appendChild(el('label', { cls:'fld' }, [el('span', { text:'desk.id  (unique across every room)' }), idIn]));
+  box.appendChild(idMsg);
+  box.appendChild(el('label', { cls:'fld' }, [el('span', { text:'desk.label  (what humans call it)' }), labIn]));
+  box.appendChild(el('label', { cls:'fld' }, [el('span', { text:'desk.zone' }), zsel2]));
+  box.appendChild(el('label', { cls:'fld' }, [el('span', { text:'desk.notes  (optional tooltip)' }), notes]));
+  box.appendChild(el('label', { cls:'ck' }, [avail, el('span', { text:'Available in the assignment pool' })]));
+  box.appendChild(el('div', { cls:'sep' }));
+
+  box.appendChild(el('div', { cls:'fld' }, [
+    el('span', { text:'Geometry' }),
+    el('div', { id:'inspCoords', style:'font-family:var(--mono);font-size:11px;color:var(--dim);line-height:1.6' })
+  ]));
+  renderInspectorCoords();
+
+  box.appendChild(el('div', { cls:'row' }, [
+    el('button', { cls:'mini grow', text: dk.shape.kind === 'rect' ? 'Convert to polygon' : 'Convert to rect (bbox)',
+      onclick:function(){ if (dk.shape.kind === 'rect') rectToPoly(dk); else polyToRect(dk); } }),
+    el('button', { cls:'mini grow', text:'Centre view', onclick:function(){
+      var c = shapeCentroid(dk.shape); centerOn(c[0], c[1]); } })
+  ]));
+  box.appendChild(el('div', { cls:'row' }, [
+    el('button', { cls:'mini grow', text:'Duplicate', onclick:duplicateSelected }),
+    el('button', { cls:'mini danger grow', text:'Delete', onclick:deleteSelected })
+  ]));
+}
+function idNote(dk){
+  if (!dk.id.length) return 'An id is required. Suggested next: ' + nextDeskId(DOC) + '.';
+  if (badId(dk)) return 'DUPLICATE — "' + dk.id + '" is already used by another region. ' +
+                        'Ids must be unique across all rooms. Next free: ' + nextDeskId(DOC) + '.';
+  return 'Unique. Next free id: ' + nextDeskId(DOC) + '.';
+}
+function renderInspectorCoords(){
+  var node = $('inspCoords');
+  if (!node) return;
+  var ds = selDesks();
+  if (ds.length !== 1) { node.textContent = ''; return; }
+  var dk = ds[0], r = room();
+  var b = shapeBBox(dk.shape);
+  var W = r.imageSize[0], H = r.imageSize[1];
+  clear(node);
+  if (dk.shape.kind === 'rect') {
+    node.appendChild(el('div', { text:'rect  norm  [' + [b.x, b.y, b.w, b.h].map(function(v){ return round(v, 4); }).join(', ') + ']' }));
+    node.appendChild(el('div', { text:'rect  px    [' + [b.x * W, b.y * H, b.w * W, b.h * H].map(function(v){ return round(v, 1); }).join(', ') + ']' }));
+  } else {
+    node.appendChild(el('div', { text:'polygon · ' + dk.shape.pts.length + ' points' }));
+    node.appendChild(el('div', { text:'bbox norm [' + [b.x, b.y, b.w, b.h].map(function(v){ return round(v, 4); }).join(', ') + ']' }));
+    node.appendChild(el('div', { text:'bbox px   [' + [b.x * W, b.y * H, b.w * W, b.h * H].map(function(v){ return round(v, 1); }).join(', ') + ']' }));
+  }
+}
+function focusIdField(){
+  var n = $('inspId');
+  if (n && !coarse()) { try { n.focus(); n.select(); } catch (e) {} }
+}
+
+/* ---------------------------------------------------------- validation */
+function renderValidation(){
+  var list = $('valList');
+  clear(list);
+  var ne = VAL.errors.length, nw = VAL.warnings.length;
+  var badge = $('badgeVal');
+  badge.className = 'badge ' + (ne ? 'err' : (nw ? 'warn' : 'ok'));
+  badge.textContent = ne ? ne + ' error' + (ne === 1 ? '' : 's') : (nw ? nw + ' warning' + (nw === 1 ? '' : 's') : 'clean');
+  if (!ne && !nw) {
+    list.appendChild(el('div', { cls:'empty', text:'No problems. This document would pass rooms.json validation.' }));
+    return;
+  }
+  function row(item, kind){
+    var r = el('div', { cls:'vitem ' + (kind === 'e' ? 'e' : 'w') }, [
+      el('span', { cls:'k', text:kind === 'e' ? 'ERR' : 'WARN' }),
+      el('span', { cls:'m', text:item.msg })
+    ]);
+    r.addEventListener('click', function(){ jumpTo(item); });
+    return r;
+  }
+  VAL.errors.forEach(function(i){ list.appendChild(row(i, 'e')); });
+  VAL.warnings.forEach(function(i){ list.appendChild(row(i, 'w')); });
+}
+function jumpTo(item){
+  if (item.roomIdx !== undefined && item.roomIdx !== UI.roomIdx) switchRoom(item.roomIdx);
+  if (item.uid) {
+    UI.sel = item.uid2 ? [item.uid, item.uid2] : [item.uid];
+    var f = findDesk(DOC, item.uid);
+    if (f) { var c = shapeCentroid(f.desk.shape); centerOn(c[0], c[1]); }
+  }
+  renderAll();
+}
+
+/* -------------------------------------------------------------- legend */
+function renderLegend(){
+  var lg = $('legend');
+  clear(lg);
+  if (!UI.preview) { lg.style.display = 'none'; return; }
+  lg.style.display = '';
+  var r = room();
+  var counts = Object.create(null);
+  if (r) r.desks.forEach(function(d){ counts[d.zone] = (counts[d.zone] || 0) + 1; });
+  lg.appendChild(el('h4', { text:'Zones — click to hide' }));
+  DOC.zones.forEach(function(z){
+    var row = el('div', { cls:'lg' + (zoneVisible(z.id) ? '' : ' off') }, [
+      el('span', { cls:'sw', style:'background:' + z.color }),
+      el('span', { text:z.label || z.id }),
+      el('span', { cls:'ct', text:String(counts[z.id] || 0) })
+    ]);
+    row.addEventListener('click', function(){ toggleZone(z.id); });
+    lg.appendChild(row);
+  });
+  var nOver = Object.keys(VAL.overlapping).length;
+  if (nOver) {
+    lg.appendChild(el('div', { cls:'lg', style:'color:var(--danger)' }, [
+      el('span', { cls:'sw', style:'background:#ff5a5a' }),
+      el('span', { text:'overlapping (hatched)' }),
+      el('span', { cls:'ct', text:String(nOver) })
+    ]));
+  }
+  var undef = 0;
+  if (r) r.desks.forEach(function(d){ if (!zoneById(DOC, d.zone)) undef++; });
+  if (undef) {
+    lg.appendChild(el('div', { cls:'lg', style:'color:var(--danger)' }, [
+      el('span', { cls:'sw', style:'background:#ff3b30' }),
+      el('span', { text:'undefined zone' }),
+      el('span', { cls:'ct', text:String(undef) })
+    ]));
+  }
+}
+
+/* ------------------------------------------------------------- status */
+function updateStatus(){
+  var r = room();
+  $('stRoom').textContent = r ? 'room ' + (UI.roomIdx + 1) + '/' + DOC.rooms.length + ' ' + r.id +
+    ' ' + r.imageSize[0] + '×' + r.imageSize[1] : 'no room';
+  updateStatusZoom();
+  updateStatusSel();
+  updateStatusVal();
+}
+function updateStatusZoom(){ $('stZoom').textContent = 'zoom ' + Math.round(view().k * 100) + '%'; }
+function updateStatusSel(){ $('stSel').textContent = 'sel ' + selDesks().length; }
+function updateStatusVal(){
+  var n = $('stVal');
+  var ne = VAL.errors.length, nw = VAL.warnings.length;
+  n.textContent = ne + ' err · ' + nw + ' warn';
+  n.className = ne ? 'st-err' : (nw ? 'st-warn' : '');
+}
+function updateStatusCursor(p){
+  var r = room();
+  if (!r) return;
+  var n = s2n(p[0], p[1]);
+  var i = n2i(n[0], n[1]);
+  $('stCursor').textContent = 'x ' + n[0].toFixed(4) + ' y ' + n[1].toFixed(4) +
+                              '  (' + Math.round(i[0]) + ', ' + Math.round(i[1]) + ' px)';
+}
+
+/* ============================================================================
+ * PART 5 — rooms, images, import/export, assist, autosave, keyboard, boot.
+ * ==========================================================================*/
+
+/* --------------------------------------------------------- room actions */
+function switchRoom(i){
+  if (i < 0 || i >= DOC.rooms.length) return;
+  UI.roomIdx = i;
+  UI.sel = [];
+  PENDING = null;
+  GHOSTS = null;
+  var v = view();
+  if (!v.fitted) fitView();
+  renderAll();
+}
+function cycleRoom(delta){
+  if (DOC.rooms.length < 2) return;
+  switchRoom((UI.roomIdx + delta + DOC.rooms.length) % DOC.rooms.length);
+  toast(room().label || room().id);
+}
+function addRoom(){
+  var base = 'room', n = 1, ids = Object.create(null);
+  DOC.rooms.forEach(function(r){ ids[r.id] = true; });
+  while (ids[base + '_' + n]) n++;
+  var r = newRoom(base + '_' + n, 'Room ' + n);
+  DOC.rooms.push(r);
+  commit();
+  switchRoom(DOC.rooms.length - 1);
+  fitView();
+  toast('Room "' + r.id + '" added');
+}
+function duplicateRoom(){
+  var r = room(); if (!r) return;
+  var copy = clone(r);
+  var ids = Object.create(null);
+  DOC.rooms.forEach(function(x){ ids[x.id] = true; });
+  var n = 2;
+  while (ids[r.id + '_' + n]) n++;
+  copy.id = r.id + '_' + n;
+  copy.label = r.label + ' (copy)';
+  /* ids must stay unique across ALL rooms, so re-key every desk */
+  copy.desks.forEach(function(dk){
+    dk.uid = uid();
+    dk.id = '';
+  });
+  DOC.rooms.push(copy);
+  copy.desks.forEach(function(dk){ dk.id = nextDeskId(DOC); dk.label = labelFromId(dk.id); });
+  if (IMAGES[r.id]) IMAGES[copy.id] = IMAGES[r.id];
+  commit();
+  switchRoom(DOC.rooms.length - 1);
+  toast('Room duplicated as "' + copy.id + '" with fresh desk ids');
+}
+function deleteRoom(){
+  var r = room(); if (!r || DOC.rooms.length <= 1) return;
+  confirmBox('Delete room', 'Delete "' + (r.label || r.id) + '" and its ' + r.desks.length +
+             ' region(s)? Undo will bring it back.', 'Delete', true).then(function(ok){
+    if (!ok) return;
+    DOC.rooms.splice(UI.roomIdx, 1);
+    UI.roomIdx = clamp(UI.roomIdx, 0, DOC.rooms.length - 1);
+    UI.sel = [];
+    commit(); renderAll();
+    toast('Room deleted');
+  });
+}
+function setRoomId(nid){
+  var r = room(); if (!r) return;
+  nid = nid.trim();
+  if (nid === r.id) return;
+  if (!nid.length) { toast('Room id cannot be empty', 'err'); renderRooms(); return; }
+  var dup = DOC.rooms.some(function(x){ return x !== r && x.id === nid; });
+  if (dup) { toast('Room id "' + nid + '" already exists', 'err'); renderRooms(); return; }
+  var old = r.id;
+  if (IMAGES[old]) { IMAGES[nid] = IMAGES[old]; delete IMAGES[old]; }
+  if (VIEWS[old]) { VIEWS[nid] = VIEWS[old]; delete VIEWS[old]; }
+  if (UI.suggestions[old]) { UI.suggestions[nid] = UI.suggestions[old]; delete UI.suggestions[old]; }
+  r.id = nid;
+  commit(); renderAll();
+}
+function renumberRoom(){
+  var r = room(); if (!r || !r.desks.length) return;
+  var pat = idPattern(DOC);
+  confirmBox('Renumber ' + r.desks.length + ' regions',
+    'Rewrite every id in this room in reading order (top-to-bottom rows, then left-to-right) using the ' +
+    'pattern "' + pat.prefix + pad(1, pat.width) + '". Labels are rewritten to match. ' +
+    'Ids in other rooms are left alone and skipped over. This is undoable.',
+    'Renumber').then(function(ok){
+    if (!ok) return;
+    var others = Object.create(null);
+    DOC.rooms.forEach(function(x){ if (x !== r) x.desks.forEach(function(d){ others[d.id] = true; }); });
+    var rows = r.desks.slice().sort(function(a, b){
+      var ba = shapeBBox(a.shape), bb = shapeBBox(b.shape);
+      var ra = Math.round(ba.y * 40), rb = Math.round(bb.y * 40);
+      if (ra !== rb) return ra - rb;
+      return ba.x - bb.x;
+    });
+    var n = 0;
+    rows.forEach(function(d){
+      var cand;
+      do { n++; cand = pat.prefix + pad(n, pat.width); } while (others[cand]);
+      d.id = cand;
+      d.label = labelFromId(cand);
+    });
+    commit(); renderAll();
+    toast('Renumbered ' + rows.length + ' regions');
+  });
+}
+
+/* --------------------------------------------------------- image loading */
+function loadImageFile(file){
+  var r = room();
+  if (!r) return;
+  if (!/^image\//.test(file.type) && !/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(file.name)) {
+    toast('That is not an image file', 'err');
+    return;
+  }
+  var fr = new FileReader();
+  fr.onerror = function(){ toast('Could not read ' + file.name, 'err'); };
+  fr.onload = function(){
+    var img = new Image();
+    img.onload = function(){
+      var W = img.naturalWidth || img.width, H = img.naturalHeight || img.height;
+      if (!W || !H) { toast('Image has no intrinsic size (SVG without width/height?)', 'err'); return; }
+      var rr = room();
+      var oldAr = rr.imageSize[0] / rr.imageSize[1], newAr = W / H;
+      IMAGES[rr.id] = { img:img, dataUrl:fr.result, w:W, h:H, name:file.name };
+      rr.imageSize = [W, H];
+      if (!rr.image) rr.image = 'floorplans/' + file.name;
+      if (rr.desks.length && Math.abs(oldAr - newAr) / oldAr > 0.01) {
+        toast('Aspect ratio changed ' + oldAr.toFixed(3) + ' → ' + newAr.toFixed(3) +
+              '; existing regions moved. Check them.', 'err');
+      }
+      if (!VIEWS[rr.id] || !VIEWS[rr.id].fitted) fitView(); else fitView();
+      commit(); renderAll();
+      toast('Loaded ' + file.name + ' (' + W + '×' + H + ')', 'ok');
+    };
+    img.onerror = function(){ toast('Could not decode ' + file.name, 'err'); };
+    img.src = fr.result;
+  };
+  fr.readAsDataURL(file);
+}
+function unloadImage(){
+  var r = room(); if (!r) return;
+  delete IMAGES[r.id];
+  UI.suggestions[r.id] = [];
+  renderAll();
+  toast('Bitmap unloaded; image path and image_size kept');
+}
+
+/* --------------------------------------------------------------- import */
+function doImportText(text, sourceName){
+  var parsed;
+  try { parsed = JSON.parse(text); }
+  catch (e) { modal({ title:'Not valid JSON', body:String(e.message || e) }); return; }
+  var res;
+  try { res = importRooms(parsed); }
+  catch (e) { modal({ title:'Cannot import', body:String(e.message || e) }); return; }
+
+  DOC = res.doc;
+  UI.roomIdx = 0;
+  UI.sel = [];
+  UI.hiddenZones = Object.create(null);
+  UI.suggestions = Object.create(null);
+  LAST_ZONE = null;
+  VIEWS = Object.create(null);
+  /* keep bitmaps whose room id still exists */
+  var keep = Object.create(null);
+  DOC.rooms.forEach(function(r){ if (IMAGES[r.id]) keep[r.id] = IMAGES[r.id]; });
+  IMAGES = keep;
+  DOC.rooms.forEach(function(r){
+    var im = IMAGES[r.id];
+    if (im) r.imageSize = [im.w, im.h];
+  });
+  $('docSchema').value = String(DOC.schemaVersion);
+  $('expSpace').value = res.sourceSpace;
+  onSpaceChange(true);
+  historyReset();
+  afterChange();
+  fitView();
+  renderAll();
+
+  var body = el('div', {}, [
+    el('p', { text:'Imported ' + DOC.rooms.length + ' room(s), ' + DOC.zones.length + ' zone(s), ' +
+                   allDesks(DOC).length + ' desk(s) from ' + sourceName + ' (coord_space "' +
+                   res.sourceSpace + '").' })
+  ]);
+  if (res.warnings.length) {
+    body.appendChild(el('p', { text:'Import notes:' }));
+    var ul = el('ul', {});
+    res.warnings.slice(0, 30).forEach(function(w){ ul.appendChild(el('li', { text:w })); });
+    if (res.warnings.length > 30) ul.appendChild(el('li', { text:'…and ' + (res.warnings.length - 30) + ' more.' }));
+    body.appendChild(ul);
+  }
+  if (VAL.errors.length || VAL.warnings.length) {
+    body.appendChild(el('p', { text:'Validation: ' + VAL.errors.length + ' error(s), ' +
+                                   VAL.warnings.length + ' warning(s). See the Validation panel.' }));
+  }
+  var missing = DOC.rooms.filter(function(r){ return !IMAGES[r.id]; });
+  if (missing.length) {
+    body.appendChild(el('p', { text:'No bitmap is loaded for: ' + missing.map(function(r){ return r.id; }).join(', ') +
+      '. Load each room\'s image (or drop it on the canvas) so you can see what you are editing — ' +
+      'image_size will be taken from the file.' }));
+  }
+  modal({ title:'Import complete', body:body });
+}
+function askImportFile(){
+  if (allDesks(DOC).length || DOC.rooms.length > 1) {
+    confirmBox('Replace the current document?',
+      'Importing discards the ' + allDesks(DOC).length + ' region(s) currently open. ' +
+      'Export first if you need them.', 'Import anyway', true)
+    .then(function(ok){ if (ok) $('fileJson').click(); });
+  } else $('fileJson').click();
+}
+function askPaste(){
+  var ta = el('textarea', { rows:'12', spellcheck:'false', placeholder:'Paste the contents of rooms.json here' });
+  modal({ title:'Paste rooms.json',
+    body: el('div', {}, [el('p', { text:'Useful when the browser cannot reach the file, e.g. on a phone.' }), ta]),
+    buttons:[{ label:'Cancel', value:false }, { label:'Import', value:true, kind:'prim' }] })
+  .then(function(ok){ if (ok && ta.value.trim()) doImportText(ta.value, 'pasted text'); });
+}
+
+/* --------------------------------------------------------------- export */
+function exportOpts(){
+  var space = $('expSpace').value;
+  var dp = clamp(Math.round(numOr($('expDp').value, space === 'pixels' ? 2 : 6)), 0, 8);
+  return { space:space, decimals:dp };
+}
+function onSpaceChange(silent){
+  var space = $('expSpace').value;
+  $('expDp').value = String(space === 'pixels' ? 2 : 6);
+  refreshExport();
+  if (!silent) toast('Export space: ' + space);
+}
+function refreshExport(){
+  var o = exportOpts();
+  var txt;
+  try { txt = exportText(DOC, o.space, { decimals:o.decimals }); }
+  catch (e) { txt = '/* export failed: ' + e.message + ' */'; }
+  var out = $('expOut');
+  if (out && document.activeElement !== out) out.value = txt;
+  var note = $('expNote');
+  if (o.space === 'normalized') {
+    note.textContent = 'Normalized coordinates are fractions of image_size, so they survive rescaling the ' +
+      'plan. At ' + o.decimals + ' decimals this is lossless for anything drawn here.';
+  } else {
+    note.textContent = 'Pixel coordinates are tied to image_size (' +
+      (room() ? room().imageSize.join('×') : '?') + '). At ' + o.decimals +
+      ' decimal(s) a pixels → normalized → pixels round trip can shift a region by up to half a pixel. ' +
+      'Prefer normalized unless something downstream insists on pixels.';
+  }
+  return txt;
+}
+function doExport(){
+  var txt = refreshExport();
+  var proceed = VAL.errors.length
+    ? confirmBox('Export with ' + VAL.errors.length + ' validation error(s)?',
+        'deskmatch.validate will reject this file: ' + VAL.errors[0].msg +
+        (VAL.errors.length > 1 ? ' (and ' + (VAL.errors.length - 1) + ' more)' : '') +
+        ' You can still save it to keep working.', 'Export anyway', true)
+    : Promise.resolve(true);
+  proceed.then(function(ok){
+    if (!ok) return;
+    var name = ($('expName').value || 'rooms.json').trim();
+    if (!/\.json$/i.test(name)) name += '.json';
+    try {
+      var blob = new Blob([txt], { type:'application/json' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 400);
+      UI.dirty = false;
+      toast('Exported ' + name, 'ok');
+    } catch (e) {
+      modal({ title:'Download blocked', body:'The browser refused the download (' + e.message +
+        '). Open "Show JSON preview" and copy the text out instead.' });
+    }
+  });
+}
+function doCopy(){
+  var txt = refreshExport();
+  function fallback(){
+    var out = $('expOut');
+    out.closest('details').open = true;
+    out.focus(); out.select();
+    toast('Select-all is ready — press ' + (isMac() ? '⌘C' : 'Ctrl+C'));
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(function(){ toast('rooms.json copied', 'ok'); }, fallback);
+  } else fallback();
+}
+function isMac(){ return /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || ''); }
+
+/* ------------------------------------------------------------- replicate */
+function updateRepNote(){
+  var ds = selDesks();
+  var n = $('repNote');
+  $('btnRepApply').disabled = ds.length < 1;
+  if (!ds.length) { n.textContent = 'Select a region to replicate it along a row or column.'; GHOSTS = null; return; }
+  var src = ds[0];
+  var r = room();
+  var b = shapeBBox(src.shape);
+  n.textContent = 'Source "' + src.id + '" is ' + round(b.w * r.imageSize[0], 1) + ' × ' +
+    round(b.h * r.imageSize[1], 1) + ' px' +
+    (ds.length > 1 ? ' (first of ' + ds.length + ' selected; only it is replicated)' : '') + '.';
+  updateGhosts();
+}
+function repParams(){
+  return {
+    count: Math.max(1, Math.round(numOr($('repN').value, 1))),
+    dir: $('repDir').value,
+    mode: $('repMode').value,
+    val: numOr($('repVal').value, 0)
+  };
+}
+function updateGhosts(){
+  var ds = selDesks();
+  var panelOpen = $('secRep') && $('secRep').open;
+  /* The ghost outlines are a preview of the Replicate button. Showing them
+   * while that panel is shut just litters the plan with rectangles the
+   * operator never asked for. */
+  if (!ds.length || !panelOpen || UI.preview) { GHOSTS = null; requestDraw(); return; }
+  var p = repParams();
+  var offs = replicateOffsets(ds[0].shape, room(), p.count, p.dir, p.mode, p.val);
+  GHOSTS = offs.map(function(o){ return shapePoly(translateShape(ds[0].shape, o[0], o[1])); });
+  requestDraw();
+}
+function deriveSpacing(){
+  var ds = selDesks();
+  if (!ds.length) return;
+  var r = room(), p = repParams();
+  var horiz = (p.dir === 'right' || p.dir === 'left');
+  if (ds.length >= 2) {
+    var a = shapeBBox(ds[0].shape), b = shapeBBox(ds[1].shape);
+    var d = horiz ? Math.abs(b.x - a.x) * r.imageSize[0] : Math.abs(b.y - a.y) * r.imageSize[1];
+    if (d > 0.01) {
+      $('repMode').value = 'pitch';
+      $('repVal').value = String(round(d, 2));
+      updateGhosts();
+      toast('Pitch taken from the two selected regions: ' + round(d, 2) + ' px');
+      return;
+    }
+  }
+  var bb = shapeBBox(ds[0].shape);
+  var size = horiz ? bb.w * r.imageSize[0] : bb.h * r.imageSize[1];
+  $('repMode').value = 'pitch';
+  $('repVal').value = String(round(size, 2));
+  updateGhosts();
+  toast('Pitch set to the source size: ' + round(size, 2) + ' px (edge to edge, no gap)');
+}
+function applyReplicate(){
+  var ds = selDesks();
+  if (!ds.length) return;
+  var src = ds[0], r = room(), p = repParams();
+  var offs = replicateOffsets(src.shape, r, p.count, p.dir, p.mode, p.val);
+  var made = [];
+  offs.forEach(function(o){
+    var id = nextDeskId(DOC);
+    var nd = newDesk(id, labelFromId(id), src.zone, translateShape(src.shape, o[0], o[1]));
+    nd.notes = src.notes; nd.hasNotes = src.hasNotes;
+    nd.extraKeys = src.extraKeys.slice(); nd.extra = clone(src.extra);
+    r.desks.push(nd); made.push(nd.uid);
+  });
+  UI.sel = made;
+  GHOSTS = null;
+  commit(); renderAll();
+  toast('Created ' + made.length + ' region(s) from "' + src.id + '"', 'ok');
+}
+
+/* ------------------------------------------------------------ CV assist */
+function runSuggest(){
+  var r = room();
+  var im = IMAGES[r.id];
+  if (!im) { toast('Load the floor-plan bitmap first — there is nothing to analyse', 'err'); return; }
+  var btn = $('btnSuggest');
+  btn.disabled = true; btn.textContent = 'Analysing…';
+  setTimeout(function(){
+    var res;
+    try { res = analyse(im); }
+    catch (e) { toast('Analysis failed: ' + e.message, 'err'); btn.disabled = false; btn.textContent = 'Suggest rectangles'; return; }
+    var existing = r.desks.map(function(d){ return shapeBBox(d.shape); });
+    var kept = res.rects.filter(function(g){
+      var ga = g.w * g.h;
+      for (var i = 0; i < existing.length; i++) {
+        if (rectOverlapArea(g, existing[i]) / ga > 0.5) return false;
+      }
+      return true;
+    }).map(function(g){ return { x:g.x, y:g.y, w:g.w, h:g.h, state:'open' }; });
+    UI.suggestions[r.id] = kept;
+    UI.suggHover = -1;
+    btn.disabled = false; btn.textContent = 'Suggest rectangles';
+    renderSuggList(); requestDraw();
+    toast(kept.length + ' candidate(s) at threshold ' + res.threshold +
+          ' — accept or reject each one', kept.length ? 'ok' : 'err');
+  }, 20);
+}
+function analyse(im){
+  var maxDim = 1000;
+  var s = Math.min(1, maxDim / Math.max(im.w, im.h));
+  var w = Math.max(1, Math.round(im.w * s)), h = Math.max(1, Math.round(im.h * s));
+  var off = document.createElement('canvas');
+  off.width = w; off.height = h;
+  var oc = off.getContext('2d', { willReadFrequently:true });
+  oc.drawImage(im.img, 0, 0, w, h);
+  var data = oc.getImageData(0, 0, w, h).data;
+  return suggestFromPixels(data, w, h, {
+    threshold: Math.round(numOr($('cvThr').value, 0)),
+    dilate: Math.round(numOr($('cvDil').value, 1)),
+    minAreaFrac: numOr($('cvMin').value, 0.05) / 100,
+    maxAreaFrac: numOr($('cvMax').value, 8) / 100,
+    minFill: numOr($('cvFill').value, 0.72),
+    cap: Math.round(numOr($('cvCap').value, 400))
+  });
+}
+function suggList(){ var r = room(); return r ? (UI.suggestions[r.id] || []) : []; }
+function renderSuggList(){
+  var box = $('suggList');
+  clear(box);
+  var list = suggList();
+  var open = list.filter(function(g){ return g.state === 'open'; });
+  if (!list.length) {
+    box.appendChild(el('div', { cls:'empty', text:'No suggestions. Load a bitmap and press "Suggest rectangles".' }));
+    return;
+  }
+  if (!open.length) {
+    box.appendChild(el('div', { cls:'empty', text:'All ' + list.length + ' suggestions have been resolved.' }));
+    return;
+  }
+  var r = room();
+  list.forEach(function(g, i){
+    if (g.state !== 'open') return;
+    var px = [g.x * r.imageSize[0], g.y * r.imageSize[1], g.w * r.imageSize[0], g.h * r.imageSize[1]]
+      .map(function(v){ return Math.round(v); });
+    var row = el('div', { cls:'sgrow' + (i === UI.suggHover ? ' hot' : '') }, [
+      el('span', { cls:'px', text:'x' + px[0] + ' y' + px[1] + ' · ' + px[2] + '×' + px[3] }),
+      el('button', { cls:'mini', text:'✓', title:'Accept as a new region', onclick:function(ev){ ev.stopPropagation(); acceptSuggestion(i); } }),
+      el('button', { cls:'mini danger', text:'✕', title:'Reject', onclick:function(ev){ ev.stopPropagation(); rejectSuggestion(i); } })
+    ]);
+    row.addEventListener('mouseenter', function(){ UI.suggHover = i; requestDraw(); });
+    row.addEventListener('mouseleave', function(){ if (UI.suggHover === i) { UI.suggHover = -1; requestDraw(); } });
+    row.addEventListener('click', function(){
+      centerOn(g.x + g.w / 2, g.y + g.h / 2);
+    });
+    box.appendChild(row);
+  });
+}
+function syncSuggHighlight(){ renderSuggList(); }
+function acceptSuggestion(i){
+  var list = suggList(), g = list[i];
+  if (!g || g.state !== 'open') return;
+  g.state = 'accepted';
+  addDesk(room(), { kind:'rect', x:g.x, y:g.y, w:g.w, h:g.h });
+  renderSuggList();
+}
+function rejectSuggestion(i){
+  var list = suggList(), g = list[i];
+  if (!g || g.state !== 'open') return;
+  g.state = 'rejected';
+  renderSuggList(); requestDraw();
+}
+function acceptAllSuggestions(){
+  var list = suggList();
+  var open = list.filter(function(g){ return g.state === 'open'; });
+  if (!open.length) return;
+  confirmBox('Accept ' + open.length + ' suggestions?',
+    'They become real regions with auto-assigned ids in zone "' + currentZoneId() +
+    '". Check every one afterwards — this detector is a heuristic, not ground truth.',
+    'Accept all').then(function(ok){
+    if (!ok) return;
+    var r = room(), made = [];
+    open.forEach(function(g){
+      g.state = 'accepted';
+      var id = nextDeskId(DOC);
+      var nd = newDesk(id, labelFromId(id), currentZoneId(), { kind:'rect', x:g.x, y:g.y, w:g.w, h:g.h });
+      r.desks.push(nd); made.push(nd.uid);
+    });
+    UI.sel = made;
+    commit(); renderAll();
+    toast('Accepted ' + made.length + ' suggestions — verify each one', 'ok');
+  });
+}
+function rejectAllSuggestions(){
+  suggList().forEach(function(g){ if (g.state === 'open') g.state = 'rejected'; });
+  renderSuggList(); requestDraw();
+}
+function clearSuggestions(){
+  var r = room(); if (!r) return;
+  UI.suggestions[r.id] = [];
+  renderSuggList(); requestDraw();
+}
+
+/* -------------------------------------------------------------- autosave */
+var STORE_KEY = 'deskmatch.calibrate.session.v1';
+var autoTimer = null, lastSaveAt = null;
+
+function storage(){
+  try { return window.localStorage; } catch (e) { return null; }
+}
+function scheduleAutosave(){
+  if (!UI.storageOK) return;
+  if (autoTimer) clearTimeout(autoTimer);
+  autoTimer = setTimeout(saveSession, 800);
+}
+function sessionPayload(withImages){
+  var imgs = null;
+  if (withImages) {
+    imgs = {};
+    Object.keys(IMAGES).forEach(function(k){
+      imgs[k] = { dataUrl:IMAGES[k].dataUrl, w:IMAGES[k].w, h:IMAGES[k].h, name:IMAGES[k].name };
+    });
+  }
+  return {
+    v: 1, app: VERSION, savedAt: new Date().toISOString(),
+    doc: DOC, roomIdx: UI.roomIdx, images: imgs, imagesDropped: !withImages
+  };
+}
+function saveSession(){
+  var st = storage();
+  if (!st) { UI.storageOK = false; setAutoNote('unavailable (localStorage is blocked for this page)'); return; }
+  var ok = false;
+  try { st.setItem(STORE_KEY, JSON.stringify(sessionPayload(true))); ok = true; }
+  catch (e) {
+    try { st.setItem(STORE_KEY, JSON.stringify(sessionPayload(false))); ok = true; }
+    catch (e2) { UI.storageOK = false; setAutoNote('failed: ' + (e2.name || e2.message)); }
+  }
+  if (ok) {
+    lastSaveAt = new Date();
+    setAutoNote('saved ' + lastSaveAt.toLocaleTimeString());
+  }
+}
+function setAutoNote(s){
+  $('autoNote').textContent = 'Autosave: ' + s;
+  $('stAuto').textContent = 'autosave ' + s;
+}
+function readSession(){
+  var st = storage();
+  if (!st) return null;
+  try {
+    var raw = st.getItem(STORE_KEY);
+    if (!raw) return null;
+    var o = JSON.parse(raw);
+    if (!o || !o.doc || !Array.isArray(o.doc.rooms)) return null;
+    return o;
+  } catch (e) { return null; }
+}
+function applySession(o){
+  DOC = o.doc;
+  /* uid counter must not collide with restored uids */
+  allDesks(DOC).forEach(function(e){
+    var m = /^r(\d+)$/.exec(e.desk.uid || '');
+    if (m) _uidSeq = Math.max(_uidSeq, parseInt(m[1], 10));
+    if (!e.desk.uid) e.desk.uid = uid();
+  });
+  UI.roomIdx = clamp(numOr(o.roomIdx, 0), 0, DOC.rooms.length - 1);
+  UI.sel = [];
+  IMAGES = Object.create(null);
+  VIEWS = Object.create(null);
+  UI.suggestions = Object.create(null);
+  var pend = 0, done = 0;
+  function finish(){
+    $('docSchema').value = String(DOC.schemaVersion);
+    historyReset(); afterChange(); fitView(); renderAll();
+  }
+  if (o.images) {
+    Object.keys(o.images).forEach(function(k){
+      var rec = o.images[k];
+      if (!rec || !rec.dataUrl) return;
+      pend++;
+      var img = new Image();
+      img.onload = function(){
+        IMAGES[k] = { img:img, dataUrl:rec.dataUrl, w:rec.w || img.naturalWidth, h:rec.h || img.naturalHeight, name:rec.name || k };
+        done++; if (done === pend) { renderAll(); fitView(); }
+      };
+      img.onerror = function(){ done++; if (done === pend) renderAll(); };
+      img.src = rec.dataUrl;
+    });
+  }
+  finish();
+  toast('Session restored' + (o.imagesDropped ? ' (bitmaps were too large to autosave — reload them)' : ''), 'ok');
+}
+function offerRestore(o){
+  var when = o.savedAt ? new Date(o.savedAt) : null;
+  var nDesk = 0;
+  o.doc.rooms.forEach(function(r){ nDesk += (r.desks || []).length; });
+  $('restoreMsg').textContent =
+    'An autosaved session from ' + (when ? when.toLocaleString() : 'an earlier visit') + ' is available: ' +
+    o.doc.rooms.length + ' room(s), ' + (o.doc.zones || []).length + ' zone(s), ' + nDesk + ' region(s)' +
+    (o.imagesDropped ? ' (bitmaps not included)' : '') + '. Restore it?';
+  $('restore').classList.add('on');
+}
+function wipeSession(){
+  var st = storage();
+  if (st) { try { st.removeItem(STORE_KEY); } catch (e) {} }
+  setAutoNote('cleared');
+  toast('Autosave cleared');
+}
+
+/* -------------------------------------------------------------- keyboard */
+function typing(e){
+  var t = e.target;
+  if (!t) return false;
+  var tag = (t.tagName || '').toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || t.isContentEditable;
+}
+function onKeyDown(e){
+  var mod = e.metaKey || e.ctrlKey;
+
+  if (e.key === 'Escape') {
+    if (modalOpen()) { closeModal(false); e.preventDefault(); return; }
+    if (typing(e)) { e.target.blur(); return; }
+    if (cancelPending()) { e.preventDefault(); return; }
+    if (UI.sel.length) { UI.sel = []; renderAll(); e.preventDefault(); return; }
+    if ($('side').classList.contains('open')) { $('side').classList.remove('open'); return; }
+    return;
+  }
+  if (modalOpen()) {
+    if (e.key === 'Enter' && !typing(e)) {
+      var btns = $('modalRoot').querySelectorAll('.mfoot button');
+      if (btns.length) { btns[btns.length - 1].click(); e.preventDefault(); }
+    }
+    return;
+  }
+
+  if (mod) {
+    var k = e.key.toLowerCase();
+    if (k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
+    if (k === 'y') { e.preventDefault(); redo(); return; }
+    if (k === 's' || k === 'e') { e.preventDefault(); doExport(); return; }
+    if (k === 'o') { e.preventDefault(); askImportFile(); return; }
+    if (k === 'a' && !typing(e)) {
+      e.preventDefault();
+      var r = room();
+      UI.sel = r ? r.desks.filter(function(d){ return zoneVisible(d.zone); }).map(function(d){ return d.uid; }) : [];
+      renderAll();
+      return;
+    }
+    if (k === 'd' && !typing(e)) { e.preventDefault(); duplicateSelected(); return; }
+    return;
+  }
+
+  if (typing(e)) {
+    if (e.key === 'Enter' && e.target.tagName === 'INPUT') e.target.blur();
+    return;
+  }
+
+  if (e.key === ' ') {
+    if (!SPACE) { SPACE = true; cv.style.cursor = 'grab'; }
+    e.preventDefault();
+    return;
+  }
+  if (e.key === 'Enter') { if (PENDING) { closePolygon(); e.preventDefault(); } return; }
+  if (e.key === 'Backspace' || e.key === 'Delete') {
+    e.preventDefault();
+    if (PENDING && PENDING.kind === 'poly' && PENDING.pts.length) {
+      PENDING.pts.pop();
+      if (!PENDING.pts.length) PENDING = null;
+      updateDrawHint(); requestDraw();
+      return;
+    }
+    deleteSelected();
+    return;
+  }
+  if (e.key === 'Tab') { e.preventDefault(); togglePreview(); return; }
+
+  if (e.key.indexOf('Arrow') === 0) {
+    e.preventDefault();
+    var step = e.shiftKey ? 10 : 1;
+    if (e.key === 'ArrowLeft')  nudge(-step, 0);
+    if (e.key === 'ArrowRight') nudge(step, 0);
+    if (e.key === 'ArrowUp')    nudge(0, -step);
+    if (e.key === 'ArrowDown')  nudge(0, step);
+    return;
+  }
+
+  var key = e.key;
+  if (key === 'v' || key === 'V') { setTool('select'); return; }
+  if (key === 'r' || key === 'R') { setTool('rect'); return; }
+  if (key === 'p' || key === 'P') { setTool('poly'); return; }
+  if (key === 'h' || key === 'H') { setTool('pan'); return; }
+  if (key === 'g') { UI.showGrid = !UI.showGrid; $('ckGrid').checked = UI.showGrid; requestDraw(); return; }
+  if (key === 'G') { UI.snap = !UI.snap; $('ckSnap').checked = UI.snap; toast('Snap ' + (UI.snap ? 'on' : 'off')); return; }
+  if (key === 'l' || key === 'L') { cycleLabelMode(); return; }
+  if (key === '[') { cycleRoom(-1); return; }
+  if (key === ']') { cycleRoom(1); return; }
+  if (key === '0') { fitView(); updateStatusZoom(); return; }
+  if (key === '1') { zoomTo(1); updateStatusZoom(); return; }
+  if (key === '+' || key === '=') { zoomTo(view().k * 1.25); updateStatusZoom(); return; }
+  if (key === '-' || key === '_') { zoomTo(view().k / 1.25); updateStatusZoom(); return; }
+  if (key === '?' || (key === '/' && e.shiftKey)) {
+    var s = $('secHelp'); s.open = true; s.scrollIntoView({ block:'nearest' });
+    $('side').classList.add('open');
+    return;
+  }
+}
+function onKeyUp(e){
+  if (e.key === ' ') { SPACE = false; if (!DRAG) cv.style.cursor = ''; }
+}
+function setTool(t){
+  if (UI.preview) UI.preview = false;
+  UI.tool = t;
+  /* an in-progress shape only survives if its own tool is still active */
+  if (PENDING && ((PENDING.kind === 'poly' && t !== 'poly') || (PENDING.kind === 'rect' && t !== 'rect'))) {
+    PENDING = null;
+  }
+  if (cv) cv.style.cursor = '';
+  renderAll();
+}
+function togglePreview(){
+  UI.preview = !UI.preview;
+  if (UI.preview) { PENDING = null; GHOSTS = null; }
+  renderAll();
+}
+function cycleLabelMode(){
+  var order = ['label', 'id', 'both', 'none'];
+  UI.labelMode = order[(order.indexOf(UI.labelMode) + 1) % order.length];
+  renderToolbar(); requestDraw();
+  toast('Labels: ' + labelModeName());
+}
+
+/* ------------------------------------------------------------------ boot */
+function boot(){
+  cv = $('cv');
+  ctx = cv.getContext('2d');
+  stage = $('stage');
+
+  /* toolbar */
+  Array.prototype.forEach.call(document.querySelectorAll('.tool'), function(b){
+    b.addEventListener('click', function(){ setTool(b.getAttribute('data-tool')); });
+  });
+  $('btnPreview').addEventListener('click', togglePreview);
+  $('btnFit').addEventListener('click', function(){ fitView(); updateStatusZoom(); });
+  $('btnUndo').addEventListener('click', undo);
+  $('btnRedo').addEventListener('click', redo);
+  $('btnHelp').addEventListener('click', function(){
+    var s = $('secHelp'); s.open = true;
+    $('side').classList.add('open');
+    s.scrollIntoView({ block:'nearest' });
+  });
+  $('btnPanels').addEventListener('click', function(){ $('side').classList.toggle('open'); });
+  $('btnSideClose').addEventListener('click', function(){ $('side').classList.remove('open'); });
+
+  /* document panel */
+  $('btnImport').addEventListener('click', askImportFile);
+  $('btnPaste').addEventListener('click', askPaste);
+  $('btnNew').addEventListener('click', function(){
+    confirmBox('New empty document', 'Discard the current ' + allDesks(DOC).length +
+      ' region(s) and start over?', 'Start over', true).then(function(ok){
+      if (!ok) return;
+      DOC = starterDoc();
+      IMAGES = Object.create(null); VIEWS = Object.create(null);
+      UI.roomIdx = 0; UI.sel = []; UI.suggestions = Object.create(null);
+      UI.hiddenZones = Object.create(null); LAST_ZONE = null;
+      historyReset(); afterChange(); fitView(); renderAll();
+    });
+  });
+  $('expSpace').addEventListener('change', function(){ onSpaceChange(false); });
+  $('expDp').addEventListener('input', refreshExport);
+  $('docSchema').addEventListener('input', function(){
+    DOC.schemaVersion = numOr($('docSchema').value, 1); scheduleCommit(); refreshExport();
+  });
+  $('btnExport').addEventListener('click', doExport);
+  $('btnCopy').addEventListener('click', doCopy);
+
+  /* rooms */
+  $('roomSel').addEventListener('change', function(){ switchRoom(parseInt($('roomSel').value, 10) || 0); });
+  $('btnRoomAdd').addEventListener('click', addRoom);
+  $('btnRoomDup').addEventListener('click', duplicateRoom);
+  $('btnRoomDel').addEventListener('click', deleteRoom);
+  $('roomId').addEventListener('change', function(){ setRoomId($('roomId').value); });
+  $('roomLabel').addEventListener('input', function(){ room().label = $('roomLabel').value; afterChange(); refreshExport(); });
+  $('roomLabel').addEventListener('change', function(){ commit(); renderRooms(); });
+  $('roomImage').addEventListener('input', function(){ room().image = $('roomImage').value.trim(); afterChange(); refreshExport(); });
+  $('roomImage').addEventListener('change', commit);
+  ['roomW', 'roomH'].forEach(function(id, i){
+    $(id).addEventListener('change', function(){
+      var v = Math.max(1, Math.round(numOr($(id).value, room().imageSize[i])));
+      room().imageSize[i] = v;
+      commit(); fitView(); renderAll();
+    });
+  });
+  $('btnPickImage').addEventListener('click', function(){ $('fileImg').click(); });
+  $('btnDropImage').addEventListener('click', unloadImage);
+  $('fileImg').addEventListener('change', function(e){
+    if (e.target.files && e.target.files[0]) loadImageFile(e.target.files[0]);
+    e.target.value = '';
+  });
+  $('fileJson').addEventListener('change', function(e){
+    var f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    var fr = new FileReader();
+    fr.onload = function(){ doImportText(String(fr.result), f.name); };
+    fr.onerror = function(){ toast('Could not read ' + f.name, 'err'); };
+    fr.readAsText(f);
+  });
+
+  /* zones / regions */
+  $('btnZoneAdd').addEventListener('click', addZone);
+  $('deskSearch').addEventListener('input', function(){ UI.filter = $('deskSearch').value; renderDeskList(); });
+  $('btnSelAll').addEventListener('click', function(){
+    var r = room();
+    UI.sel = r ? r.desks.filter(function(d){ return zoneVisible(d.zone); }).map(function(d){ return d.uid; }) : [];
+    renderAll();
+  });
+  $('btnSelNone').addEventListener('click', function(){ UI.sel = []; renderAll(); });
+  $('btnRenumber').addEventListener('click', renumberRoom);
+
+  /* grid + replicate */
+  $('ckGrid').addEventListener('change', function(){ UI.showGrid = $('ckGrid').checked; requestDraw(); });
+  $('ckSnap').addEventListener('change', function(){ UI.snap = $('ckSnap').checked; });
+  $('gridPx').addEventListener('input', function(){ UI.gridPx = Math.max(1, numOr($('gridPx').value, 10)); requestDraw(); });
+  ['repN', 'repDir', 'repMode', 'repVal'].forEach(function(id){
+    $(id).addEventListener('input', updateGhosts);
+    $(id).addEventListener('change', updateGhosts);
+  });
+  $('btnRepAuto').addEventListener('click', deriveSpacing);
+  $('btnRepApply').addEventListener('click', applyReplicate);
+  $('secRep').addEventListener('toggle', updateGhosts);
+
+  /* assist */
+  $('btnSuggest').addEventListener('click', runSuggest);
+  $('btnSuggClear').addEventListener('click', clearSuggestions);
+  $('btnSuggAll').addEventListener('click', acceptAllSuggestions);
+  $('btnSuggNone').addEventListener('click', rejectAllSuggestions);
+
+  /* session */
+  $('btnSaveNow').addEventListener('click', function(){ saveSession(); toast('Saved'); });
+  $('btnWipe').addEventListener('click', wipeSession);
+  $('btnRestore').addEventListener('click', function(){
+    var o = readSession();
+    if (!o) { toast('No autosaved session found', 'err'); return; }
+    confirmBox('Restore autosave', 'Replace the current document with the session saved at ' +
+      (o.savedAt ? new Date(o.savedAt).toLocaleString() : 'an earlier time') + '?', 'Restore', true)
+      .then(function(ok){ if (ok) applySession(o); });
+  });
+  $('btnRestoreYes').addEventListener('click', function(){
+    var o = readSession();
+    $('restore').classList.remove('on');
+    if (o) applySession(o);
+  });
+  $('btnRestoreNo').addEventListener('click', function(){ $('restore').classList.remove('on'); });
+
+  /* canvas */
+  cv.addEventListener('pointerdown', onPointerDown);
+  cv.addEventListener('pointermove', onPointerMove);
+  cv.addEventListener('pointerup', onPointerUp);
+  cv.addEventListener('pointercancel', onPointerCancel);
+  cv.addEventListener('lostpointercapture', onPointerCancel);
+  cv.addEventListener('wheel', onWheel, { passive:false });
+  cv.addEventListener('dblclick', onDblClick);
+  cv.addEventListener('contextmenu', function(e){ if (UI.tool !== 'select') e.preventDefault(); });
+
+  /* drag and drop */
+  ['dragenter', 'dragover'].forEach(function(ev){
+    stage.addEventListener(ev, function(e){ e.preventDefault(); $('veil').classList.add('on'); });
+  });
+  ['dragleave', 'dragend'].forEach(function(ev){
+    stage.addEventListener(ev, function(e){
+      if (e.target === stage || e.target === $('veil')) $('veil').classList.remove('on');
+    });
+  });
+  stage.addEventListener('drop', function(e){
+    e.preventDefault();
+    $('veil').classList.remove('on');
+    var files = e.dataTransfer && e.dataTransfer.files;
+    if (!files || !files.length) return;
+    var f = files[0];
+    if (/\.json$/i.test(f.name) || f.type === 'application/json') {
+      var fr = new FileReader();
+      fr.onload = function(){ doImportText(String(fr.result), f.name); };
+      fr.readAsText(f);
+    } else {
+      loadImageFile(f);
+    }
+  });
+  window.addEventListener('dragover', function(e){ e.preventDefault(); });
+  window.addEventListener('drop', function(e){ e.preventDefault(); });
+
+  /* global */
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('blur', function(){ SPACE = false; });
+  window.addEventListener('beforeunload', function(e){
+    if (!UI.dirty) return;
+    saveSession();
+    e.preventDefault();
+    e.returnValue = '';
+  });
+  if (window.ResizeObserver) {
+    new ResizeObserver(function(){ requestDraw(); }).observe(stage);
+  } else {
+    window.addEventListener('resize', requestDraw);
+  }
+
+  /* first paint */
+  UI.gridPx = numOr($('gridPx').value, 10);
+  historyReset();
+  VAL = validate(DOC);
+  setAutoNote(storage() ? 'idle' : 'unavailable (localStorage is blocked for this page)');
+  if (!storage()) UI.storageOK = false;
+  fitCanvas();
+  fitView();
+  renderAll();
+
+  var sess = readSession();
+  if (sess) offerRestore(sess);
+}
+
+if (typeof document !== 'undefined' && document.addEventListener) {
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
+}
+
+/* Exposed for the headless round-trip harness and for console debugging.
+ * These are the pure functions from PART 1 plus a couple of live accessors. */
+if (typeof window !== 'undefined') {
+  window.CAL = {
+    VERSION: VERSION,
+    newDoc: newDoc, starterDoc: starterDoc,
+    importRooms: importRooms, buildExport: buildExport, exportText: exportText,
+    validate: validate,
+    idPattern: idPattern, nextDeskId: nextDeskId, labelFromId: labelFromId,
+    shapeBBox: shapeBBox, shapePoly: shapePoly, polysOverlap: polysOverlap,
+    pointInPoly: pointInPoly, rectOverlapArea: rectOverlapArea,
+    replicateOffsets: replicateOffsets, translateShape: translateShape,
+    suggestFromPixels: suggestFromPixels, otsu: otsu,
+    round: round, normHex: normHex, autoColor: autoColor,
+    doc: function(){ return DOC; },
+    setDoc: function(d){ DOC = d; UI.roomIdx = 0; UI.sel = []; historyReset(); afterChange(); renderAll(); }
+  };
+}
+})();
+</script>
+</body>
+</html>

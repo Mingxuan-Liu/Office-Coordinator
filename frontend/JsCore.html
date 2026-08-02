@@ -1,0 +1,1720 @@
+<script>
+/* ==========================================================================
+   JsCore — window.APP: state machine, server bridge, pub/sub, persistence.
+
+   Loaded by Index.html before JsMap and JsExplainer, so those files may call
+   APP.on(...) / APP.listen(...) at parse time; boot() does not run until the
+   document is ready (Apps Script) or until the local-preview loader has
+   injected every partial (dev).
+
+   Nothing in this file knows how many people, desks, zones, rooms or ranks
+   exist. K comes from bootstrap.k (falling back to the length of the scoring
+   curve). Zone ids are arbitrary strings. View order is read from the DOM.
+   ========================================================================== */
+(function (global, doc) {
+  'use strict';
+
+  var STORAGE_PREFIX = 'deskmatch.v1.';
+  var DEFAULT_TIMEOUT_MS = 60000;
+  var MOCK_DEFAULT_LATENCY = 220;
+  var DEADLINE_TICK_MS = 30000;
+
+  /* Non-canonical view names other agents might reasonably use. The canonical
+     names are whatever the DOM declares via [data-view-name]. */
+  var VIEW_ALIASES = {
+    choose: 'select', picks: 'select', pick: 'select', desks: 'select',
+    identity: 'login', signin: 'login', 'sign-in': 'login', who: 'login',
+    intro: 'explainer', how: 'explainer', 'how-it-works': 'explainer',
+    review: 'confirm', submit: 'confirm', done: 'confirm'
+  };
+
+  /* ----------------------------------------------------------------------
+     Small utilities
+     ---------------------------------------------------------------------- */
+
+  function isArray(v) { return Object.prototype.toString.call(v) === '[object Array]'; }
+  function trim(v) { return String(v == null ? '' : v).replace(/^\s+|\s+$/g, ''); }
+  function lower(v) { return trim(v).toLowerCase(); }
+  function el(id) { return doc.getElementById(id); }
+  function has(obj, key) { return obj != null && Object.prototype.hasOwnProperty.call(obj, key); }
+  function toArray(nl) { return Array.prototype.slice.call(nl || []); }
+
+  function esc(v) {
+    return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function ordinal(n) {
+    var suffix = ['th', 'st', 'nd', 'rd'];
+    var v = Math.abs(n) % 100;
+    return n + (suffix[(v - 20) % 10] || suffix[v] || suffix[0]);
+  }
+
+  function uniq(list) {
+    var seen = {}, out = [];
+    for (var i = 0; i < list.length; i++) {
+      var v = list[i];
+      if (v == null || v === '') { continue; }
+      if (has(seen, v)) { continue; }
+      seen[v] = true;
+      out.push(v);
+    }
+    return out;
+  }
+
+  function joinList(items) {
+    if (items.length === 0) { return ''; }
+    if (items.length === 1) { return items[0]; }
+    return items.slice(0, -1).join(', ') + ' and ' + items[items.length - 1];
+  }
+
+  /* Session storage that degrades to memory. Apps Script runs inside a
+     sandboxed iframe; storage partitioning can make sessionStorage throw. */
+  var memStore = {};
+  var store = {
+    get: function (key) {
+      try {
+        var raw = global.sessionStorage ? global.sessionStorage.getItem(key) : memStore[key];
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) { return memStore[key] ? JSON.parse(memStore[key]) : null; }
+    },
+    set: function (key, value) {
+      var raw;
+      try { raw = JSON.stringify(value); } catch (e) { return; }
+      memStore[key] = raw;
+      try { if (global.sessionStorage) { global.sessionStorage.setItem(key, raw); } } catch (e) { /* quota / blocked */ }
+    },
+    remove: function (key) {
+      delete memStore[key];
+      try { if (global.sessionStorage) { global.sessionStorage.removeItem(key); } } catch (e) { /* ignore */ }
+    }
+  };
+
+  /* ----------------------------------------------------------------------
+     Colour helpers (zones only — no colour values live in this file)
+     ---------------------------------------------------------------------- */
+
+  function parseColor(input) {
+    var s = trim(input);
+    if (!s) { return null; }
+    var m = /^#([0-9a-f]{3})$/i.exec(s);
+    if (m) {
+      return {
+        r: parseInt(m[1].charAt(0) + m[1].charAt(0), 16),
+        g: parseInt(m[1].charAt(1) + m[1].charAt(1), 16),
+        b: parseInt(m[1].charAt(2) + m[1].charAt(2), 16)
+      };
+    }
+    m = /^#([0-9a-f]{6})$/i.exec(s);
+    if (m) {
+      return {
+        r: parseInt(m[1].substring(0, 2), 16),
+        g: parseInt(m[1].substring(2, 4), 16),
+        b: parseInt(m[1].substring(4, 6), 16)
+      };
+    }
+    m = /^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/i.exec(s);
+    if (m) { return { r: +m[1], g: +m[2], b: +m[3] }; }
+    return null;
+  }
+
+  function hslToRgb(h, s, l) {
+    var c = (1 - Math.abs(2 * l - 1)) * s;
+    var hp = (h % 360) / 60;
+    var x = c * (1 - Math.abs((hp % 2) - 1));
+    var seg = [[c, x, 0], [x, c, 0], [0, c, x], [0, x, c], [x, 0, c], [c, 0, x]][Math.floor(hp) % 6];
+    var m = l - c / 2;
+    return {
+      r: Math.round((seg[0] + m) * 255),
+      g: Math.round((seg[1] + m) * 255),
+      b: Math.round((seg[2] + m) * 255)
+    };
+  }
+
+  /* Deterministic fallback colour for a zone whose config omits `color`. */
+  function colorFromId(id) {
+    var h = 0, str = String(id);
+    for (var i = 0; i < str.length; i++) { h = (h * 31 + str.charCodeAt(i)) % 360; }
+    return hslToRgb(h, 0.42, 0.42);
+  }
+
+  function mixWhite(rgb, amount) {
+    return {
+      r: Math.round(rgb.r + (255 - rgb.r) * amount),
+      g: Math.round(rgb.g + (255 - rgb.g) * amount),
+      b: Math.round(rgb.b + (255 - rgb.b) * amount)
+    };
+  }
+
+  function toHex(rgb) {
+    function p(n) { var s = Math.max(0, Math.min(255, n | 0)).toString(16); return s.length < 2 ? '0' + s : s; }
+    return '#' + p(rgb.r) + p(rgb.g) + p(rgb.b);
+  }
+
+  function relLuminance(rgb) {
+    function ch(v) { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }
+    return 0.2126 * ch(rgb.r) + 0.7152 * ch(rgb.g) + 0.0722 * ch(rgb.b);
+  }
+
+  function prefersDark() {
+    try { return !!(global.matchMedia && global.matchMedia('(prefers-color-scheme: dark)').matches); }
+    catch (e) { return false; }
+  }
+
+  /* ----------------------------------------------------------------------
+     Internal state
+     ---------------------------------------------------------------------- */
+
+  var listeners = {};
+  var hooks = {};
+  var visited = {};
+  var deskList = [];
+  var deskIndex = {};
+  var lockedIndex = {};
+  var zoneStyles = {};
+  var zoneOrder = [];
+  var loadingDepth = 0;
+  var bootPromise = null;
+  var bootDone = false;
+  var deadlineTimer = null;
+  var deadlinePassedFired = false;
+  var navDepth = 0;
+  var bannerSeq = 0;
+
+  var state = {
+    bootstrap: null,
+    person: null,
+    picks: [],
+    view: 'login'
+  };
+
+  /* ----------------------------------------------------------------------
+     Pub/sub
+     ---------------------------------------------------------------------- */
+
+  function listen(evt, cb) {
+    if (typeof cb !== 'function') { return function () {}; }
+    (listeners[evt] || (listeners[evt] = [])).push(cb);
+    return function () { unlisten(evt, cb); };
+  }
+
+  function unlisten(evt, cb) {
+    var arr = listeners[evt];
+    if (!arr) { return; }
+    for (var i = arr.length - 1; i >= 0; i--) { if (arr[i] === cb) { arr.splice(i, 1); } }
+  }
+
+  function emit(evt, data) {
+    var arr = (listeners[evt] || []).slice();
+    for (var i = 0; i < arr.length; i++) {
+      try { arr[i](data, evt); }
+      catch (e) { reportInternal('A listener for "' + evt + '" failed.', e); }
+    }
+  }
+
+  /* ----------------------------------------------------------------------
+     Banners, loading, error surfacing
+     ---------------------------------------------------------------------- */
+
+  var ICONS = {
+    error: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10" cy="10" r="8"></circle><path d="M10 6v5M10 14h.01"></path></svg>',
+    warn: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M10 2.5 18.5 17.5H1.5z"></path><path d="M10 8v4M10 15h.01"></path></svg>',
+    success: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10" cy="10" r="8"></circle><path d="m6.5 10.3 2.4 2.4 4.6-5"></path></svg>',
+    info: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10" cy="10" r="8"></circle><path d="M10 9v5M10 6h.01"></path></svg>'
+  };
+
+  function bannerRegion() { return el('app-banners'); }
+
+  function banner(kind, message, opts) {
+    opts = opts || {};
+    var region = bannerRegion();
+    if (!region) {
+      /* No shell? Still make the message reachable. */
+      if (kind === 'error') { console.error('[deskmatch] ' + message); } else { console.log('[deskmatch] ' + message); }
+      return null;
+    }
+
+    var id = opts.id || ('banner-' + (++bannerSeq));
+    var existing = doc.getElementById(id);
+    if (existing) { existing.parentNode.removeChild(existing); }
+
+    var node = doc.createElement('div');
+    node.className = 'banner banner--' + kind;
+    node.id = id;
+    node.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+
+    var body = '<span class="banner__icon">' + (ICONS[kind] || ICONS.info) + '</span><div class="banner__body">';
+    if (opts.title) { body += '<span class="banner__title">' + esc(opts.title) + '</span>'; }
+    body += '<span class="banner__text">' + (opts.html ? message : esc(message)) + '</span>';
+    if (isArray(opts.list) && opts.list.length) {
+      body += '<ul class="banner__list">';
+      for (var i = 0; i < opts.list.length; i++) { body += '<li>' + esc(opts.list[i]) + '</li>'; }
+      body += '</ul>';
+    }
+    if (isArray(opts.actions) && opts.actions.length) { body += '<div class="banner__actions"></div>'; }
+    body += '</div>';
+    if (opts.dismissible !== false) {
+      body += '<button type="button" class="banner__close" aria-label="Dismiss">&times;</button>';
+    }
+    node.innerHTML = body;
+
+    if (isArray(opts.actions) && opts.actions.length) {
+      var slot = node.querySelector('.banner__actions');
+      opts.actions.forEach(function (action) {
+        var btn = doc.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn--sm ' + (action.variant === 'primary' ? 'btn--primary' : 'btn--secondary');
+        btn.textContent = action.label;
+        btn.addEventListener('click', function () {
+          if (action.dismiss !== false) { dismiss(id); }
+          if (typeof action.onClick === 'function') { action.onClick(); }
+        });
+        slot.appendChild(btn);
+      });
+    }
+
+    var closeBtn = node.querySelector('.banner__close');
+    if (closeBtn) { closeBtn.addEventListener('click', function () { dismiss(id); }); }
+
+    region.appendChild(node);
+
+    var ttl = typeof opts.timeout === 'number' ? opts.timeout : (kind === 'success' ? 7000 : 0);
+    if (ttl > 0) { global.setTimeout(function () { dismiss(id); }, ttl); }
+
+    if (opts.scroll !== false && (kind === 'error' || kind === 'warn')) {
+      try { region.scrollIntoView({ block: 'nearest' }); } catch (e) { /* older browsers */ }
+    }
+    return id;
+  }
+
+  function dismiss(id) {
+    var node = typeof id === 'string' ? doc.getElementById(id) : id;
+    if (node && node.parentNode) { node.parentNode.removeChild(node); }
+  }
+
+  function clearBanners(kind) {
+    var region = bannerRegion();
+    if (!region) { return; }
+    toArray(region.children).forEach(function (child) {
+      if (!kind || child.className.indexOf('banner--' + kind) >= 0) {
+        region.removeChild(child);
+      }
+    });
+  }
+
+  function reportInternal(msg, err) {
+    if (err) { console.error('[deskmatch] ' + msg, err); } else { console.error('[deskmatch] ' + msg); }
+  }
+
+  function errorText(err) {
+    if (!err) { return 'Something went wrong.'; }
+    if (typeof err === 'string') { return err; }
+    if (err.message) { return err.message; }
+    return String(err);
+  }
+
+  function loading(on, label) {
+    loadingDepth = Math.max(0, loadingDepth + (on ? 1 : -1));
+    var active = loadingDepth > 0;
+    doc.body.setAttribute('data-loading', active ? '1' : '0');
+    var status = el('loading-status');
+    if (status) { status.textContent = active ? (label || 'Working…') : ''; }
+    emit('loading', { active: active, label: label || '', depth: loadingDepth });
+  }
+
+  /* ----------------------------------------------------------------------
+     Server bridge
+     ---------------------------------------------------------------------- */
+
+  function hasGoogle() {
+    return !!(global.google && global.google.script && global.google.script.run);
+  }
+
+  function hasMock(fn) {
+    return !!(global.MOCK_SERVER && typeof global.MOCK_SERVER[fn] === 'function');
+  }
+
+  /* server(name, args) -> Promise
+       args === undefined  -> called with no arguments
+       args is an Array    -> spread as positional arguments
+       anything else       -> passed as a single argument
+     Falls back to window.MOCK_SERVER when google.script is absent, so the whole
+     UI is developable and testable outside Apps Script. */
+  function server(fnName, args) {
+    var payload = args === undefined ? [] : (isArray(args) ? args.slice() : [args]);
+
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      var timer = null;
+
+      function ok(value) {
+        if (settled) { return; }
+        settled = true;
+        if (timer) { global.clearTimeout(timer); }
+        resolve(value);
+      }
+      function bad(err) {
+        if (settled) { return; }
+        settled = true;
+        if (timer) { global.clearTimeout(timer); }
+        var e = (err instanceof Error) ? err : new Error(errorText(err));
+        e.serverFunction = fnName;
+        reject(e);
+      }
+
+      var timeoutMs = APP.timeoutMs;
+      if (timeoutMs > 0) {
+        timer = global.setTimeout(function () {
+          var e = new Error('The server did not respond in time.');
+          e.timedOut = true;
+          bad(e);
+        }, timeoutMs);
+      }
+
+      if (hasGoogle()) {
+        var runner = global.google.script.run.withSuccessHandler(ok).withFailureHandler(bad);
+        if (typeof runner[fnName] !== 'function') {
+          bad(new Error('Server function "' + fnName + '" does not exist in Code.gs.'));
+          return;
+        }
+        try { runner[fnName].apply(runner, payload); }
+        catch (e) { bad(e); }
+        return;
+      }
+
+      if (hasMock(fnName)) {
+        var mock = global.MOCK_SERVER;
+        var delay = typeof mock.latencyMs === 'number' ? mock.latencyMs : MOCK_DEFAULT_LATENCY;
+        global.setTimeout(function () {
+          try { ok(mock[fnName].apply(mock, payload)); }
+          catch (e) { bad(e); }
+        }, delay);
+        return;
+      }
+
+      bad(new Error('No server available: google.script is missing and window.MOCK_SERVER ' +
+                    'does not implement "' + fnName + '".'));
+    });
+  }
+
+  /* ----------------------------------------------------------------------
+     Views, stepper, navigation
+     ---------------------------------------------------------------------- */
+
+  function viewNodes() { return toArray(doc.querySelectorAll('.view[data-view-name]')); }
+
+  function viewEl(name) {
+    if (!name) { return null; }
+    var nodes = viewNodes();
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].getAttribute('data-view-name') === name) { return nodes[i]; }
+    }
+    return doc.getElementById('view-' + name);
+  }
+
+  function canonView(name) {
+    var key = lower(name);
+    if (!key) { return null; }
+    if (viewEl(key)) { return key; }
+    if (has(VIEW_ALIASES, key) && viewEl(VIEW_ALIASES[key])) { return VIEW_ALIASES[key]; }
+    return has(VIEW_ALIASES, key) ? VIEW_ALIASES[key] : key;
+  }
+
+  function stepNodes() { return toArray(doc.querySelectorAll('#stepper [data-step]')); }
+
+  function stepOrder() {
+    return stepNodes().map(function (n) { return n.getAttribute('data-step'); });
+  }
+
+  function viewOrder() {
+    var order = stepOrder();
+    if (order.length) { return order; }
+    return viewNodes().map(function (n) { return n.getAttribute('data-view-name'); });
+  }
+
+  function indexOfView(name) {
+    var order = viewOrder();
+    for (var i = 0; i < order.length; i++) { if (order[i] === name) { return i; } }
+    return -1;
+  }
+
+  /* Default guards. Replaceable: APP.guards.confirm = function () {...}. */
+  var guards = {
+    explainer: function () { return requirePerson(); },
+    select: function () { return requirePerson(); },
+    confirm: function () {
+      var need = requirePerson();
+      if (!need.ok) { return need; }
+      var required = requiredPicks();
+      if (state.picks.length < required) {
+        return {
+          ok: false,
+          redirect: 'select',
+          message: 'Rank ' + required + ' desk' + (required === 1 ? '' : 's') +
+                   ' before reviewing your submission.'
+        };
+      }
+      return { ok: true };
+    }
+  };
+
+  function requirePerson() {
+    if (state.person && state.person.email) { return { ok: true }; }
+    return { ok: false, redirect: 'login', message: 'Tell us who you are first.' };
+  }
+
+  function canEnter(name) {
+    var view = canonView(name);
+    var guard = has(guards, view) ? guards[view] : null;
+    if (typeof guard !== 'function') { return { ok: true }; }
+    var result;
+    try { result = guard(view); }
+    catch (e) { reportInternal('Guard for "' + view + '" threw.', e); return { ok: true }; }
+    return result && result.ok === false ? result : { ok: true };
+  }
+
+  function runHooks(view, phase, detail) {
+    var list = hooks[view] || [];
+    for (var i = 0; i < list.length; i++) {
+      var fn = list[i] && list[i][phase];
+      if (typeof fn === 'function') {
+        try { fn(detail || {}); }
+        catch (e) { reportInternal('View hook ' + phase + ' for "' + view + '" failed.', e); }
+      }
+    }
+  }
+
+  function paintViews() {
+    var current = state.view;
+    viewNodes().forEach(function (node) {
+      var name = node.getAttribute('data-view-name');
+      var active = (name === current);
+      if (active) { node.classList.add('is-active'); node.removeAttribute('hidden'); }
+      else { node.classList.remove('is-active'); node.setAttribute('hidden', 'hidden'); }
+    });
+    doc.body.setAttribute('data-view', current);
+    paintStepper();
+  }
+
+  function paintStepper() {
+    var order = stepOrder();
+    var currentIdx = indexOfView(state.view);
+    stepNodes().forEach(function (btn, i) {
+      var item = btn.closest ? btn.closest('.stepper__item') : btn.parentNode;
+      var name = btn.getAttribute('data-step');
+      if (item && item.classList) {
+        item.classList.remove('is-done', 'is-current', 'is-todo');
+        if (currentIdx >= 0 && i < currentIdx) { item.classList.add('is-done'); }
+        else if (i === currentIdx) { item.classList.add('is-current'); }
+        else { item.classList.add('is-todo'); }
+      }
+      if (i === currentIdx) { btn.setAttribute('aria-current', 'step'); }
+      else { btn.removeAttribute('aria-current'); }
+      var reachable = (name === state.view) || visited[name] === true ||
+                      (currentIdx >= 0 && i < currentIdx);
+      if (reachable && name !== state.view) { btn.removeAttribute('disabled'); }
+      else { btn.setAttribute('disabled', 'disabled'); }
+    });
+    var fill = el('stepper-fill');
+    if (fill) {
+      var pct = (order.length > 1 && currentIdx >= 0)
+        ? (currentIdx / (order.length - 1)) * 100
+        : (currentIdx >= 0 ? 100 : 0);
+      fill.style.width = pct + '%';
+    }
+  }
+
+  function focusView(node) {
+    if (!node) { return; }
+    var target = node.querySelector('[data-view-focus]') ||
+                 node.querySelector('h1, h2') || node;
+    if (!target.hasAttribute('tabindex')) { target.setAttribute('tabindex', '-1'); }
+    try { target.focus({ preventScroll: true }); } catch (e) { try { target.focus(); } catch (e2) { /* ignore */ } }
+  }
+
+  function scrollTop() {
+    try { global.scrollTo(0, 0); } catch (e) { /* ignore */ }
+    if (doc.documentElement) { doc.documentElement.scrollTop = 0; }
+    if (doc.body) { doc.body.scrollTop = 0; }
+    var main = el('main');
+    if (main && main.scrollTop) { main.scrollTop = 0; }
+  }
+
+  function go(name, opts) {
+    opts = opts || {};
+    var target = canonView(name);
+    if (!target) { return false; }
+
+    if (!viewEl(target)) {
+      reportInternal('go("' + name + '"): no element with .view[data-view-name="' + target + '"].');
+      return false;
+    }
+
+    if (!opts.force) {
+      var gate = canEnter(target);
+      if (!gate.ok) {
+        if (gate.message && !opts.silent) { banner('warn', gate.message, { id: 'guard-msg', timeout: 6000 }); }
+        if (gate.redirect && navDepth < 4) {
+          navDepth++;
+          go(gate.redirect, { silent: true, force: gate.redirect === 'login' });
+          navDepth--;
+        }
+        return false;   /* true only ever means "the requested view is showing" */
+      }
+    }
+
+    var from = state.view;
+    if (from !== target) { runHooks(from, 'onLeave', { to: target }); }
+
+    state.view = target;
+    visited[target] = true;
+    paintViews();
+    persistView();
+
+    if (opts.scroll !== false) { scrollTop(); }
+    runHooks(target, 'onEnter', { from: from, initial: !!opts.initial, same: from === target });
+    if (!opts.initial && opts.focus !== false) { focusView(viewEl(target)); }
+    if (from !== target) { emit('view:changed', { from: from, to: target }); }
+    return true;
+  }
+
+  function on(viewName, handlers) {
+    var key = canonView(viewName) || lower(viewName);
+    (hooks[key] || (hooks[key] = [])).push(handlers || {});
+    var entry = hooks[key][hooks[key].length - 1];
+    return function () {
+      var list = hooks[key] || [];
+      for (var i = list.length - 1; i >= 0; i--) { if (list[i] === entry) { list.splice(i, 1); } }
+    };
+  }
+
+  function wireStepper() {
+    stepNodes().forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var name = btn.getAttribute('data-goto') || btn.getAttribute('data-step');
+        if (name) { go(name); }
+      });
+    });
+  }
+
+  /* ----------------------------------------------------------------------
+     Zones
+     ---------------------------------------------------------------------- */
+
+  function zoneSlug(zoneId, used) {
+    var base = lower(zoneId).replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'zone';
+    var slug = base, n = 2;
+    while (used[slug]) { slug = base + '-' + n; n++; }
+    used[slug] = true;
+    return slug;
+  }
+
+  function zoneSource() {
+    var b = state.bootstrap || {};
+    if (b.zones && typeof b.zones === 'object' && Object.keys(b.zones).length) { return b.zones; }
+    if (b.rooms && b.rooms.zones) { return b.rooms.zones; }
+    return {};
+  }
+
+  /* Two variants per zone are published — the configured colour and a lightened
+     one for dark backgrounds — and Style.html picks between them in a media
+     query. Nothing has to be re-set in JS when the OS theme flips, which
+     matters because the matchMedia change event is not always delivered. */
+  function zoneVariant(rgb) {
+    return {
+      hex: toHex(rgb),
+      rgb: rgb.r + ', ' + rgb.g + ', ' + rgb.b,
+      ink: relLuminance(rgb) > 0.52 ? '#11171e' : '#ffffff'
+    };
+  }
+
+  function installZoneVars() {
+    var zones = zoneSource();
+    var used = {};
+    var root = doc.documentElement;
+
+    zoneStyles = {};
+    zoneOrder = [];
+
+    Object.keys(zones).forEach(function (zoneId) {
+      var meta = zones[zoneId] || {};
+      var rgb = parseColor(meta.color) || colorFromId(zoneId);
+      var base = zoneVariant(rgb);
+      var lift = zoneVariant(mixWhite(rgb, 0.34));
+      var slug = zoneSlug(zoneId, used);
+
+      zoneStyles[zoneId] = {
+        id: zoneId,
+        slug: slug,
+        label: meta.label || zoneId,
+        description: meta.description || '',
+        base: base,
+        lift: lift,
+        varName: '--zone-' + slug
+      };
+      zoneOrder.push(zoneId);
+
+      root.style.setProperty('--zone-' + slug, base.hex);
+      root.style.setProperty('--zone-' + slug + '-rgb', base.rgb);
+      root.style.setProperty('--zone-' + slug + '-ink', base.ink);
+      root.style.setProperty('--zone-' + slug + '-lift', lift.hex);
+      root.style.setProperty('--zone-' + slug + '-lift-rgb', lift.rgb);
+      root.style.setProperty('--zone-' + slug + '-lift-ink', lift.ink);
+    });
+  }
+
+  var UNKNOWN_ZONE = {
+    base: { hex: '#6a7684', rgb: '106, 118, 132', ink: '#ffffff' },
+    lift: { hex: '#9aa5b1', rgb: '154, 165, 177', ink: '#11171e' }
+  };
+
+  /* Returns label/description plus colour, rgb and ink already resolved for the
+     scheme in effect right now — for JS that needs a concrete value (canvas,
+     inline SVG attributes). CSS should use the custom properties instead. */
+  function zoneStyle(zoneId) {
+    var z = zoneStyles[zoneId];
+    var variantSet = z || UNKNOWN_ZONE;
+    var v = prefersDark() ? variantSet.lift : variantSet.base;
+    return {
+      id: zoneId,
+      slug: z ? z.slug : 'unknown',
+      label: z ? z.label : (zoneId || 'Unassigned'),
+      description: z ? z.description : '',
+      color: v.hex,
+      rgb: v.rgb,
+      ink: v.ink,
+      base: variantSet.base,
+      lift: variantSet.lift,
+      varName: z ? z.varName : '--zone-unknown'
+    };
+  }
+
+  /* Stamps both variants on an element. Style.html chooses between them, so a
+     theme change needs no re-render. Do not set --zone directly here: an inline
+     --zone would beat the stylesheet's dark-mode choice. */
+  function applyZoneVars(node, zoneId) {
+    if (!node || !node.style) { return node; }
+    var z = zoneStyle(zoneId);
+    node.style.setProperty('--zone-base', z.base.hex);
+    node.style.setProperty('--zone-base-rgb', z.base.rgb);
+    node.style.setProperty('--zone-base-ink', z.base.ink);
+    node.style.setProperty('--zone-lift', z.lift.hex);
+    node.style.setProperty('--zone-lift-rgb', z.lift.rgb);
+    node.style.setProperty('--zone-lift-ink', z.lift.ink);
+    if (zoneId) { node.setAttribute('data-zone', zoneId); }
+    return node;
+  }
+
+  function watchColorScheme() {
+    if (!global.matchMedia) { return; }
+    var mq;
+    try { mq = global.matchMedia('(prefers-color-scheme: dark)'); } catch (e) { return; }
+    var handler = function () {
+      if (!state.bootstrap) { return; }
+      installZoneVars();
+      emit('zones:changed', { zones: zoneStyles });
+    };
+    if (mq.addEventListener) { mq.addEventListener('change', handler); }
+    else if (mq.addListener) { mq.addListener(handler); }
+  }
+
+  /* ----------------------------------------------------------------------
+     Desks
+     ---------------------------------------------------------------------- */
+
+  function indexDesks() {
+    deskList = [];
+    deskIndex = {};
+    var b = state.bootstrap || {};
+    var rooms = (b.rooms && isArray(b.rooms.rooms)) ? b.rooms.rooms : [];
+    rooms.forEach(function (room) {
+      var desks = isArray(room.desks) ? room.desks : [];
+      desks.forEach(function (d) {
+        var desk = {
+          id: d.id,
+          label: (d.label == null || d.label === '') ? String(d.id) : String(d.label),
+          zone: d.zone,
+          roomId: room.id,
+          roomLabel: room.label || room.id,
+          shape: d.shape || {},
+          notes: d.notes || '',
+          available: d.available !== false,
+          raw: d
+        };
+        deskList.push(desk);
+        deskIndex[desk.id] = desk;
+      });
+    });
+
+    lockedIndex = {};
+    var locked = isArray(b.lockedDesks) ? b.lockedDesks : [];
+    locked.forEach(function (entry) {
+      if (!entry) { return; }
+      var id = typeof entry === 'string' ? entry : entry.deskId;
+      if (!id) { return; }
+      lockedIndex[id] = (entry && entry.reason) ? String(entry.reason) : 'Held by someone keeping their desk.';
+    });
+  }
+
+  function deskById(id) { return deskIndex[id] || null; }
+  function desks() { return deskList.slice(); }
+  function multiRoom() {
+    var b = state.bootstrap || {};
+    return !!(b.rooms && isArray(b.rooms.rooms) && b.rooms.rooms.length > 1);
+  }
+
+  function deskTitle(id) {
+    var d = deskById(id);
+    if (!d) { return String(id); }
+    return /^\d+$/.test(d.label) ? ('Desk ' + d.label) : d.label;
+  }
+
+  function deskSubtitle(id) {
+    var d = deskById(id);
+    if (!d) { return ''; }
+    var bits = [];
+    if (multiRoom()) { bits.push(d.roomLabel); }
+    bits.push(zoneStyle(d.zone).label);
+    return bits.join(' · ');
+  }
+
+  /* Why a desk can or cannot be ranked by the current person. Mirrored on the
+     server: this is UX, not enforcement. */
+  function deskStatus(id) {
+    var d = deskById(id);
+    if (!d) { return { ok: false, code: 'unknown', reason: 'That desk is not on the floor plan.' }; }
+    if (!d.available) { return { ok: false, code: 'unavailable', reason: 'This desk is not in the pool this year.' }; }
+    if (has(lockedIndex, d.id)) { return { ok: false, code: 'locked', reason: lockedIndex[d.id] }; }
+    var zones = state.person && state.person.allowedZones;
+    if (isArray(zones) && zones.length && zones.indexOf(d.zone) < 0) {
+      return {
+        ok: false,
+        code: 'zone',
+        reason: 'You are not eligible for the ' + zoneStyle(d.zone).label + '.'
+      };
+    }
+    return { ok: true, code: 'ok', reason: '' };
+  }
+
+  function isSelectable(id) { return deskStatus(id).ok; }
+
+  function selectableDesks() {
+    return deskList.filter(function (d) { return deskStatus(d.id).ok; });
+  }
+
+  function lockedDeskIds() { return Object.keys(lockedIndex); }
+
+  function concentration() {
+    var b = state.bootstrap || {};
+    return (b.concentration && typeof b.concentration === 'object') ? b.concentration : {};
+  }
+
+  function concentrationFor(id) {
+    var c = concentration();
+    return has(c, id) ? (Number(c[id]) || 0) : 0;
+  }
+
+  /* 0 = nobody, 1..3 = increasing contention, scaled against the busiest desk
+     rather than any fixed threshold. */
+  function contentionLevel(id) {
+    var count = concentrationFor(id);
+    if (count <= 0) { return 0; }
+    var c = concentration(), max = 0;
+    Object.keys(c).forEach(function (k) { max = Math.max(max, Number(c[k]) || 0); });
+    if (max <= 0) { return 0; }
+    var ratio = count / max;
+    if (ratio <= 0.34) { return 1; }
+    if (ratio <= 0.67) { return 2; }
+    return 3;
+  }
+
+  /* ----------------------------------------------------------------------
+     Person / eligibility
+     ---------------------------------------------------------------------- */
+
+  function allZoneIds() { return zoneOrder.slice(); }
+
+  function normaliseZoneList(value) {
+    if (value === '*' || value === true) { return allZoneIds(); }
+    if (!isArray(value)) { return null; }
+    if (value.indexOf('*') >= 0) { return allZoneIds(); }
+    var out = value.filter(function (z) { return has(zoneStyles, z); });
+    return out;
+  }
+
+  function zoneMapLookup() {
+    var map = (state.bootstrap && state.bootstrap.allowedZonesFor) || null;
+    if (!map || typeof map !== 'object') { return {}; }
+    var lookup = {};
+    Object.keys(map).forEach(function (k) { lookup[lower(k)] = map[k]; });
+    return lookup;
+  }
+
+  /* allowedZonesFor is keyed by email (Code.gs). Eligibility is a pure function
+     of roster attributes, so a "candidacy|year" index can be derived from it by
+     joining against rosterNames. That covers the case where the student has
+     just corrected their year or candidacy (SPEC §3.3) and their own email key
+     is therefore stale. */
+  function attributeZoneIndex() {
+    var lookup = zoneMapLookup();
+    var index = {};
+    rosterNames().forEach(function (entry) {
+      if (!entry) { return; }
+      var zones = lookup[lower(entry.email)];
+      if (zones === undefined) { return; }
+      var key = lower(entry.candidacy) + '|' + String(entry.year);
+      if (!has(index, key)) { index[key] = zones; }
+    });
+    return index;
+  }
+
+  /* Resolution order:
+       1. person.allowedZones as given by the server (Code.gs computes it from
+          eligibility.json and it wins whenever present)
+       2. allowedZonesFor[email], but only while the confirmed year/candidacy
+          still agree with the roster row that key was computed from
+       3. the derived "candidacy|year" index, so a corrected year/candidacy
+          resolves to whatever the rules give anyone with those attributes
+       4. literal "candidacy|year" / "candidacy" / "year:<n>" / "*" keys, for
+          any server that keys the map by attributes instead of email
+       5. every zone (fail open — the server re-checks on submit, and failing
+          closed would leave the person unable to pick anything at all) */
+  function resolveAllowedZones(p) {
+    if (!p) { return []; }
+    var direct = normaliseZoneList(p.allowedZones);
+    if (direct && direct.length) { return direct; }
+
+    var lookup = zoneMapLookup();
+    var email = lower(p.email);
+    var candidacy = lower(p.candidacy);
+    var year = (p.year == null || p.year === '') ? '' : String(p.year);
+    var resolved;
+
+    if (email && has(lookup, email)) {
+      var row = rosterEntry(email);
+      var unchanged = !row ||
+        ((!candidacy || lower(row.candidacy) === candidacy) &&
+         (!year || String(row.year) === year));
+      if (unchanged) {
+        resolved = normaliseZoneList(lookup[email]);
+        if (resolved) { return resolved; }
+      }
+    }
+
+    var byAttrs = attributeZoneIndex();
+    var attrKey = candidacy + '|' + year;
+    if (has(byAttrs, attrKey)) {
+      resolved = normaliseZoneList(byAttrs[attrKey]);
+      if (resolved) { return resolved; }
+    }
+
+    var keys = [attrKey, candidacy, 'year:' + year, '*'];
+    for (var i = 0; i < keys.length; i++) {
+      if (has(lookup, keys[i])) {
+        resolved = normaliseZoneList(lookup[keys[i]]);
+        if (resolved) { return resolved; }
+      }
+    }
+
+    reportInternal('No eligibility information for ' + (p.email || 'this person') +
+                   '; showing every zone. The server will re-check on submit.');
+    return allZoneIds();
+  }
+
+  function normalisePerson(input) {
+    if (!input) { return null; }
+    var year = parseInt(input.year, 10);
+    var person = {
+      email: lower(input.email),
+      name: trim(input.name),
+      year: isNaN(year) ? null : year,
+      candidacy: trim(input.candidacy),
+      authMethod: lower(input.authMethod) || 'self_select',
+      allowedZones: []
+    };
+    person.allowedZones = resolveAllowedZones({
+      email: person.email,
+      year: person.year,
+      candidacy: person.candidacy,
+      allowedZones: input.allowedZones
+    });
+    return person;
+  }
+
+  function setPerson(input, opts) {
+    opts = opts || {};
+    var previous = state.person;
+
+    if (!input) {
+      state.person = null;
+      renderWhoChip();
+      emit('person:set', null);
+      return null;
+    }
+
+    var person = normalisePerson(input);
+    state.person = person;
+
+    if (!previous || previous.email !== person.email) {
+      migrateAnonPicks(person.email);
+      loadPicksFor(person.email, { quiet: !!opts.quiet });
+    }
+    persistPerson();
+    reconcilePicks({ quiet: opts.quiet === true });
+    renderWhoChip();
+    doc.body.setAttribute('data-auth', person.authMethod);
+    emit('person:set', person);
+    return person;
+  }
+
+  function rosterNames() {
+    var b = state.bootstrap || {};
+    return isArray(b.rosterNames) ? b.rosterNames.slice() : [];
+  }
+
+  function rosterEntry(email) {
+    var key = lower(email);
+    var list = rosterNames();
+    for (var i = 0; i < list.length; i++) {
+      if (lower(list[i] && list[i].email) === key) { return list[i]; }
+    }
+    return null;
+  }
+
+  function renderWhoChip() {
+    var chip = el('who-chip');
+    if (!chip) { return; }
+    if (!state.person) { chip.hidden = true; chip.textContent = ''; return; }
+    var label = state.person.name || state.person.email;
+    chip.hidden = false;
+    chip.innerHTML = '<span class="chip__label">' + esc(label) + '</span>';
+    chip.title = state.person.email +
+      (state.person.authMethod === 'google' ? ' (signed in with Google)' : ' (selected from the roster)');
+  }
+
+  /* ----------------------------------------------------------------------
+     Picks
+     ---------------------------------------------------------------------- */
+
+  function picksKey(email) { return STORAGE_PREFIX + 'picks.' + (email || 'anon'); }
+  function personKey() { return STORAGE_PREFIX + 'person'; }
+  function viewKey() { return STORAGE_PREFIX + 'view'; }
+
+  function persistPicks() {
+    var email = (state.person && state.person.email) || 'anon';
+    store.set(picksKey(email), { picks: state.picks.slice(), ts: Date.now() });
+  }
+
+  function persistPerson() {
+    if (!state.person) { store.remove(personKey()); return; }
+    store.set(personKey(), {
+      email: state.person.email,
+      name: state.person.name,
+      year: state.person.year,
+      candidacy: state.person.candidacy,
+      authMethod: state.person.authMethod
+    });
+  }
+
+  function persistView() {
+    store.set(viewKey(), { view: state.view, ts: Date.now() });
+  }
+
+  function migrateAnonPicks(email) {
+    var anon = store.get(picksKey('anon'));
+    if (!anon || !isArray(anon.picks) || !anon.picks.length) { return; }
+    var mine = store.get(picksKey(email));
+    if (!mine || !isArray(mine.picks) || !mine.picks.length) { store.set(picksKey(email), anon); }
+    store.remove(picksKey('anon'));
+  }
+
+  function loadPicksFor(email, opts) {
+    opts = opts || {};
+    var saved = store.get(picksKey(email));
+    var chosen = null, source = null;
+
+    if (saved && isArray(saved.picks) && saved.picks.length) {
+      chosen = saved.picks;
+      source = 'session';
+    }
+
+    var b = state.bootstrap || {};
+    var prior = b.priorSubmission;
+    var priorIsMine = !!prior && (
+      (prior.email ? lower(prior.email) === lower(email) : true) &&
+      (!b.person || lower(b.person.email) === lower(email))
+    );
+    if (prior && priorIsMine && isArray(prior.choices) && prior.choices.length) {
+      var priorTs = Date.parse(prior.timestampIso || '') || 0;
+      if (!chosen || (saved && (saved.ts || 0) < priorTs)) {
+        chosen = prior.choices;
+        source = 'submitted';
+      }
+    }
+
+    if (chosen) {
+      setPicks(chosen, { reason: 'restore', quiet: true });
+      if (!opts.quiet && state.picks.length) {
+        if (source === 'submitted') {
+          banner('info', 'We loaded the ranking you submitted on ' +
+            formatWhen(prior.timestampIso) + '. Change it and submit again if you like.',
+            { id: 'restored-picks', timeout: 12000 });
+        } else {
+          banner('info', 'We restored the ' + state.picks.length + ' desk' +
+            (state.picks.length === 1 ? '' : 's') + ' you had ranked in this browser.',
+            { id: 'restored-picks', timeout: 9000 });
+        }
+      }
+    } else {
+      state.picks = [];
+      emit('picks:changed', { picks: [], reason: 'restore', deskId: null });
+    }
+  }
+
+  /* Drop anything the current person cannot actually rank (desk removed from
+     config, locked since they last looked, or outside their zones). */
+  function reconcilePicks(opts) {
+    opts = opts || {};
+    if (!state.picks.length) { return; }
+    var kept = [], dropped = [];
+    state.picks.forEach(function (id) {
+      var status = deskStatus(id);
+      if (status.ok) { kept.push(id); } else { dropped.push({ id: id, reason: status.reason }); }
+    });
+    if (!dropped.length) { return; }
+    state.picks = maxPicks() > 0 ? kept.slice(0, maxPicks()) : kept;
+    persistPicks();
+    emit('picks:changed', { picks: state.picks.slice(), reason: 'reconcile', dropped: dropped });
+    if (!opts.quiet) {
+      banner('warn',
+        'We removed ' + dropped.length + ' desk' + (dropped.length === 1 ? '' : 's') +
+        ' from your ranking because ' + (dropped.length === 1 ? 'it is' : 'they are') +
+        ' no longer available to you.',
+        { id: 'dropped-picks', list: dropped.map(function (d) { return deskTitle(d.id) + ' — ' + d.reason; }) });
+    }
+  }
+
+  function maxPicks() { return APP.K > 0 ? APP.K : 0; }
+
+  /* You cannot be asked to rank more desks than you are eligible for. */
+  function requiredPicks() {
+    var avail = selectableDesks().length;
+    if (!APP.K) { return 0; }
+    return Math.min(APP.K, avail);
+  }
+
+  function sanitisePicks(list) {
+    var out = uniq((isArray(list) ? list : []).map(function (v) { return trim(v); }));
+    out = out.filter(function (id) { return !!deskById(id); });
+    var cap = maxPicks();
+    return cap > 0 ? out.slice(0, cap) : out;
+  }
+
+  function setPicks(list, opts) {
+    opts = opts || {};
+    var next = sanitisePicks(list);
+    state.picks = next;
+    persistPicks();
+    emit('picks:changed', {
+      picks: next.slice(),
+      reason: opts.reason || 'set',
+      deskId: opts.deskId || null
+    });
+    return next.slice();
+  }
+
+  function isPicked(id) { return state.picks.indexOf(id) >= 0; }
+  function rankOf(id) { var i = state.picks.indexOf(id); return i < 0 ? 0 : i + 1; }
+
+  function addPick(id) {
+    id = trim(id);
+    if (!id || isPicked(id)) { return false; }
+    var status = deskStatus(id);
+    if (!status.ok) {
+      banner('warn', deskTitle(id) + ': ' + status.reason, { id: 'pick-blocked', timeout: 6000 });
+      return false;
+    }
+    var cap = maxPicks();
+    if (cap > 0 && state.picks.length >= cap) {
+      banner('warn', 'You can rank ' + cap + ' desk' + (cap === 1 ? '' : 's') +
+        '. Remove one before adding another.', { id: 'pick-full', timeout: 6000 });
+      return false;
+    }
+    state.picks = state.picks.concat([id]);
+    persistPicks();
+    emit('picks:changed', { picks: state.picks.slice(), reason: 'add', deskId: id });
+    return true;
+  }
+
+  function removePick(id) {
+    var i = state.picks.indexOf(trim(id));
+    if (i < 0) { return false; }
+    var next = state.picks.slice();
+    next.splice(i, 1);
+    state.picks = next;
+    persistPicks();
+    emit('picks:changed', { picks: next.slice(), reason: 'remove', deskId: id });
+    return true;
+  }
+
+  function togglePick(id) { return isPicked(id) ? (removePick(id), false) : addPick(id); }
+
+  function movePick(from, to) {
+    var n = state.picks.length;
+    if (from < 0 || from >= n) { return false; }
+    to = Math.max(0, Math.min(n - 1, to));
+    if (from === to) { return false; }
+    var next = state.picks.slice();
+    var item = next.splice(from, 1)[0];
+    next.splice(to, 0, item);
+    state.picks = next;
+    persistPicks();
+    emit('picks:changed', { picks: next.slice(), reason: 'move', deskId: item });
+    return true;
+  }
+
+  function movePickBy(id, delta) {
+    var i = state.picks.indexOf(trim(id));
+    if (i < 0) { return false; }
+    return movePick(i, i + delta);
+  }
+
+  function clearPicks() {
+    if (!state.picks.length) { return false; }
+    state.picks = [];
+    persistPicks();
+    emit('picks:changed', { picks: [], reason: 'clear', deskId: null });
+    return true;
+  }
+
+  /* ----------------------------------------------------------------------
+     Deadline
+     ---------------------------------------------------------------------- */
+
+  function deadlineMs() {
+    var iso = state.bootstrap && state.bootstrap.deadlineIso;
+    if (!iso) { return null; }
+    var ms = Date.parse(iso);
+    return isNaN(ms) ? null : ms;
+  }
+
+  /* The server's own verdict wins when it gives one: its clock is the one that
+     decides, and the browser's may be wrong. */
+  function isPastDeadline() {
+    if (state.bootstrap && state.bootstrap.deadlinePassed === true) { return true; }
+    var ms = deadlineMs();
+    return ms !== null && Date.now() > ms;
+  }
+
+  function formatWhen(iso) {
+    var ms = Date.parse(iso || '');
+    if (isNaN(ms)) { return String(iso || 'an earlier date'); }
+    var d = new Date(ms);
+    try {
+      return d.toLocaleString(undefined, {
+        weekday: 'short', day: 'numeric', month: 'short',
+        hour: 'numeric', minute: '2-digit'
+      });
+    } catch (e) { return d.toString(); }
+  }
+
+  function formatDay(iso) {
+    var ms = Date.parse(iso || '');
+    if (isNaN(ms)) { return String(iso || ''); }
+    try {
+      return new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+    } catch (e) { return new Date(ms).toDateString(); }
+  }
+
+  function renderDeadline() {
+    var chip = el('deadline-chip');
+    var ms = deadlineMs();
+    if (!chip) { return; }
+    if (ms === null) { chip.hidden = true; return; }
+
+    var left = ms - Date.now();
+    chip.hidden = false;
+    chip.classList.remove('is-urgent');
+
+    if (left <= 0) {
+      chip.textContent = 'Form closed';
+      chip.classList.add('is-urgent');
+      if (!deadlinePassedFired) {
+        deadlinePassedFired = true;
+        emit('deadline:passed', { deadlineIso: state.bootstrap.deadlineIso });
+      }
+      return;
+    }
+
+    /* Kept short: this sits in a phone header next to the name chip. */
+    var hours = left / 3600000;
+    if (hours > 48) {
+      chip.textContent = 'Closes ' + formatDay(state.bootstrap.deadlineIso);
+    } else if (hours >= 1) {
+      var h = Math.floor(hours);
+      var m = Math.floor((left - h * 3600000) / 60000);
+      chip.textContent = h + 'h ' + m + 'm left';
+      if (hours < 12) { chip.classList.add('is-urgent'); }
+    } else {
+      chip.textContent = Math.max(1, Math.floor(left / 60000)) + ' min left';
+      chip.classList.add('is-urgent');
+    }
+    chip.title = 'Deadline: ' + formatWhen(state.bootstrap.deadlineIso);
+  }
+
+  /* ----------------------------------------------------------------------
+     Validation and submission
+     ---------------------------------------------------------------------- */
+
+  function validate() {
+    var errors = [], warnings = [];
+    var required = requiredPicks();
+    var p = state.person;
+
+    if (!APP.K) {
+      errors.push({ code: 'k_unknown', message: 'The server did not report how many desks to rank.' });
+    }
+    if (!p || !p.email) {
+      errors.push({ code: 'no_person', message: 'We do not know who you are yet.' });
+    } else {
+      if (!p.name) { errors.push({ code: 'no_name', message: 'Your name is missing.' }); }
+      if (!(p.year > 0)) { errors.push({ code: 'bad_year', message: 'Confirm which year you are in.' }); }
+      if (!p.candidacy) { errors.push({ code: 'no_candidacy', message: 'Confirm your candidacy status.' }); }
+    }
+
+    var seen = {};
+    state.picks.forEach(function (id, i) {
+      if (has(seen, id)) {
+        errors.push({ code: 'duplicate', deskId: id, message: deskTitle(id) + ' is ranked twice.' });
+      }
+      seen[id] = true;
+      var status = deskStatus(id);
+      if (!status.ok) {
+        errors.push({
+          code: status.code, deskId: id,
+          message: 'Your ' + ordinal(i + 1) + ' choice, ' + deskTitle(id) + ', is not available: ' + status.reason
+        });
+      }
+    });
+
+    if (APP.K > 0 && required === 0) {
+      errors.push({
+        code: 'no_desks',
+        message: 'There are no desks open to you right now. Tell the coordinator before the deadline.'
+      });
+    }
+
+    if (state.picks.length < required) {
+      var short = required - state.picks.length;
+      errors.push({
+        code: 'incomplete',
+        message: 'Rank ' + short + ' more desk' + (short === 1 ? '' : 's') +
+                 ' (' + state.picks.length + ' of ' + required + ').'
+      });
+    } else if (required > 0 && state.picks.length > required) {
+      errors.push({
+        code: 'too_many',
+        message: 'You have ranked more than ' + required + ' desks.'
+      });
+    }
+
+    /* A response row must carry exactly K choices (SPEC §3.1), and Code.gs
+       enforces that. If eligibility plus keepers leave this person with fewer
+       than K desks they cannot produce a valid row at all, so say so plainly
+       instead of letting them submit something the server will refuse. */
+    if (required > 0 && required < APP.K) {
+      errors.push({
+        code: 'short_pool',
+        message: 'Only ' + required + ' desk' + (required === 1 ? ' is' : 's are') +
+                 ' open to you, but ' + APP.K + ' choices are required. ' +
+                 'Email the coordinator — this needs fixing before you can submit.'
+      });
+    }
+
+    if (isPastDeadline()) {
+      errors.push({ code: 'closed', message: 'The form closed on ' + formatWhen(state.bootstrap.deadlineIso) + '.' });
+    }
+
+    var hot = state.picks.length ? contentionLevel(state.picks[0]) : 0;
+    if (hot >= 3) {
+      warnings.push({
+        code: 'concentration',
+        deskId: state.picks[0],
+        message: 'Your first choice, ' + deskTitle(state.picks[0]) +
+                 ', is one of the most-requested desks. Your lower choices matter more than usual.'
+      });
+    }
+
+    return {
+      ok: errors.length === 0,
+      errors: errors,
+      warnings: warnings,
+      required: required,
+      remaining: Math.max(0, required - state.picks.length),
+      summary: errors.length ? errors[0].message : 'Ready to submit.'
+    };
+  }
+
+  function submissionPayload() {
+    var p = state.person || {};
+    return {
+      email: p.email,
+      name: p.name,
+      year: p.year,
+      candidacy: p.candidacy,
+      choices: state.picks.slice(),
+      authMethod: p.authMethod,
+      clientVersion: APP.clientVersion
+    };
+  }
+
+  /* Always resolves. { ok, errors:[strings], submissionId?, timestampIso? } */
+  function submit() {
+    var check = validate();
+    if (!check.ok) {
+      var messages = check.errors.map(function (e) { return e.message; });
+      banner('error', 'We cannot submit this yet.', { id: 'submit-invalid', list: messages });
+      emit('submit:invalid', check);
+      return Promise.resolve({ ok: false, errors: messages, local: true });
+    }
+
+    clearBanners('error');
+    loading(true, 'Submitting your ranking…');
+
+    return server('submitRanking', submissionPayload()).then(function (res) {
+      if (!res || res.ok !== true) {
+        var errs = (res && isArray(res.errors) && res.errors.length)
+          ? res.errors.map(function (e) { return typeof e === 'string' ? e : (e && e.message) || String(e); })
+          : ['The server rejected the submission but did not say why.'];
+        banner('error', 'Your ranking was not saved.', { id: 'submit-failed', list: errs });
+        emit('submit:error', { errors: errs });
+        return { ok: false, errors: errs };
+      }
+      APP.submission = res;
+      doc.body.setAttribute('data-submitted', '1');
+      banner('success', 'Ranking submitted. You can change it any time before the deadline.',
+             { id: 'submit-ok' });
+      emit('submit:ok', res);
+      return res;
+    }).catch(function (err) {
+      var msg = err && err.timedOut
+        ? 'We did not get a confirmation from the server. Reload the page to check whether your ranking was saved before submitting again.'
+        : errorText(err);
+      banner('error', msg, { id: 'submit-failed' });
+      emit('submit:error', { errors: [msg], error: err });
+      return { ok: false, errors: [msg] };
+    }).then(function (result) {
+      loading(false);
+      return result;
+    });
+  }
+
+  /* ----------------------------------------------------------------------
+     Boot
+     ---------------------------------------------------------------------- */
+
+  function bootMessage(html, actions) {
+    var msg = el('boot-msg');
+    if (msg) { msg.innerHTML = html; }
+    var spinner = doc.querySelector('.boot .spinner');
+    if (spinner) { spinner.hidden = true; }
+    var slot = el('boot-actions');
+    if (slot && actions && actions.length) {
+      slot.hidden = false;
+      slot.innerHTML = '';
+      actions.forEach(function (a) {
+        var btn = doc.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn ' + (a.variant === 'primary' ? 'btn--primary' : 'btn--secondary');
+        btn.textContent = a.label;
+        btn.addEventListener('click', a.onClick);
+        slot.appendChild(btn);
+      });
+    }
+  }
+
+  function initialView() {
+    if (!state.person) { return 'login'; }
+    var saved = store.get(viewKey());
+    var candidates = [];
+    if (saved && saved.view) { candidates.push(saved.view); }
+    if (state.bootstrap && state.bootstrap.priorSubmission) { candidates.push('confirm'); }
+    if (store.get(STORAGE_PREFIX + 'seen.explainer')) { candidates.push('select'); }
+    candidates.push('explainer');
+    for (var i = 0; i < candidates.length; i++) {
+      var v = canonView(candidates[i]);
+      if (viewEl(v) && canEnter(v).ok) { return v; }
+    }
+    return 'login';
+  }
+
+  function applyBootstrap(b) {
+    if (!b) { throw new Error('The server returned nothing.'); }
+    if (b.ok === false) {
+      throw new Error((isArray(b.errors) && b.errors.join(' ')) || 'The server refused to start the form.');
+    }
+
+    state.bootstrap = b;
+    APP.state.bootstrap = b;
+
+    var k = parseInt(b.k, 10);
+    if (isNaN(k) || k <= 0) { k = isArray(b.curve) ? b.curve.length : 0; }
+    APP.K = k;
+    APP.curve = isArray(b.curve) ? b.curve.slice() : [];
+    APP.seedString = b.seedString || '';
+    APP.clientVersion = b.clientVersion || 'unknown';
+
+    installZoneVars();
+    indexDesks();
+
+    var tag = el('version-tag');
+    if (tag) { tag.textContent = APP.clientVersion; }
+
+    if (!APP.K) {
+      banner('error', 'The server did not report how many desks to rank, so the form is read-only. ' +
+        'Tell the coordinator that scoring.json may be missing or invalid.', { id: 'no-k', dismissible: false });
+    }
+
+    if (b.person && b.person.email) {
+      setPerson({
+        email: b.person.email,
+        name: b.person.name,
+        year: b.person.year,
+        candidacy: b.person.candidacy,
+        allowedZones: b.person.allowedZones,
+        authMethod: b.person.authMethod || 'google'
+      }, { quiet: false });
+    } else {
+      var remembered = store.get(personKey());
+      if (remembered && remembered.email && rosterEntry(remembered.email)) {
+        setPerson(remembered, { quiet: false });
+      } else {
+        loadPicksFor('anon', { quiet: true });
+      }
+    }
+
+    /* Anything the server wants the student to know (unmatched Google account,
+       unreadable response sheet, eligibility that would not evaluate). */
+    if (isArray(b.warnings) && b.warnings.length) {
+      banner('warn', b.warnings.length === 1 ? b.warnings[0] : 'Please read these before you rank:',
+             { id: 'server-warnings', list: b.warnings.length === 1 ? null : b.warnings });
+    }
+
+    renderDeadline();
+    if (deadlineTimer) { global.clearInterval(deadlineTimer); }
+    deadlineTimer = global.setInterval(renderDeadline, DEADLINE_TICK_MS);
+
+    bootDone = true;
+    doc.body.setAttribute('data-booted', '1');
+    emit('bootstrap:ready', b);
+
+    go(initialView(), { initial: true, silent: true });
+    if (isPastDeadline()) {
+      banner('warn', 'The form closed on ' + formatWhen(b.deadlineIso) +
+        '. You can look, but nothing further can be submitted.', { id: 'closed', dismissible: false });
+    }
+    return b;
+  }
+
+  function boot() {
+    if (bootPromise) { return bootPromise; }
+    wireStepper();
+    watchColorScheme();
+    paintViews();
+    loading(true, 'Loading…');
+
+    bootPromise = server('getBootstrap')
+      .then(applyBootstrap)
+      .catch(function (err) {
+        bootPromise = null;
+        var msg = errorText(err);
+        reportInternal('getBootstrap failed', err);
+        bootMessage(
+          'Could not load the desk form.<br><small class="muted">' + esc(msg) + '</small>',
+          [{ label: 'Try again', variant: 'primary', onClick: function () {
+            var slot = el('boot-actions');
+            if (slot) { slot.hidden = true; }
+            var spinner = doc.querySelector('.boot .spinner');
+            if (spinner) { spinner.hidden = false; }
+            var m = el('boot-msg');
+            if (m) { m.textContent = 'Loading desk selection…'; }
+            boot();
+          } }]
+        );
+        return null;
+      })
+      .then(function (result) {
+        loading(false);
+        return result;
+      });
+
+    return bootPromise;
+  }
+
+  function refresh() {
+    loading(true, 'Refreshing…');
+    return server('getBootstrap').then(function (b) {
+      if (!b || b.ok === false) { return null; }
+      state.bootstrap = b;
+      APP.state.bootstrap = b;
+      installZoneVars();
+      indexDesks();
+      reconcilePicks({});
+      renderDeadline();
+      emit('bootstrap:ready', b);
+      return b;
+    }).catch(function (err) {
+      banner('warn', 'Could not refresh: ' + errorText(err), { id: 'refresh-failed', timeout: 8000 });
+      return null;
+    }).then(function (r) { loading(false); return r; });
+  }
+
+  /* Remember that the explainer has been seen, so a refresh does not force the
+     student back through it. */
+  on('explainer', {
+    onLeave: function () { store.set(STORAGE_PREFIX + 'seen.explainer', true); }
+  });
+
+  /* ----------------------------------------------------------------------
+     Public API
+     ---------------------------------------------------------------------- */
+
+  var APP = {
+    /* --- contract --- */
+    state: state,
+    K: 0,
+    go: go,
+    on: on,
+    server: server,
+    emit: emit,
+    listen: listen,
+
+    /* --- config-derived --- */
+    curve: [],
+    seedString: '',
+    clientVersion: 'unknown',
+    submission: null,
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+    guards: guards,
+
+    /* --- lifecycle --- */
+    boot: boot,
+    refresh: refresh,
+    unlisten: unlisten,
+    canEnter: canEnter,
+    viewOrder: viewOrder,
+
+    /* --- identity --- */
+    setPerson: setPerson,
+    rosterNames: rosterNames,
+    rosterEntry: rosterEntry,
+    allowedZonesFor: resolveAllowedZones,
+
+    /* --- desks and zones --- */
+    desks: desks,
+    deskById: deskById,
+    deskTitle: deskTitle,
+    deskSubtitle: deskSubtitle,
+    deskStatus: deskStatus,
+    isSelectable: isSelectable,
+    selectableDesks: selectableDesks,
+    lockedDeskIds: lockedDeskIds,
+    multiRoom: multiRoom,
+    /* zone id -> the same shape zoneStyle() returns, in rooms.json order. */
+    zones: function () {
+      var out = {};
+      zoneOrder.forEach(function (id) { out[id] = zoneStyle(id); });
+      return out;
+    },
+    zoneIds: allZoneIds,
+    zoneStyle: zoneStyle,
+    zoneLabel: function (id) { return zoneStyle(id).label; },
+    zoneColor: function (id) { return zoneStyle(id).color; },
+    applyZoneVars: applyZoneVars,
+    coordSpace: function () {
+      var b = state.bootstrap;
+      return (b && b.rooms && b.rooms.coord_space) || 'normalized';
+    },
+    rooms: function () {
+      var b = state.bootstrap;
+      return (b && b.rooms && isArray(b.rooms.rooms)) ? b.rooms.rooms.slice() : [];
+    },
+    concentration: concentration,
+    concentrationFor: concentrationFor,
+    contentionLevel: contentionLevel,
+
+    /* --- picks --- */
+    maxPicks: maxPicks,
+    requiredPicks: requiredPicks,
+    setPicks: setPicks,
+    addPick: addPick,
+    removePick: removePick,
+    togglePick: togglePick,
+    movePick: movePick,
+    movePickBy: movePickBy,
+    clearPicks: clearPicks,
+    isPicked: isPicked,
+    rankOf: rankOf,
+
+    /* --- validation / submit --- */
+    validate: validate,
+    submit: submit,
+    submissionPayload: submissionPayload,
+    deadlineMs: deadlineMs,
+    isPastDeadline: isPastDeadline,
+
+    /* --- chrome --- */
+    error: function (m, o) { return banner('error', m, o); },
+    warn: function (m, o) { return banner('warn', m, o); },
+    success: function (m, o) { return banner('success', m, o); },
+    info: function (m, o) { return banner('info', m, o); },
+    banner: banner,
+    dismiss: dismiss,
+    clearBanners: clearBanners,
+    loading: loading,
+
+    /* --- odds and ends other views need --- */
+    util: {
+      esc: esc,
+      ordinal: ordinal,
+      trim: trim,
+      lower: lower,
+      uniq: uniq,
+      joinList: joinList,
+      formatWhen: formatWhen,
+      formatDay: formatDay,
+      el: el,
+      toArray: toArray
+    }
+  };
+
+  global.APP = APP;
+
+  /* Central error surfacing: anything that escapes a handler still reaches the
+     user rather than dying in the console. */
+  global.addEventListener('error', function (ev) {
+    if (!bootDone) { return; }
+    reportInternal('Uncaught error', ev.error || ev.message);
+    banner('error', 'Something in the page went wrong. If the form stops responding, reload it.',
+           { id: 'uncaught', timeout: 12000 });
+  });
+  global.addEventListener('unhandledrejection', function (ev) {
+    if (!bootDone) { return; }
+    reportInternal('Unhandled rejection', ev.reason);
+    banner('error', errorText(ev.reason), { id: 'unhandled', timeout: 12000 });
+  });
+
+  /* Auto-boot. The local-preview loader in Index.html sets
+     __DESKMATCH_DEFER_BOOT__ and calls APP.boot() itself once every partial has
+     been injected, so view hooks registered by JsMap / JsExplainer are always
+     in place before the first onEnter fires. */
+  if (!global.__DESKMATCH_DEFER_BOOT__) {
+    if (doc.readyState === 'loading') {
+      doc.addEventListener('DOMContentLoaded', function () { boot(); });
+    } else {
+      global.setTimeout(boot, 0);
+    }
+  }
+}(window, document));
+</script>

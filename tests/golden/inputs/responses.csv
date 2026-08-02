@@ -1,0 +1,21 @@
+submission_id,timestamp,email,name,year,candidacy,choice_1,choice_2,choice_3,choice_4,choice_5,client_version,auth_method
+88c56921-a0f1-44e5-ac62-6a851e04db87,2026-09-15T10:24:00-04:00,btinsley@umich.edu,Beatrice Tinsley,5,candidate,D15,D07,D13,D10,D03,synth-1,google
+12cd9011-bfe3-4175-8c51-4b1ecc1d212c,2026-09-15T09:28:00-04:00,cpaynegaposchkin@umich.edu,Cecilia Payne-Gaposchkin,6,precandidate,D07,D06,D03,D01,D14,synth-1,google
+26b1e2e2-c678-4e30-a28d-4d1309ab7757,2026-09-15T10:17:00-04:00,nroman@umich.edu,Nancy Roman,1,precandidate,D06,D07,D01,D03,D05,synth-1,google
+de8a9d9c-ff37-492b-995c-b2d8d5c6487c,2026-09-15T09:35:00-04:00,jbellburnell@umich.edu,Jocelyn Bell Burnell,5,candidate,D12,D07,D06,D15,D13,synth-1,self_select
+db394bc7-80ab-431d-82bd-09996e2ad881,2026-09-15T10:03:00-04:00,hleavitt@umich.edu,Henrietta Leavitt,3,candidate,D03,D13,D15,D09,D12,synth-1,google
+0f0491e0-2acc-46eb-8cf3-566168641d65,2026-09-15T09:42:00-04:00,jbellburnell@umich.edu,Jocelyn Bell Burnell,5,candidate,D07,D06,D15,D13,D12,synth-1,self_select
+6243337a-fe90-4823-ac23-eea1804c3be5,2026-09-15T10:45:00-04:00,amaury@umich.edu,Antonia Maury,6,candidate,D01,D03,D15,D13,D08,synth-1,self_select
+a8cb851e-f18a-4ba3-9609-9248e0a3eb8d,2026-09-15T09:56:00-04:00,csubrahmanyan@umich.edu,"Chandrasekhar, Subrahmanyan",3,candidate,D12,D03,D15,D13,D01,synth-1,google
+e7d49cf7-e50d-47a0-9966-774a7e645e3b,2026-09-15T10:10:00-04:00,fzwicky@umich.edu,Fritz Zwicky,2,precandidate,D07,D06,D03,D05,D01,synth-1,self_select
+04894e40-0282-4bc6-9a00-57f381317825,2026-09-15T09:14:00-04:00,vrubin@umich.edu,Vera Rubin,5,candidate,D15,D12,D13,D01,D04,synth-1,self_select
+89ff20f9-d0f0-4497-b94b-a941f9d0b713,2026-09-15T10:31:00-04:00,btinsley@umich.edu,Beatrice Tinsley,5,candidate,D07,D13,D10,D03,D15,synth-1,google
+6af87acf-39a5-4080-b0ec-b6f36a824ff0,2026-09-15T11:13:00-04:00,mburbidge@umich.edu,Margaret Burbidge,2,precandidate,D01,D06,D03,D07,D05,synth-1,self_select
+02810a86-11c5-40c9-91e1-28238be890bf,2026-09-15T09:21:00-04:00,vrubin@umich.edu,Vera Rubin,5,candidate,D13,D01,D07,D15,D04,synth-1,self_select
+846e779d-a82d-4538-b713-98dd1d483a91,2026-09-15T11:06:00-04:00,wfleming@umich.edu,Williamina Fleming,3,candidate,D11,D13,D08,D03,D15,synth-1,google
+991597bd-0f1f-4e96-bad6-7163bc46e5ed,2026-09-15T09:07:00-04:00,alovelace@umich.edu,Ada Lovelace,7,precandidate,D01,D07,D03,D05,D08,synth-1,google
+323112f5-bea3-46e9-9891-49a391e059d2,2026-09-15T09:14:00-04:00,vrubin@umich.edu,Vera Rubin,5,candidate,D12,D13,D01,D07,D04,synth-1,self_select
+c9411ad6-30ec-435a-8799-1aeda8762c00,2026-09-15T10:59:00-04:00,wfleming@umich.edu,Williamina Fleming,3,candidate,D15,D11,D13,D08,D03,synth-1,google
+8630477b-937c-441e-8d91-e6319f662038,2026-09-15T09:49:00-04:00,jbellburnell@umich.edu,Jocelyn Bell Burnell,5,candidate,D06,D15,D13,D12,D07,synth-1,self_select
+e82ce81e-4f25-476d-811c-b9949f804c44,2026-09-15T10:38:00-04:00,btinsley@umich.edu,Beatrice Tinsley,5,candidate,D13,D10,D03,D15,D07,synth-1,google
+efa0d20c-5acf-41a6-89ba-75f0128e8ab7,2026-09-15T10:52:00-04:00,wfleming@umich.edu,Williamina Fleming,3,candidate,D03,D15,D11,D13,D08,synth-1,google

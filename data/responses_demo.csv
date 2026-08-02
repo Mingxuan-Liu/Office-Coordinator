@@ -1,0 +1,11 @@
+submission_id,timestamp,email,name,year,candidacy,choice_1,choice_2,choice_3,choice_4,choice_5,client_version,auth_method
+s01,2026-09-10T10:00:00-04:00,alovelace@umich.edu,Ada Lovelace,5,candidate,D01,D03,D05,D02,D04,v1,google
+s02,2026-09-10T10:01:00-04:00,vrubin@umich.edu,Vera Rubin,1,precandidate,D17,D19,D21,D18,D20,v1,google
+s03,2026-09-10T10:02:00-04:00,cpayne@umich.edu,Cecilia Payne,2,precandidate,D17,D19,D23,D25,D27,v1,google
+s04,2026-09-10T10:03:00-04:00,schandra@umich.edu,S Chandrasekhar,4,candidate,D01,D02,D09,D11,D13,v1,google
+s05,2026-09-10T10:04:00-04:00,acannon@umich.edu,Annie Cannon,3,candidate,D05,D06,D01,D03,D15,v1,google
+s06,2026-09-10T10:05:00-04:00,hleavitt@umich.edu,Henrietta Leavitt,1,precandidate,D19,D17,D21,D22,D24,v1,google
+s07,2026-09-10T10:06:00-04:00,fzwicky@umich.edu,Fritz Zwicky,4,candidate,D29,D30,D31,D16,D14,v1,google
+s08,2026-09-10T10:07:00-04:00,nroman@umich.edu,Nancy Roman,2,precandidate,D21,D23,D17,D19,D26,v1,google
+s09,2026-09-10T10:08:00-04:00,ehubble@umich.edu,Edwin Hubble,3,candidate,D01,D05,D03,D11,D09,v1,google
+s10,2026-09-10T11:30:00-04:00,ehubble@umich.edu,Edwin Hubble,3,candidate,D15,D13,D11,D09,D07,v1,google

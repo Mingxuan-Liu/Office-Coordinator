@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deskmatch"
+version = "1.0.0"
+description = "Preference-matching desk assignment for the UMich Astronomy graduate office"
+readme = "../README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=1.24,<3",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+# The ILP escape hatch. Not needed for the default solve; install it only if
+# side constraints are added and the PuLP backend is switched on.
+ilp = ["pulp>=2.7"]
+dev = ["pytest>=7.4", "pytest-cov"]
+
+[project.scripts]
+deskmatch = "deskmatch.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["deskmatch*"]
+
+[tool.pytest.ini_options]
+testpaths = ["../tests"]
+filterwarnings = ["error::RuntimeWarning"]

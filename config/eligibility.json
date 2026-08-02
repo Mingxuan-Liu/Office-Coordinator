@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "_comment": [
+    "Rule table mapping roster attributes -> permitted zones. Evaluated top to",
+    "bottom; the FIRST matching rule wins. The last rule must be a catch-all",
+    "({\"when\": {}}) so nobody can fall through with undefined eligibility.",
+    "",
+    "Predicate forms for `when` (all keys ANDed):",
+    "  scalar    {\"candidacy\": \"precandidate\"}        equality, case-insensitive",
+    "  list      {\"year\": [1, 2]}                      membership",
+    "  range     {\"year\": {\"min\": 1, \"max\": 2}}     inclusive; min/max optional",
+    "  negation  {\"candidacy\": {\"not\": \"candidate\"}} inverts any of the above",
+    "",
+    "Attribute names must be columns in roster.csv. `allow_zones` is \"*\" or a",
+    "list of zone ids defined in rooms.json.",
+    "",
+    "To add a rule (e.g. a new overflow room for 3rd years), insert it ABOVE the",
+    "catch-all. Do not edit Python for this."
+  ],
+  "rules": [
+    {
+      "id": "precandidates_sit_together",
+      "when": { "candidacy": "precandidate" },
+      "allow_zones": ["precandidate_side"],
+      "reason": "Pre-candidates (years 1-2) are seated together so they can work through coursework and quals as a cohort."
+    },
+    {
+      "id": "everyone_else_anywhere",
+      "when": {},
+      "allow_zones": "*",
+      "reason": "Post-candidacy students may sit anywhere in the department."
+    }
+  ]
+}

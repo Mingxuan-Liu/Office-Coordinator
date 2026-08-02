@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <title>Desk selection &middot; U-M Astronomy</title>
+  <?!= include('Style') ?>
+</head>
+
+<body data-loading="1">
+
+<!-- JsCore first: it only touches the DOM from inside functions, and boot() is
+     deferred, so loading it here lets every view partial call APP.on(...) /
+     APP.listen(...) in its own inline <script>. -->
+<?!= include('JsCore') ?>
+
+<!-- Indeterminate top progress bar. Visible whenever body[data-loading="1"]. -->
+<div id="global-loading" class="loadbar" aria-hidden="true"></div>
+<p id="loading-status" class="sr-only" role="status" aria-live="polite"></p>
+
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="appbar">
+  <div class="wrap appbar__inner">
+    <span class="brand">
+      <svg class="brand__mark" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.6" aria-hidden="true">
+        <circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"></circle>
+        <ellipse cx="12" cy="12" rx="10" ry="4.6" transform="rotate(-24 12 12)"></ellipse>
+        <circle cx="20.1" cy="8.6" r="1.5" fill="currentColor" stroke="none"></circle>
+      </svg>
+      <span class="brand__name">Desk selection</span>
+      <span class="brand__sub">&middot; Astronomy</span>
+    </span>
+
+    <div class="appbar__meta">
+      <span id="deadline-chip" class="chip countdown" hidden></span>
+      <span id="who-chip" class="chip" hidden></span>
+    </div>
+  </div>
+</header>
+
+<!-- Persistent stepper. The step order here is the canonical view order: JsCore
+     reads it from the DOM (via [data-step]) rather than hard-coding a list, and
+     paints state onto the enclosing .stepper__item. -->
+<nav class="stepper" id="stepper" aria-label="Progress">
+  <ol class="stepper__list">
+    <li class="stepper__item">
+      <button type="button" class="stepper__btn" data-step="login" disabled>
+        <span class="stepper__mark" aria-hidden="true">1</span>
+        <span class="stepper__label">Identity</span>
+      </button>
+    </li>
+    <li class="stepper__item">
+      <button type="button" class="stepper__btn" data-step="explainer" disabled>
+        <span class="stepper__mark" aria-hidden="true">2</span>
+        <span class="stepper__label">How it works</span>
+      </button>
+    </li>
+    <li class="stepper__item">
+      <button type="button" class="stepper__btn" data-step="select" disabled>
+        <span class="stepper__mark" aria-hidden="true">3</span>
+        <span class="stepper__label">Choose</span>
+      </button>
+    </li>
+    <li class="stepper__item">
+      <button type="button" class="stepper__btn" data-step="confirm" disabled>
+        <span class="stepper__mark" aria-hidden="true">4</span>
+        <span class="stepper__label">Confirm</span>
+      </button>
+    </li>
+  </ol>
+  <div class="stepper__rail"><div class="stepper__fill" id="stepper-fill"></div></div>
+</nav>
+
+<!-- Global banner region. Errors get role="alert", everything else role="status".
+     Written to only through APP.error / APP.warn / APP.success / APP.info. -->
+<div class="wrap">
+  <div id="app-banners" class="banners" aria-label="Notifications"></div>
+</div>
+
+<main id="main" class="wrap main" tabindex="-1">
+  <?!= include('ViewLogin') ?>
+  <?!= include('ViewExplainer') ?>
+  <?!= include('ViewSelect') ?>
+  <?!= include('ViewConfirm') ?>
+</main>
+
+<footer class="footer">
+  <div class="wrap row row--between">
+    <span>Assignments are computed by a published, seeded algorithm. Ranking order is what matters, not submission time.</span>
+    <span class="mono tiny" id="version-tag"></span>
+  </div>
+</footer>
+
+<!-- Initial boot cover. Removed once getBootstrap() resolves (or fails). -->
+<div class="boot" id="boot" role="status" aria-live="polite">
+  <div class="boot__inner">
+    <div class="spinner" aria-hidden="true"></div>
+    <p class="boot__msg" id="boot-msg">Loading desk selection&hellip;</p>
+    <div id="boot-actions" class="btn-row" hidden></div>
+  </div>
+</div>
+
+<!-- ==========================================================================
+     Local-preview bootstrap.
+
+     Under Apps Script the include() scriptlets above have already inlined every
+     partial, so this block detects that and does nothing. (Do not write a
+     literal scriptlet in a comment anywhere in this file: HtmlService scans the
+     raw template text and would try to evaluate it.)
+
+     Opened outside Apps Script (e.g. `python3 -m http.server` inside frontend/)
+     the scriptlets are inert HTML comments, so we fetch the same partials over
+     HTTP in the same order and inject them, plus mock_server.html which stands
+     in for google.script.run. mock_server.html is referenced ONLY from here, so
+     it never needs to be pushed to Apps Script.
+     ========================================================================== -->
+<script>
+(function () {
+  'use strict';
+  if (document.getElementById('deskmatch-style')) { return; }   // server-rendered
+
+  window.__DESKMATCH_DEFER_BOOT__ = true;
+
+  /* Same execution order as the server-rendered page: core first, then the
+     views (whose inline scripts call APP.on), then the view modules. */
+  var PARTIALS = [
+    { file: 'Style.html',        into: 'head' },
+    { file: 'mock_server.html',  into: 'body' },
+    { file: 'JsCore.html',       into: 'body' },
+    { file: 'ViewLogin.html',    into: '#main' },
+    { file: 'ViewExplainer.html',into: '#main' },
+    { file: 'ViewSelect.html',   into: '#main' },
+    { file: 'ViewConfirm.html',  into: '#main' },
+    { file: 'JsMap.html',        into: 'body' },
+    { file: 'JsExplainer.html',  into: 'body' }
+  ];
+
+  function target(sel) {
+    if (sel === 'head') { return document.head; }
+    if (sel === 'body') { return document.body; }
+    return document.querySelector(sel) || document.body;
+  }
+
+  function inject(html, host) {
+    var tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    var nodes = Array.prototype.slice.call(tpl.content.childNodes);
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      if (node.nodeName === 'SCRIPT') {
+        var s = document.createElement('script');
+        for (var a = 0; a < node.attributes.length; a++) {
+          s.setAttribute(node.attributes[a].name, node.attributes[a].value);
+        }
+        s.text = node.textContent;
+        host.appendChild(s);
+      } else {
+        host.appendChild(node);
+      }
+    }
+  }
+
+  function fail(file, err) {
+    var msg = document.getElementById('boot-msg');
+    if (msg) {
+      msg.innerHTML =
+        'Local preview could not load <code>' + file + '</code>.<br>' +
+        '<small>' + String(err && err.message ? err.message : err) + '</small><br><br>' +
+        'Serve the folder over HTTP instead of opening the file directly:<br>' +
+        '<code>cd frontend &amp;&amp; python3 -m http.server 8080</code>';
+    }
+    document.body.setAttribute('data-loading', '0');
+  }
+
+  var chain = Promise.resolve();
+  PARTIALS.forEach(function (p) {
+    chain = chain.then(function () {
+      return fetch(p.file, { cache: 'no-store' }).then(function (r) {
+        if (!r.ok) { throw new Error(r.status + ' ' + r.statusText); }
+        return r.text();
+      }).then(function (text) {
+        inject(text, target(p.into));
+      }).catch(function (err) {
+        fail(p.file, err);
+        throw err;
+      });
+    });
+  });
+
+  chain.then(function () {
+    document.documentElement.setAttribute('data-preview', 'local');
+    if (window.APP && typeof window.APP.boot === 'function') { window.APP.boot(); }
+  }).catch(function () { /* already surfaced by fail() */ });
+}());
+</script>
+
+<?!= include('JsMap') ?>
+<?!= include('JsExplainer') ?>
+
+</body>
+</html>

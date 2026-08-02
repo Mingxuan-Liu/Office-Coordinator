@@ -1,0 +1,15 @@
+name,email,year,candidacy,keeps_desk,current_desk,advisor
+Ada Lovelace,alovelace@umich.edu,6,candidate,no,,Bell Burnell
+Vera Rubin,vrubin@umich.edu,5,candidate,false,,Tinsley
+Cecilia Payne-Gaposchkin,cpaynegaposchkin@umich.edu,5,candidate,0,,Schwarzschild
+Jocelyn Bell Burnell,jbellburnell@umich.edu,5,candidate,n,,Oort
+"Chandrasekhar, Subrahmanyan",csubrahmanyan@umich.edu,3,candidate,No,,Mavalvala
+Annie Cannon,acannon@umich.edu,3,candidate,TRUE,D04,Sunyaev
+Henrietta Leavitt,hleavitt@umich.edu,3,candidate,no,,Lovelace
+Fritz Zwicky,fzwicky@umich.edu,2,precandidate,false,,Zwicky
+Nancy Roman,nroman@umich.edu,1,precandidate,0,,Faber
+Edwin Hubble,ehubble@umich.edu,2,precandidate,y,D02,Zeldovich
+Beatrice Tinsley,btinsley@umich.edu,5,candidate,No,,Natarajan
+Antonia Maury,amaury@umich.edu,6,candidate,FALSE,,Giacconi
+Williamina Fleming,wfleming@umich.edu,3,candidate,no,,van Maanen
+Margaret Burbidge,mburbidge@umich.edu,2,precandidate,false,,Chandrasekhar

@@ -1,0 +1,965 @@
+<!-- ==========================================================================
+     ViewLogin.html — step 1: who are you, and is the roster right about you?
+
+     Three jobs, in order:
+       1. Identity. Google if the deployment can resolve it, otherwise a
+          searchable roster list that is explicitly NOT authentication
+          (SPEC §8: "Not defended, by design: the login fallback").
+       2. Correction. The roster is stale by design (SPEC §3.3), so year and
+          candidacy are editable and the submission wins over the roster.
+       3. Consequence. Every edit re-asks the SERVER which zones the person may
+          sit in — getEligibleZonesForClaim() runs the same rule-table
+          interpreter submitRanking() runs. The eligibility rules live in
+          config/eligibility.json and are never reimplemented here; the only
+          client-side fallback is APP.allowedZonesFor(), which is itself just a
+          lookup into the server-computed allowedZonesFor map, and it is
+          labelled as an estimate when it is used.
+
+     Desk keepers (SPEC §3.4) are not in the pool. This view says so and stops.
+
+     No count of anything — people, desks, zones, K — appears in this file.
+     ========================================================================== -->
+
+<section class="view" id="view-login" data-view-name="login" aria-labelledby="login-title">
+
+  <!-- Scoped to #view-login. Style.html owns the design system; these are the
+       few structures that exist only here (the roster combobox). Kept local so
+       two agents are never editing the same stylesheet. -->
+  <style>
+    #view-login .combo { position: relative; }
+    #view-login .combo__list {
+      margin-top: var(--s-2);
+      max-height: min(20rem, 50vh);
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      border: 1px solid var(--line-2);
+      border-radius: var(--r-2);
+      background: var(--surface);
+      box-shadow: var(--shadow-1);
+    }
+    #view-login .combo__opt {
+      display: flex;
+      align-items: center;
+      gap: var(--s-3);
+      width: 100%;
+      min-height: var(--tap);
+      padding: var(--s-2) var(--s-3);
+      background: none;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      border-radius: 0;
+      color: var(--ink);
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    #view-login .combo__opt:last-child { border-bottom: 0; }
+    #view-login .combo__opt:hover,
+    #view-login .combo__opt.is-active { background: var(--accent-soft); }
+    #view-login .combo__opt.is-active { box-shadow: inset 3px 0 0 var(--accent); }
+    #view-login .combo__body { min-width: 0; flex: 1 1 auto; }
+    #view-login .combo__name {
+      display: block;
+      font-weight: 600;
+      line-height: var(--lh-tight);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #view-login .combo__meta {
+      display: block;
+      font-size: var(--fs-xs);
+      color: var(--ink-3);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #view-login .combo__empty { padding: var(--s-3); color: var(--ink-3); font-size: var(--fs-md); }
+    #view-login .zones { min-height: var(--tap); align-items: center; }
+    #view-login .idline { display: flex; align-items: baseline; gap: var(--s-2); flex-wrap: wrap; }
+    #view-login .idline__name { font-size: var(--fs-lg); font-weight: 600; }
+    #view-login .idline__email { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--ink-3); word-break: break-all; }
+  </style>
+
+  <div class="view__head">
+    <h1 class="view__title" id="login-title" data-view-focus tabindex="-1">Who are you?</h1>
+    <p class="view__lede">
+      Your year and candidacy decide which desks you may rank, so check them before
+      you go on. Submission order does not matter — only the ranking you send.
+    </p>
+  </div>
+
+  <!-- ---------------------------------------------------------------- 1 -->
+  <div class="card">
+    <div class="card__head">
+      <h2>Identity</h2>
+      <span class="spacer"></span>
+      <span class="badge" id="login-auth-badge" hidden></span>
+    </div>
+    <div class="card__body stack">
+
+      <!-- Google identity resolved by the server. -->
+      <div id="login-google" hidden>
+        <p class="caps muted">Signed in as</p>
+        <p class="idline">
+          <span class="idline__name" id="login-google-name"></span>
+          <span class="idline__email" id="login-google-email"></span>
+        </p>
+        <p class="small muted" id="login-google-note">
+          Your submission is recorded against this account.
+        </p>
+      </div>
+
+      <!-- Fallback: no Google identity. Convenience, not a security boundary. -->
+      <div id="login-self" hidden>
+        <p class="small muted" id="login-self-why"></p>
+
+        <div class="field">
+          <label class="field__label" for="login-search">Find your name</label>
+          <div class="combo">
+            <input class="input"
+                   id="login-search"
+                   type="text"
+                   role="combobox"
+                   aria-expanded="false"
+                   aria-controls="login-list"
+                   aria-autocomplete="list"
+                   aria-describedby="login-search-help"
+                   autocomplete="off"
+                   autocapitalize="off"
+                   autocorrect="off"
+                   spellcheck="false"
+                   enterkeyhint="done"
+                   placeholder="Start typing a name or email">
+            <div class="combo__list" id="login-list" role="listbox" aria-label="People on the roster" hidden></div>
+          </div>
+          <span class="field__help" id="login-search-help">
+            Type any part of your name or email, then pick yourself from the list.
+          </span>
+        </div>
+
+        <p class="note note--warn small">
+          <span class="strong">This is not a login.</span>
+          We could not identify you automatically, so you are choosing your own name
+          from the department roster. Nothing here checks that you are who you say
+          you are — it is a convenience so you do not have to type your email. Your
+          response is recorded with <code>auth_method = self_select</code> so the
+          coordinator can see it was unverified.
+        </p>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ------------------------------------------------------- keeper stop -->
+  <div class="card" id="login-keeper" hidden>
+    <div class="card__head"><h2>You are not in this year&rsquo;s draw</h2></div>
+    <div class="card__body stack">
+      <p id="login-keeper-msg"></p>
+      <p class="small muted">
+        People who keep their desk are removed from the pool before the solver runs,
+        and so is the desk they keep — that is what makes it a keep rather than a
+        claim on someone else&rsquo;s seat.
+      </p>
+      <p class="small">
+        If that is wrong, the roster has to be corrected before you can take part.
+        Email the coordinator; you cannot fix it from this form, and nothing you do
+        here would be saved.
+      </p>
+      <div class="btn-row">
+        <button type="button" class="btn btn--secondary" id="login-keeper-back">Choose a different name</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------------------------------------------------------------- 2 -->
+  <div class="card" id="login-details" hidden>
+    <div class="card__head">
+      <h2>Check your details</h2>
+      <span class="spacer"></span>
+      <span class="badge badge--warn" id="login-corrected-badge" hidden>Corrected</span>
+    </div>
+    <div class="card__body stack">
+      <p class="small muted">
+        The roster is often out of date. Whatever you put here is what the solver
+        uses, and every difference from the roster is reported to the coordinator
+        so it can be fixed at the source.
+      </p>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="field__label" for="login-year">Year</label>
+          <input class="input" id="login-year" type="number" inputmode="numeric"
+                 min="1" step="1" autocomplete="off">
+          <span class="field__error" id="login-year-error" hidden></span>
+        </div>
+        <div class="field">
+          <label class="field__label" for="login-candidacy">Candidacy</label>
+          <select class="select" id="login-candidacy"></select>
+          <span class="field__error" id="login-candidacy-error" hidden></span>
+        </div>
+      </div>
+
+      <div class="field" id="login-candidacy-other-field" hidden>
+        <label class="field__label" for="login-candidacy-other">Type your candidacy status</label>
+        <input class="input" id="login-candidacy-other" type="text" autocomplete="off"
+               placeholder="exactly as the department writes it">
+        <span class="field__help">
+          Use the department&rsquo;s wording. The eligibility rules match on this text.
+        </span>
+      </div>
+
+      <div class="panel">
+        <p class="caps muted" style="margin-bottom: var(--s-2);">You may choose from</p>
+        <div class="row zones" id="login-zones" aria-live="polite"></div>
+        <p class="small muted" id="login-zones-note" style="margin-top: var(--s-2);"></p>
+      </div>
+
+      <div class="row" id="login-restore-row" hidden>
+        <span class="small muted" id="login-restore-text"></span>
+        <button type="button" class="btn btn--ghost btn--sm" id="login-restore">Restore roster values</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------------------------------------------------------------- 3 -->
+  <div class="card" id="login-prior" hidden>
+    <div class="card__head"><h2>You have already submitted</h2></div>
+    <div class="card__body stack">
+      <p id="login-prior-msg"></p>
+      <p class="small muted">
+        You can submit again as many times as you like until the deadline. The most
+        recent submission is the one that counts; the earlier ones are kept only for
+        the audit trail.
+      </p>
+      <div class="btn-row">
+        <button type="button" class="btn btn--secondary" id="login-prior-review">Review or change my picks</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="btn-row btn-row--end btn-row--stack" id="login-actions" hidden style="margin-top: var(--s-5);">
+    <button type="button" class="btn btn--primary btn--lg" id="login-continue">Continue</button>
+  </div>
+
+</section>
+
+<script>
+/* ==========================================================================
+   ViewLogin behaviour. Depends only on the shared APP contract from JsCore.
+   ========================================================================== */
+(function (global) {
+  'use strict';
+
+  var doc = global.document;
+  var APP = global.APP;
+  if (!APP) { return; }
+
+  var U = APP.util;
+  var el = U.el, esc = U.esc, trim = U.trim, lower = U.lower;
+
+  var LOGIN = 'login';
+  var OTHER = ' other';            /* sentinel: "type it yourself" option */
+  var ELIG_DEBOUNCE_MS = 350;
+
+  function isArr(v) { return Object.prototype.toString.call(v) === '[object Array]'; }
+
+  /* keeps_desk arrives as a real boolean from Code.gs, but the roster column it
+     comes from is free text (SPEC §2.3), so be forgiving about the spelling. */
+  function truthy(v) {
+    if (v === true) { return true; }
+    if (v === false || v === null || v === undefined) { return false; }
+    var s = lower(v);
+    return s === 'yes' || s === 'true' || s === 'y' || s === '1';
+  }
+
+  /* ---- local state ----------------------------------------------------- */
+
+  var sel = null;         /* {email,name,year,candidacy,authMethod} being confirmed */
+  var roster = [];        /* rosterNames, sorted by name for display only */
+  var shown = [];         /* the currently filtered subset */
+  var activeIdx = -1;
+  var eligSeq = 0;        /* guards against a slow reply overwriting a fast one */
+  var eligTimer = null;
+  var wired = false;
+
+  /* ---- roster helpers -------------------------------------------------- */
+
+  function entryFor(email) { return APP.rosterEntry(email); }
+
+  function isKeeper(email) {
+    var b = APP.state.bootstrap || {};
+    if (b.person && lower(b.person.email) === lower(email) && truthy(b.person.keepsDesk)) { return true; }
+    var row = entryFor(email);
+    return !!(row && truthy(row.keepsDesk));
+  }
+
+  /* Which desk they keep. Code.gs puts the name in each lockedDesks reason, so
+     that is the fallback when the roster row itself does not carry the desk. */
+  function keptDeskId(email) {
+    var b = APP.state.bootstrap || {};
+    var row = entryFor(email) || {};
+    if (row.currentDesk) { return row.currentDesk; }
+    if (b.person && lower(b.person.email) === lower(email) && b.person.currentDesk) {
+      return b.person.currentDesk;
+    }
+    var locked = isArr(b.lockedDesks) ? b.lockedDesks : [];
+    var name = lower(row.name || (b.person && b.person.name) || '');
+    for (var i = 0; i < locked.length; i++) {
+      var reason = lower(locked[i] && locked[i].reason);
+      if (!reason) { continue; }
+      if (lower(email) && reason.indexOf(lower(email)) >= 0) { return locked[i].deskId; }
+      if (name && reason.indexOf(name) >= 0) { return locked[i].deskId; }
+    }
+    return null;
+  }
+
+  function keeperSentence(email, name) {
+    var deskId = keptDeskId(email);
+    var who = name || 'You';
+    var what = deskId
+      ? (APP.deskTitle(deskId) + ' (' + deskId + ')')
+      : 'your current desk';
+    return who + ' ' + (who === 'You' ? 'are' : 'is') + ' down on the roster as keeping ' +
+           what + ', so ' + (who === 'You' ? 'you are' : 'they are') + ' not in the draw and ' +
+           'there is nothing to rank.';
+  }
+
+  /* Anyone flagged keeps_desk must not reach a later view, however they arrive
+     there (restored session, stepper, guard-free go()). Wrap whatever guards
+     JsCore installed rather than replacing them. */
+  (function wrapGuards() {
+    var names = {};
+    (APP.viewOrder() || []).forEach(function (n) { if (n) { names[n] = true; } });
+    Object.keys(APP.guards || {}).forEach(function (n) { names[n] = true; });
+    Object.keys(names).forEach(function (name) {
+      if (name === LOGIN) { return; }
+      var prev = APP.guards[name];
+      APP.guards[name] = function (view) {
+        var p = APP.state.person;
+        if (p && p.email && isKeeper(p.email)) {
+          return {
+            ok: false,
+            redirect: LOGIN,
+            message: 'The roster has you keeping your desk, so you are not in this year’s draw.'
+          };
+        }
+        return typeof prev === 'function' ? prev(view) : { ok: true };
+      };
+    });
+  }());
+
+  /* ---- candidacy options (derived from the roster, never hard-coded) ---- */
+
+  function candidacyOptions() {
+    var seen = {}, out = [];
+    roster.forEach(function (r) {
+      var value = trim(r && r.candidacy);
+      if (!value) { return; }
+      var key = lower(value);
+      if (seen[key]) { return; }
+      seen[key] = true;
+      out.push(value);
+    });
+    out.sort(function (a, b) { return lower(a) < lower(b) ? -1 : (lower(a) > lower(b) ? 1 : 0); });
+    return out;
+  }
+
+  function fillCandidacy(current) {
+    var box = el('login-candidacy');
+    if (!box) { return; }
+    var options = candidacyOptions();
+    var value = trim(current);
+    var known = false;
+    box.innerHTML = '';
+
+    options.forEach(function (opt) {
+      if (lower(opt) === lower(value)) { known = true; }
+      box.appendChild(new Option(opt, opt, false, lower(opt) === lower(value)));
+    });
+    if (value && !known) {
+      var own = new Option(value, value, false, true);
+      box.insertBefore(own, box.firstChild);
+      known = true;
+    }
+    if (!value) {
+      var blank = new Option('Choose…', '', true, true);
+      blank.disabled = true;
+      box.insertBefore(blank, box.firstChild);
+    }
+    box.appendChild(new Option('Something else…', OTHER));
+    setOtherField(false, '');
+  }
+
+  function setOtherField(on, value) {
+    var wrap = el('login-candidacy-other-field');
+    var input = el('login-candidacy-other');
+    if (!wrap || !input) { return; }
+    wrap.hidden = !on;
+    if (on) {
+      input.value = value || '';
+      try { input.focus(); } catch (e) { /* ignore */ }
+    }
+  }
+
+  function readCandidacy() {
+    var box = el('login-candidacy');
+    if (!box) { return ''; }
+    if (box.value === OTHER) { return trim((el('login-candidacy-other') || {}).value); }
+    return trim(box.value);
+  }
+
+  /* ---- the searchable roster list -------------------------------------- */
+
+  function matches(entry, tokens) {
+    if (!tokens.length) { return true; }
+    var hay = lower(entry.name) + ' ' + lower(entry.email) + ' ' +
+              lower(entry.candidacy) + ' year ' + lower(entry.year);
+    for (var i = 0; i < tokens.length; i++) {
+      if (hay.indexOf(tokens[i]) < 0) { return false; }
+    }
+    return true;
+  }
+
+  function optionMarkup(entry, idx) {
+    var bits = [];
+    if (entry.year !== null && entry.year !== undefined && trim(entry.year) !== '') {
+      bits.push('Year ' + esc(entry.year));
+    }
+    if (trim(entry.candidacy)) { bits.push(esc(trim(entry.candidacy))); }
+    var meta = esc(entry.email) + (bits.length ? ' · ' + bits.join(' · ') : '');
+    var badge = truthy(entry.keepsDesk)
+      ? '<span class="badge badge--locked">keeps a desk</span>'
+      : '';
+    return '<button type="button" class="combo__opt" role="option" aria-selected="false" ' +
+           'id="login-opt-' + idx + '" data-email="' + esc(entry.email) + '">' +
+             '<span class="combo__body">' +
+               '<span class="combo__name">' + esc(entry.name || entry.email) + '</span>' +
+               '<span class="combo__meta">' + meta + '</span>' +
+             '</span>' + badge +
+           '</button>';
+  }
+
+  function renderList(open) {
+    var input = el('login-search');
+    var list = el('login-list');
+    if (!input || !list) { return; }
+
+    var tokens = lower(input.value).split(/\s+/).filter(function (t) { return !!t; });
+    shown = roster.filter(function (r) { return matches(r, tokens); });
+    activeIdx = shown.length ? 0 : -1;
+
+    if (!shown.length) {
+      list.innerHTML = '<p class="combo__empty">Nobody on the roster matches that. ' +
+        'Try part of your surname, or your email address. If you are genuinely not ' +
+        'on the roster, the coordinator has to add you.</p>';
+    } else {
+      list.innerHTML = shown.map(optionMarkup).join('');
+    }
+    paintActive();
+
+    var show = open !== false;
+    list.hidden = !show;
+    input.setAttribute('aria-expanded', show ? 'true' : 'false');
+  }
+
+  function paintActive() {
+    var list = el('login-list');
+    var input = el('login-search');
+    if (!list || !input) { return; }
+    var opts = U.toArray(list.querySelectorAll('.combo__opt'));
+    opts.forEach(function (node, i) {
+      var on = (i === activeIdx);
+      if (on) { node.classList.add('is-active'); } else { node.classList.remove('is-active'); }
+      node.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    if (activeIdx >= 0 && opts[activeIdx]) {
+      input.setAttribute('aria-activedescendant', opts[activeIdx].id);
+      try { opts[activeIdx].scrollIntoView({ block: 'nearest' }); } catch (e) { /* ignore */ }
+    } else {
+      input.removeAttribute('aria-activedescendant');
+    }
+  }
+
+  function closeList() {
+    var list = el('login-list');
+    var input = el('login-search');
+    if (list) { list.hidden = true; }
+    if (input) {
+      input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
+    }
+  }
+
+  function chooseEmail(email) {
+    var entry = entryFor(email);
+    if (!entry) { return; }
+    closeList();
+    var input = el('login-search');
+    if (input) { input.value = entry.name || entry.email; }
+    select({
+      email: entry.email,
+      name: entry.name,
+      year: entry.year,
+      candidacy: entry.candidacy,
+      authMethod: 'self_select'
+    });
+  }
+
+  /* ---- selection, eligibility, rendering ------------------------------- */
+
+  function select(person) {
+    sel = {
+      email: lower(person.email),
+      name: trim(person.name),
+      year: person.year,
+      candidacy: trim(person.candidacy),
+      authMethod: lower(person.authMethod) || 'self_select',
+      allowedZones: isArr(person.allowedZones) ? person.allowedZones.slice() : null
+    };
+    var yearInput = el('login-year');
+    if (yearInput) {
+      yearInput.value = (sel.year === null || sel.year === undefined) ? '' : sel.year;
+    }
+    fillCandidacy(sel.candidacy);
+    paint();
+
+    /* getBootstrap() already ran the rule table over this person's roster row.
+       While nothing has been corrected, that answer is the server's answer —
+       re-asking would be a round trip for the same result. */
+    if (sel.allowedZones && sel.allowedZones.length && !rosterDiff()) {
+      renderZones(sel.allowedZones, { reason: person.reason });
+    } else {
+      requestEligibility(0);
+    }
+  }
+
+  function readForm() {
+    if (!sel) { return; }
+    var yearRaw = trim((el('login-year') || {}).value);
+    var year = yearRaw === '' ? null : parseInt(yearRaw, 10);
+    sel.year = (year === null || isNaN(year)) ? null : year;
+    sel.candidacy = readCandidacy();
+  }
+
+  function rosterDiff() {
+    if (!sel) { return null; }
+    var row = entryFor(sel.email);
+    if (!row) { return null; }
+    var changed = [];
+    if (String(row.year) !== String(sel.year === null ? '' : sel.year)) {
+      changed.push('year ' + esc(row.year) + ' → ' +
+                   esc(sel.year === null ? '(blank)' : sel.year));
+    }
+    if (lower(row.candidacy) !== lower(sel.candidacy)) {
+      changed.push(esc(trim(row.candidacy) || '(blank)') + ' → ' +
+                   esc(trim(sel.candidacy) || '(blank)'));
+    }
+    return changed.length ? changed : null;
+  }
+
+  function requestEligibility(delay) {
+    if (eligTimer) { global.clearTimeout(eligTimer); eligTimer = null; }
+    if (!sel) { return; }
+    setZonesBusy();
+    eligTimer = global.setTimeout(askServer, delay === 0 ? 0 : (delay || ELIG_DEBOUNCE_MS));
+  }
+
+  function askServer() {
+    if (!sel) { return; }
+    var seq = ++eligSeq;
+    var claim = { email: sel.email, year: sel.year, candidacy: sel.candidacy };
+
+    APP.server('getEligibleZonesForClaim', claim).then(function (res) {
+      if (seq !== eligSeq) { return; }
+      if (res && res.ok === true && isArr(res.zones)) {
+        sel.allowedZones = res.zones.slice();
+        renderZones(res.zones, {
+          reason: res.reason,
+          changed: isArr(res.rosterZones) && res.rosterZones.join('|') !== res.zones.join('|')
+        });
+      } else {
+        estimateZones(res && res.error);
+      }
+    })['catch'](function (err) {
+      if (seq !== eligSeq) { return; }
+      estimateZones(err && err.message ? err.message : err);
+    });
+  }
+
+  /* The server could not answer. Fall back to the map it already sent in the
+     bootstrap (APP.allowedZonesFor is a lookup, not a second implementation of
+     the rules) and say plainly that it is only an estimate. */
+  function estimateZones(why) {
+    if (!sel) { return; }
+    /* The technical reason is for whoever is debugging the deployment, not for
+       the student staring at the form. */
+    if (why && global.console && console.warn) {
+      console.warn('[deskmatch] getEligibleZonesForClaim failed: ' + why);
+    }
+    var zones = APP.allowedZonesFor({
+      email: sel.email, year: sel.year, candidacy: sel.candidacy
+    }) || [];
+    sel.allowedZones = zones.slice();
+    renderZones(zones, { estimate: true });
+  }
+
+  function setZonesBusy() {
+    var box = el('login-zones');
+    var note = el('login-zones-note');
+    if (box) {
+      box.innerHTML = '<span class="spinner spinner--sm" aria-hidden="true"></span>' +
+                      '<span class="small muted">Asking the server which zones the rules give you…</span>';
+    }
+    if (note) { note.textContent = ''; }
+  }
+
+  function renderZones(zones, opts) {
+    opts = opts || {};
+    var box = el('login-zones');
+    var note = el('login-zones-note');
+    if (!box) { return; }
+
+    box.innerHTML = '';
+    if (!zones.length) {
+      box.innerHTML = '<span class="badge badge--hot">No zone at all</span>';
+    }
+    zones.forEach(function (zoneId) {
+      var chip = doc.createElement('span');
+      chip.className = 'chip chip--zone';
+      chip.innerHTML = '<span class="swatch" aria-hidden="true"></span>' +
+                       '<span class="chip__label">' + esc(APP.zoneLabel(zoneId)) + '</span>';
+      APP.applyZoneVars(chip, zoneId);
+      box.appendChild(chip);
+    });
+
+    if (note) {
+      var lines = [];
+      if (!zones.length) {
+        lines.push('The eligibility rules leave you with nowhere to sit, which is a ' +
+                   'configuration bug rather than a decision about you. Tell the ' +
+                   'coordinator before the deadline.');
+      }
+      if (opts.reason) { lines.push(opts.reason); }
+      if (opts.changed) { lines.push('Your correction changes which desks you can rank.'); }
+      if (opts.estimate) {
+        lines.push('The server did not answer just now, so this is worked out in the browser ' +
+                   'from what it sent earlier. It is checked again for real when you submit.');
+      }
+      note.innerHTML = lines.map(esc).join('<br>');
+    }
+    paintCorrection();
+    paintActions();
+  }
+
+  function paintCorrection() {
+    var diff = rosterDiff();
+    var badge = el('login-corrected-badge');
+    var row = el('login-restore-row');
+    var text = el('login-restore-text');
+    if (badge) { badge.hidden = !diff; }
+    if (row) { row.hidden = !diff; }
+    if (text && diff) {
+      text.innerHTML = 'Different from the roster (' + diff.join('; ') +
+                       '). Your version is the one that counts.';
+    }
+  }
+
+  function fieldError(id, message) {
+    var node = el(id);
+    if (!node) { return; }
+    node.textContent = message || '';
+    node.hidden = !message;
+  }
+
+  function problems() {
+    var out = [];
+    if (!sel) { out.push('Choose your name first.'); return out; }
+    if (isKeeper(sel.email)) { out.push('You are not in the draw.'); return out; }
+    if (!(sel.year > 0) || sel.year !== Math.floor(sel.year)) {
+      out.push('Year must be a whole number of 1 or more.');
+    }
+    if (!trim(sel.candidacy)) { out.push('Choose or type your candidacy status.'); }
+    return out;
+  }
+
+  function paintActions() {
+    var actions = el('login-actions');
+    var button = el('login-continue');
+    if (!actions || !button) { return; }
+    var blocked = !sel || isKeeper(sel.email);
+    actions.hidden = blocked;
+    if (blocked) { return; }
+    button.disabled = problems().length > 0;
+    button.textContent = APP.state.picks.length ? 'Continue to my desk ranking' : 'Continue';
+  }
+
+  /* ---- the whole view -------------------------------------------------- */
+
+  function paint() {
+    var b = APP.state.bootstrap || {};
+    var identity = b.identity || {};
+    var googlePerson = (b.person && b.person.email) ? b.person : null;
+
+    /* identity block */
+    var gBox = el('login-google');
+    var sBox = el('login-self');
+    var badge = el('login-auth-badge');
+
+    if (gBox) { gBox.hidden = !googlePerson; }
+    if (sBox) { sBox.hidden = !!googlePerson; }
+
+    if (googlePerson) {
+      var nameNode = el('login-google-name');
+      var mailNode = el('login-google-email');
+      if (nameNode) { nameNode.textContent = googlePerson.name || googlePerson.email; }
+      if (mailNode) { mailNode.textContent = googlePerson.email; }
+      if (badge) { badge.hidden = false; badge.className = 'badge badge--ok'; badge.textContent = 'Google'; }
+    } else {
+      if (badge) {
+        badge.hidden = false;
+        badge.className = 'badge badge--warn';
+        badge.textContent = 'Unverified';
+      }
+      var why = el('login-self-why');
+      if (why) {
+        why.textContent = identity.sessionEmail
+          ? ('You are signed in as ' + identity.sessionEmail + ', which is not on the ' +
+             'department roster, so we cannot match you automatically.')
+          : 'This deployment cannot see who you are signed in as.';
+      }
+    }
+
+    /* keeper stop */
+    var keeperCard = el('login-keeper');
+    var keeperMsg = el('login-keeper-msg');
+    var blocked = !!(sel && isKeeper(sel.email));
+    if (keeperCard) { keeperCard.hidden = !blocked; }
+    if (blocked && keeperMsg) {
+      keeperMsg.textContent = keeperSentence(sel.email, googlePerson ? null : sel.name);
+      var backBtn = el('login-keeper-back');
+      if (backBtn) { backBtn.hidden = !!googlePerson; }
+    }
+
+    /* details */
+    var details = el('login-details');
+    if (details) { details.hidden = !sel || blocked; }
+
+    /* prior submission */
+    paintPrior(blocked);
+    paintCorrection();
+    paintActions();
+  }
+
+  function paintPrior(blocked) {
+    var b = APP.state.bootstrap || {};
+    var prior = b.priorSubmission;
+    var card = el('login-prior');
+    if (!card) { return; }
+
+    var mine = !!prior && isArr(prior.choices) && prior.choices.length && sel &&
+               (!prior.email || lower(prior.email) === sel.email);
+    card.hidden = !mine || !!blocked;
+    if (!mine || blocked) { return; }
+
+    var msg = el('login-prior-msg');
+    if (msg) {
+      msg.innerHTML = 'You sent a ranking on <span class="strong">' +
+        esc(U.formatWhen(prior.timestampIso)) + '</span> (your local time).';
+    }
+  }
+
+  /* ---- wiring ---------------------------------------------------------- */
+
+  function wire() {
+    if (wired) { return; }
+    wired = true;
+
+    var input = el('login-search');
+    var list = el('login-list');
+
+    if (input) {
+      input.addEventListener('focus', function () { renderList(true); });
+      input.addEventListener('input', function () { renderList(true); });
+      input.addEventListener('keydown', function (ev) {
+        var open = list && !list.hidden;
+        if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+          ev.preventDefault();
+          if (!open) { renderList(true); return; }
+          if (!shown.length) { return; }
+          activeIdx += (ev.key === 'ArrowDown' ? 1 : -1);
+          if (activeIdx < 0) { activeIdx = shown.length - 1; }
+          if (activeIdx >= shown.length) { activeIdx = 0; }
+          paintActive();
+        } else if (ev.key === 'Enter') {
+          if (open && activeIdx >= 0 && shown[activeIdx]) {
+            ev.preventDefault();
+            chooseEmail(shown[activeIdx].email);
+          }
+        } else if (ev.key === 'Escape') {
+          closeList();
+        }
+      });
+      input.addEventListener('blur', function () {
+        global.setTimeout(function () {
+          if (!list || list.contains(doc.activeElement)) { return; }
+          closeList();
+        }, 120);
+      });
+    }
+
+    if (list) {
+      /* Keep focus in the input so blur never races the click. */
+      list.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
+      list.addEventListener('click', function (ev) {
+        var node = ev.target && ev.target.closest ? ev.target.closest('.combo__opt') : null;
+        if (node) { chooseEmail(node.getAttribute('data-email')); }
+      });
+    }
+
+    var year = el('login-year');
+    if (year) {
+      year.addEventListener('input', function () {
+        readForm();
+        fieldError('login-year-error',
+          (trim(year.value) !== '' && !(sel && sel.year > 0))
+            ? 'Whole numbers of 1 or more only.' : '');
+        paintCorrection();
+        paintActions();
+        requestEligibility();
+      });
+    }
+
+    var candidacy = el('login-candidacy');
+    if (candidacy) {
+      candidacy.addEventListener('change', function () {
+        if (candidacy.value === OTHER) {
+          setOtherField(true, sel ? sel.candidacy : '');
+        } else {
+          setOtherField(false, '');
+        }
+        readForm();
+        paintCorrection();
+        paintActions();
+        requestEligibility(0);
+      });
+    }
+
+    var other = el('login-candidacy-other');
+    if (other) {
+      other.addEventListener('input', function () {
+        readForm();
+        paintCorrection();
+        paintActions();
+        requestEligibility();
+      });
+    }
+
+    var restore = el('login-restore');
+    if (restore) {
+      restore.addEventListener('click', function () {
+        var row = sel && entryFor(sel.email);
+        if (!row) { return; }
+        var yearInput = el('login-year');
+        if (yearInput) { yearInput.value = (row.year === null || row.year === undefined) ? '' : row.year; }
+        fillCandidacy(row.candidacy);
+        readForm();
+        fieldError('login-year-error', '');
+        paintCorrection();
+        paintActions();
+        requestEligibility(0);
+      });
+    }
+
+    var back = el('login-keeper-back');
+    if (back) {
+      back.addEventListener('click', function () {
+        sel = null;
+        var box = el('login-search');
+        if (box) { box.value = ''; }
+        paint();
+        if (box) { try { box.focus(); } catch (e) { /* ignore */ } }
+      });
+    }
+
+    var review = el('login-prior-review');
+    if (review) {
+      review.addEventListener('click', function () {
+        var prior = (APP.state.bootstrap || {}).priorSubmission;
+        if (!commitPerson()) { return; }
+        if (prior && isArr(prior.choices)) { APP.setPicks(prior.choices, { reason: 'prior' }); }
+        if (!APP.go('confirm')) { APP.go('select'); }
+      });
+    }
+
+    var cont = el('login-continue');
+    if (cont) {
+      cont.addEventListener('click', function () {
+        if (!commitPerson()) { return; }
+        APP.go(APP.state.picks.length ? 'select' : 'explainer');
+      });
+    }
+  }
+
+  /* Push the confirmed identity into APP state. Returns false if it is not
+     usable yet, having already told the student why. */
+  function commitPerson() {
+    readForm();
+    var bad = problems();
+    if (bad.length) {
+      fieldError('login-year-error', !(sel && sel.year > 0) ? 'Whole numbers of 1 or more only.' : '');
+      fieldError('login-candidacy-error', (sel && !trim(sel.candidacy)) ? 'Required.' : '');
+      APP.error('We still need a couple of things.', { id: 'login-invalid', list: bad });
+      paintActions();
+      return false;
+    }
+    fieldError('login-year-error', '');
+    fieldError('login-candidacy-error', '');
+    APP.clearBanners('error');
+
+    APP.setPerson({
+      email: sel.email,
+      name: sel.name,
+      year: sel.year,
+      candidacy: sel.candidacy,
+      allowedZones: sel.allowedZones,
+      authMethod: sel.authMethod
+    });
+    return true;
+  }
+
+  function build() {
+    roster = APP.rosterNames().slice().sort(function (a, b) {
+      var an = lower(a && a.name) || lower(a && a.email);
+      var bn = lower(b && b.name) || lower(b && b.email);
+      return an < bn ? -1 : (an > bn ? 1 : 0);
+    });
+    wire();
+
+    if (!sel) {
+      var b = APP.state.bootstrap || {};
+      var seed = (b.person && b.person.email) ? b.person : APP.state.person;
+      if (seed && seed.email) {
+        select({
+          email: seed.email,
+          name: seed.name,
+          year: seed.year,
+          candidacy: seed.candidacy,
+          authMethod: seed.authMethod || (b.person ? 'google' : 'self_select'),
+          allowedZones: seed.allowedZones,
+          reason: seed.eligibilityReason
+        });
+        var input = el('login-search');
+        if (input && !b.person) { input.value = seed.name || seed.email; }
+        return;
+      }
+    }
+    paint();
+  }
+
+  APP.on(LOGIN, { onEnter: build });
+  APP.listen('bootstrap:ready', build);
+  APP.listen('zones:changed', function () { if (sel && isArr(sel.allowedZones)) { renderZones(sel.allowedZones, {}); } });
+
+}(window));
+</script>
