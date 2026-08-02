@@ -1380,7 +1380,7 @@ def audit_public_pdf(
                 findings.append(PrivacyFinding(
                     "G", 0, email, "",
                     f"the public report contains private-note text from {email} "
-                    f"(\"{acc_mod._excerpt(phrase)}\"). Per SPEC §7.3 these notes "
+                    f"(\"{acc_mod.excerpt(phrase)}\"). Per SPEC §7.3 these notes "
                     f"never appear outside the coordinator copy.",
                 ))
                 break   # one is already a failure; do not print the note twice
@@ -2523,9 +2523,9 @@ def build_report(
     Raises
     ------
     PrivacyError
-        If a public report was built with a coordinator-only page, or if the
-        audit finds preference data attributed to a named person in the bytes
-        that were written.
+        If a public report was built with a coordinator-only page, if the audit
+        finds preference data attributed to a named person in the bytes that
+        were written, or if it finds private-note text anywhere in them.
     """
     problem = build.problem
     audience = AUDIENCE_COORDINATOR if full else AUDIENCE_PUBLIC

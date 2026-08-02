@@ -27,13 +27,18 @@ import io
 import json
 import os
 import stat
-import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import pytest
 
-from conftest import write_text  # noqa: E402
+from conftest import (  # noqa: E402
+    RESPONSES_SEARCH_DIRS,
+    find_real_responses_csv,
+    response_header,
+    submission_row,
+    write_text,
+)
 
 from deskmatch import accommodations as acc  # noqa: E402
 from deskmatch import cli, report  # noqa: E402
@@ -178,8 +183,6 @@ def test_the_latest_row_per_email_wins_exactly_as_it_does_for_responses(tmp_path
         ("r5", "2026-09-11T10:00:00-04:00", "vera@example.test"),   # ties r4, later
     ]
     k = 2
-    from conftest import response_header, submission_row
-
     response_rows = [
         submission_row(submission_id=rid, timestamp=ts, email=email,
                        choices=[f"D{i:02d}" for i in range(1, k + 1)])
@@ -507,8 +510,6 @@ def two_runs(tmp_path_factory, request):
     """
     repo_root = Path(__file__).resolve().parent.parent
     config_dir = repo_root / "config"
-    from conftest import RESPONSES_SEARCH_DIRS, find_real_responses_csv
-
     responses_csv = find_real_responses_csv(
         *(repo_root / name for name in RESPONSES_SEARCH_DIRS)
     )

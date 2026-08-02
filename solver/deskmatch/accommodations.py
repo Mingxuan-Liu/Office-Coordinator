@@ -63,7 +63,9 @@ __all__ = [
     "Accommodations",
     "load",
     "fingerprints",
+    "all_fingerprints",
     "normalise_words",
+    "excerpt",
     "find_leaks",
     "assert_absent_from",
     "render_coordinator_text",
@@ -151,11 +153,6 @@ class Accommodations:
         return self.latest.get(email.strip().lower())
 
 
-#: An empty result, for the code paths where no file was supplied. Callers can
-#: treat "no --accommodations flag" and "a file with no notes in it" alike.
-EMPTY = Accommodations(notes=(), latest={}, source_path="", sha256="")
-
-
 # --------------------------------------------------------------------------
 # Loading
 # --------------------------------------------------------------------------
@@ -241,6 +238,11 @@ def load(
     warnings: list[str] = []
     is_json = suffix == ".json"
 
+    # Deliberately the response loader's own row splitters, private though they
+    # are. They carry the dialect decisions this file needs to make identically:
+    # a quoted field may contain newlines (a textarea produces them), a row of
+    # bare commas is a stray blank line rather than a fault, and a short row is
+    # padded rather than dropped. A second implementation of that would drift.
     if is_json:
         header, rows = responses_mod._parse_json(text, text_path, problems, warnings)
     else:
@@ -292,7 +294,6 @@ def load(
     parsed: list[Note] = []
     when: dict[int, dt.datetime] = {}
     ids_seen: dict[str, int] = {}
-    unparseable_times = 0
 
     for file_row, (locator, cells) in enumerate(rows):
         where = (
@@ -320,7 +321,6 @@ def load(
             # and let file position order it against other broken rows: strictly
             # better than discarding somebody's accessibility request over a cell
             # a spreadsheet reformatted.
-            unparseable_times += 1
             warnings.append(
                 f"{where} ({email}): 'timestamp' {exc}. The note is kept; it is "
                 f"ordered before every row that has a usable timestamp, so if this "
@@ -386,9 +386,13 @@ def load(
             f"withdrawn and is not reported."
         )
 
+    # Rows that actually said something. Counting the blank withdrawal row too
+    # would report "submitted 2 notes" to somebody who wrote one and deleted it,
+    # which is both wrong and alarming.
     counts: dict[str, int] = {}
     for note in parsed:
-        counts[note.email] = counts.get(note.email, 0) + 1
+        if note.text:
+            counts[note.email] = counts.get(note.email, 0) + 1
     for email in sorted(e for e, n in counts.items() if n > 1):
         warnings.append(
             f"{text_path}: {email} submitted {counts[email]} notes; the latest "
@@ -408,7 +412,7 @@ def load(
                 f"should have been in it."
             )
 
-    if not parsed and not warnings:
+    if not rows:
         warnings.append(f"{text_path}: the file has a header but no note rows.")
 
     # `notes` keeps only rows that actually say something: an empty note is never
@@ -494,7 +498,13 @@ def all_fingerprints(accommodations: Any) -> tuple[tuple[str, str], ...]:
     return tuple(dict.fromkeys(out))
 
 
-def _excerpt(phrase: str, limit: int = 40) -> str:
+def excerpt(phrase: str, limit: int = 40) -> str:
+    """A quotable fragment for an error message.
+
+    Truncated on purpose. A leak report has to name enough of the phrase for the
+    coordinator to find the figure that printed it, and no more: the message goes
+    to a console, and a console goes to scrollback.
+    """
     return phrase if len(phrase) <= limit else phrase[:limit].rstrip() + "…"
 
 
@@ -520,7 +530,7 @@ def find_leaks(
             if phrase in hay:
                 findings.append(
                     f"{label}: contains private-note text from {email} "
-                    f"(\"{_excerpt(phrase)}\")"
+                    f"(\"{excerpt(phrase)}\")"
                 )
                 break   # one finding per file is enough to stop the run
     return tuple(findings)

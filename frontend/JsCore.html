@@ -196,10 +196,11 @@
     person: null,
     picks: [],
     /* The private note to the coordinator (confirm page). Deliberately NOT
-       persisted to localStorage the way picks are: it can say "I need to be
-       away from X" or name a health problem, and half the department reads
-       this form on a shared machine in the office. It lives for the session
-       and comes back from the server only for a Google-identified person. */
+       written to sessionStorage the way picks and identity are: it can say "I
+       need to be away from X" or name a health problem, and half the
+       department reads this form on a shared machine in the office. It lives
+       in memory for the session, and comes back from the server only for the
+       Google-identified person who wrote it. */
     accommodation: '',
     view: 'login'
   };
