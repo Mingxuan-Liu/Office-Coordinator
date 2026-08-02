@@ -5,8 +5,11 @@
        1. Identity. Google if the deployment can resolve it, otherwise a
           searchable roster list that is explicitly NOT authentication
           (SPEC §8: "Not defended, by design: the login fallback").
-       2. Correction. The roster is stale by design (SPEC §3.3), so year and
-          candidacy are editable and the submission wins over the roster.
+       2. Correction. The roster is stale by design (SPEC §3.3), so candidacy is
+          editable and the submission wins over the roster. Candidacy is the ONLY
+          thing asked for, because it is the only thing that decides where
+          somebody may sit; the year is not collected at all any more, so it is
+          neither shown nor confirmed here.
        3. Consequence. Every edit re-asks the SERVER which zones the person may
           sit in — getEligibleZonesForClaim() runs the same rule-table
           interpreter submitRanking() runs. The eligibility rules live in
@@ -84,8 +87,8 @@
   <div class="view__head">
     <h1 class="view__title" id="login-title" data-view-focus tabindex="-1">Who are you?</h1>
     <p class="view__lede">
-      Your year and candidacy decide which desks you may rank, so check them before
-      you go on. Submission order does not matter — only the ranking you send.
+      Your candidacy decides which desks you may rank, so check it before you go on.
+      Submission order does not matter — only the ranking you send.
     </p>
   </div>
 
@@ -186,18 +189,14 @@
         so it can be fixed at the source.
       </p>
 
-      <div class="field-row">
-        <div class="field">
-          <label class="field__label" for="login-year">Year</label>
-          <input class="input" id="login-year" type="number" inputmode="numeric"
-                 min="1" step="1" autocomplete="off">
-          <span class="field__error" id="login-year-error" hidden></span>
-        </div>
-        <div class="field">
-          <label class="field__label" for="login-candidacy">Candidacy</label>
-          <select class="select" id="login-candidacy"></select>
-          <span class="field__error" id="login-candidacy-error" hidden></span>
-        </div>
+      <div class="field">
+        <label class="field__label" for="login-candidacy">Candidacy</label>
+        <select class="select" id="login-candidacy"></select>
+        <span class="field__help">
+          This is the only thing we ask you to confirm, because it is the only thing
+          that decides which desks you may rank.
+        </span>
+        <span class="field__error" id="login-candidacy-error" hidden></span>
       </div>
 
       <div class="field" id="login-candidacy-other-field" hidden>
@@ -275,7 +274,7 @@
 
   /* ---- local state ----------------------------------------------------- */
 
-  var sel = null;         /* {email,name,year,candidacy,authMethod} being confirmed */
+  var sel = null;         /* {email,name,candidacy,authMethod} being confirmed */
   var roster = [];        /* rosterNames, sorted by name for display only */
   var shown = [];         /* the currently filtered subset */
   var activeIdx = -1;
@@ -413,8 +412,7 @@
 
   function matches(entry, tokens) {
     if (!tokens.length) { return true; }
-    var hay = lower(entry.name) + ' ' + lower(entry.email) + ' ' +
-              lower(entry.candidacy) + ' year ' + lower(entry.year);
+    var hay = lower(entry.name) + ' ' + lower(entry.email) + ' ' + lower(entry.candidacy);
     for (var i = 0; i < tokens.length; i++) {
       if (hay.indexOf(tokens[i]) < 0) { return false; }
     }
@@ -423,9 +421,6 @@
 
   function optionMarkup(entry, idx) {
     var bits = [];
-    if (entry.year !== null && entry.year !== undefined && trim(entry.year) !== '') {
-      bits.push('Year ' + esc(entry.year));
-    }
     if (trim(entry.candidacy)) { bits.push(esc(trim(entry.candidacy))); }
     var meta = esc(entry.email) + (bits.length ? ' · ' + bits.join(' · ') : '');
     var badge = truthy(entry.keepsDesk)
@@ -500,7 +495,6 @@
     select({
       email: entry.email,
       name: entry.name,
-      year: entry.year,
       candidacy: entry.candidacy,
       authMethod: 'self_select'
     });
@@ -512,15 +506,10 @@
     sel = {
       email: lower(person.email),
       name: trim(person.name),
-      year: person.year,
       candidacy: trim(person.candidacy),
       authMethod: lower(person.authMethod) || 'self_select',
       allowedZones: isArr(person.allowedZones) ? person.allowedZones.slice() : null
     };
-    var yearInput = el('login-year');
-    if (yearInput) {
-      yearInput.value = (sel.year === null || sel.year === undefined) ? '' : sel.year;
-    }
     fillCandidacy(sel.candidacy);
     paint();
 
@@ -536,9 +525,6 @@
 
   function readForm() {
     if (!sel) { return; }
-    var yearRaw = trim((el('login-year') || {}).value);
-    var year = yearRaw === '' ? null : parseInt(yearRaw, 10);
-    sel.year = (year === null || isNaN(year)) ? null : year;
     sel.candidacy = readCandidacy();
   }
 
@@ -547,10 +533,6 @@
     var row = entryFor(sel.email);
     if (!row) { return null; }
     var changed = [];
-    if (String(row.year) !== String(sel.year === null ? '' : sel.year)) {
-      changed.push('year ' + esc(row.year) + ' → ' +
-                   esc(sel.year === null ? '(blank)' : sel.year));
-    }
     if (lower(row.candidacy) !== lower(sel.candidacy)) {
       changed.push(esc(trim(row.candidacy) || '(blank)') + ' → ' +
                    esc(trim(sel.candidacy) || '(blank)'));
@@ -568,7 +550,7 @@
   function askServer() {
     if (!sel) { return; }
     var seq = ++eligSeq;
-    var claim = { email: sel.email, year: sel.year, candidacy: sel.candidacy };
+    var claim = { email: sel.email, candidacy: sel.candidacy };
 
     APP.server('getEligibleZonesForClaim', claim).then(function (res) {
       if (seq !== eligSeq) { return; }
@@ -598,7 +580,7 @@
       console.warn('[deskmatch] getEligibleZonesForClaim failed: ' + why);
     }
     var zones = APP.allowedZonesFor({
-      email: sel.email, year: sel.year, candidacy: sel.candidacy
+      email: sel.email, candidacy: sel.candidacy
     }) || [];
     sel.allowedZones = zones.slice();
     renderZones(zones, { estimate: true });
@@ -676,9 +658,6 @@
     var out = [];
     if (!sel) { out.push('Choose your name first.'); return out; }
     if (isKeeper(sel.email)) { out.push('You are not in the draw.'); return out; }
-    if (!(sel.year > 0) || sel.year !== Math.floor(sel.year)) {
-      out.push('Year must be a whole number of 1 or more.');
-    }
     if (!trim(sel.candidacy)) { out.push('Choose or type your candidacy status.'); }
     return out;
   }
@@ -817,19 +796,6 @@
       });
     }
 
-    var year = el('login-year');
-    if (year) {
-      year.addEventListener('input', function () {
-        readForm();
-        fieldError('login-year-error',
-          (trim(year.value) !== '' && !(sel && sel.year > 0))
-            ? 'Whole numbers of 1 or more only.' : '');
-        paintCorrection();
-        paintActions();
-        requestEligibility();
-      });
-    }
-
     var candidacy = el('login-candidacy');
     if (candidacy) {
       candidacy.addEventListener('change', function () {
@@ -860,11 +826,8 @@
       restore.addEventListener('click', function () {
         var row = sel && entryFor(sel.email);
         if (!row) { return; }
-        var yearInput = el('login-year');
-        if (yearInput) { yearInput.value = (row.year === null || row.year === undefined) ? '' : row.year; }
         fillCandidacy(row.candidacy);
         readForm();
-        fieldError('login-year-error', '');
         paintCorrection();
         paintActions();
         requestEligibility(0);
@@ -896,9 +859,16 @@
     if (cont) {
       cont.addEventListener('click', function () {
         if (!commitPerson()) { return; }
-        APP.go(APP.state.picks.length ? 'select' : 'explainer');
+        APP.go(afterLogin());
       });
     }
+  }
+
+  /* The stepper is the source of truth for what comes next; ask it rather than
+     naming the view, so the pre-lock step being off changes nothing here. */
+  function afterLogin() {
+    if (APP.state.picks.length) { return 'select'; }
+    return (typeof APP.nextStep === 'function' && APP.nextStep(LOGIN)) || 'explainer';
   }
 
   /* Push the confirmed identity into APP state. Returns false if it is not
@@ -907,20 +877,17 @@
     readForm();
     var bad = problems();
     if (bad.length) {
-      fieldError('login-year-error', !(sel && sel.year > 0) ? 'Whole numbers of 1 or more only.' : '');
       fieldError('login-candidacy-error', (sel && !trim(sel.candidacy)) ? 'Required.' : '');
-      APP.error('We still need a couple of things.', { id: 'login-invalid', list: bad });
+      APP.error('We still need something from you.', { id: 'login-invalid', list: bad });
       paintActions();
       return false;
     }
-    fieldError('login-year-error', '');
     fieldError('login-candidacy-error', '');
     APP.clearBanners('error');
 
     APP.setPerson({
       email: sel.email,
       name: sel.name,
-      year: sel.year,
       candidacy: sel.candidacy,
       allowedZones: sel.allowedZones,
       authMethod: sel.authMethod
@@ -943,7 +910,6 @@
         select({
           email: seed.email,
           name: seed.name,
-          year: seed.year,
           candidacy: seed.candidacy,
           authMethod: seed.authMethod || (b.person ? 'google' : 'self_select'),
           allowedZones: seed.allowedZones,

@@ -7,8 +7,8 @@
    is pushed it is inert: the first thing it does is bail out when
    google.script.run exists.
 
-   It implements the same two server calls Code.gs exposes — getBootstrap() and
-   submitRanking() — on top of the *real* config in config/rooms.json,
+   It implements the same server calls Code.gs exposes — getBootstrap(),
+   submitRanking() and claimDesk() — on top of the *real* config in config/rooms.json,
    config/eligibility.json, config/scoring.json and config/roster.csv, which are
    embedded verbatim below by tools/embed_mock_config.py. The roster is topped
    up with synthetic people, keepers and first-choice concentration derived from
@@ -22,6 +22,9 @@
      ?mockLatency=<ms>              simulate a slow server
      ?mockFail=getBootstrap         make a call throw
      ?mockLocked=<n>                override how many desks are held by keepers
+     ?mockPrelock=on|off            the PRELOCK_ENABLED script property (default off)
+     ?mockPrelockDeadline=past|soon|far   move the claim deadline
+     ?mockClaims=<n>                pre-seed n desks claimed by other people
    Console: MOCK_SERVER.__state() and MOCK_SERVER.__reset().
    ========================================================================== */
 (function (global) {
@@ -1095,6 +1098,8 @@
 
   function truthy(v) { return /^(yes|true|1|y)$/i.test(trim(v)); }
 
+  /* Deterministic: same page load, same sequence. Used for the synthetic
+     department so reloads give the same fake world. */
   function uuid() {
     var s = '';
     for (var i = 0; i < 32; i++) {
@@ -1102,6 +1107,17 @@
       if (i === 7 || i === 11 || i === 15 || i === 19) { s += '-'; }
     }
     return s;
+  }
+
+  /* For rows the *user* creates. These persist across reloads, and the seeded
+     stream restarts on every load, so a purely seeded id would collide between
+     one session's row and the next — which matters as soon as somebody exports
+     the mock's rows to try tools/merge_keepers.py. */
+  var freshSeq = 0;
+  function freshId() {
+    freshSeq += 1;
+    return uuid().slice(0, 23) + '-' +
+           (Date.now().toString(16) + freshSeq.toString(16)).slice(-12);
   }
 
   /* ---------------------------------------------------------------------- */
@@ -1155,7 +1171,8 @@
     return lower(value) === lower(matcher);
   }
 
-  function zonesForAttributes(attrs) {
+  /* Which rule fires, and why. Mirrors Code.gs eligibilityDecision_(). */
+  function decisionForAttributes(attrs) {
     var rules = (ELIGIBILITY && ELIGIBILITY.rules) || [];
     for (var i = 0; i < rules.length; i++) {
       var when = rules[i].when || {};
@@ -1166,10 +1183,25 @@
       }
       if (ok) {
         var allow = rules[i].allow_zones;
-        return allow === '*' ? ZONE_IDS.slice() : (isArray(allow) ? allow.slice() : ZONE_IDS.slice());
+        return {
+          ruleId: rules[i].id || ('rules[' + i + ']'),
+          reason: rules[i].reason || '',
+          zones: allow === '*' ? ZONE_IDS.slice()
+                               : (isArray(allow) ? allow.slice() : ZONE_IDS.slice())
+        };
       }
     }
-    return ZONE_IDS.slice();
+    return { ruleId: null, reason: '', zones: ZONE_IDS.slice() };
+  }
+
+  function zonesForAttributes(attrs) { return decisionForAttributes(attrs).zones; }
+
+  function intersect(a, b) {
+    var out = [];
+    for (var i = 0; i < a.length; i++) {
+      if (b.indexOf(a[i]) >= 0 && out.indexOf(a[i]) < 0) { out.push(a[i]); }
+    }
+    return out;
   }
 
   function zoneKey(attrs) { return zonesForAttributes(attrs).slice().sort().join('|'); }
@@ -1327,6 +1359,137 @@
   }());
 
   /* ---------------------------------------------------------------------- */
+  /* the pre-lock step                                                       */
+  /* ---------------------------------------------------------------------- */
+
+  /* PRELOCK_ENABLED, as a query switch. Default off, exactly as the script
+     property defaults to "false".
+
+     Also readable from localStorage, because some preview surfaces (the in-app
+     browser pane, for one) drop the query string, and a switch you cannot
+     actually flip is not a switch. From the console:
+         localStorage.setItem('mockPrelock', 'on'); location.reload();
+     The query string still wins when present. */
+  var PRELOCK_ENABLED = (function () {
+    var value = params.mockPrelock;
+    if (value === undefined) {
+      try { value = global.localStorage.getItem('mockPrelock'); } catch (e) { value = null; }
+    }
+    return lower(value) === 'on' || lower(value) === 'true';
+  }());
+
+  var PRELOCK_DEADLINE_ISO = (function () {
+    if (params.mockPrelockDeadline === undefined) { return null; }
+    var offsets = { past: -86400000, soon: 3 * 3600000, far: 14 * 86400000 };
+    var delta = has(offsets, params.mockPrelockDeadline)
+      ? offsets[params.mockPrelockDeadline] : 3 * 86400000;
+    return new Date(Date.now() + delta).toISOString();
+  }());
+
+  function prelockPassed() {
+    if (!PRELOCK_DEADLINE_ISO) { return false; }
+    return Date.now() > Date.parse(PRELOCK_DEADLINE_ISO);
+  }
+
+  /* Claims other people made before the page loaded. Derived from the desk
+     count, deterministic, and only produced when the step is switched on. */
+  var SEEDED_CLAIMS = (function () {
+    if (!PRELOCK_ENABLED) { return []; }
+    var wanted = params.mockClaims !== undefined
+      ? Math.max(0, parseInt(params.mockClaims, 10) || 0)
+      : Math.max(1, Math.round(DESKS.length * 0.06));
+
+    var taken = {};
+    LOCKED.forEach(function (l) { taken[l.deskId] = true; });
+
+    var out = [];
+    var candidates = POOL_PEOPLE.filter(function (p) { return p.synthetic; });
+    var ci = 0, when = Date.now() - 5 * 86400000;
+    while (out.length < wanted && ci < candidates.length) {
+      var person = candidates[ci++];
+      var options = DESKS.filter(function (d) { return d.available && !taken[d.id]; });
+      if (!options.length) { break; }
+      var desk = options[Math.floor(rand() * options.length)];
+      taken[desk.id] = true;
+      when += 3600000;
+      out.push({
+        claimId: uuid(),
+        timestampIso: new Date(when).toISOString(),
+        email: person.email,
+        name: person.name,
+        deskId: desk.id,
+        keeping: true,
+        clientVersion: 'mock-seed'
+      });
+    }
+    return out;
+  }());
+
+  var CLAIM_KEY = 'deskmatch.mock.claims';
+
+  function readClaimRows() {
+    var stored = [];
+    try {
+      var raw = global.localStorage && global.localStorage.getItem(CLAIM_KEY);
+      stored = raw ? JSON.parse(raw) : [];
+    } catch (e) { stored = []; }
+    return SEEDED_CLAIMS.concat(isArray(stored) ? stored : []);
+  }
+
+  function writeClaimRows(rows) {
+    try {
+      if (global.localStorage) { global.localStorage.setItem(CLAIM_KEY, JSON.stringify(rows)); }
+    } catch (e) { /* private mode */ }
+  }
+
+  function storedClaimRows() {
+    try {
+      var raw = global.localStorage && global.localStorage.getItem(CLAIM_KEY);
+      var parsed = raw ? JSON.parse(raw) : [];
+      return isArray(parsed) ? parsed : [];
+    } catch (e) { return []; }
+  }
+
+  /* Latest row per email, ties broken by later file position — the same rule
+     Code.gs and responses.py apply. */
+  function latestClaims() {
+    var rows = readClaimRows();
+    var latest = {};
+    var at = {};
+    rows.forEach(function (row, i) {
+      var t = Date.parse(row.timestampIso) || 0;
+      var prev = latest[row.email];
+      if (!prev || t > at[row.email].t || (t === at[row.email].t && i > at[row.email].i)) {
+        latest[row.email] = row;
+        at[row.email] = { t: t, i: i };
+      }
+    });
+    return latest;
+  }
+
+  function activeClaims() {
+    if (!PRELOCK_ENABLED) { return []; }
+    var latest = latestClaims();
+    var out = [];
+    Object.keys(latest).forEach(function (email) {
+      var row = latest[email];
+      if (row.keeping && row.deskId) {
+        out.push({
+          deskId: row.deskId, email: row.email, name: row.name,
+          timestampIso: row.timestampIso
+        });
+      }
+    });
+    out.sort(function (a, b) { return a.deskId < b.deskId ? -1 : (a.deskId > b.deskId ? 1 : 0); });
+    return out;
+  }
+
+  function activeClaimFor(email) {
+    var mine = latestClaims()[lower(email)];
+    return (mine && mine.keeping && mine.deskId) ? mine : null;
+  }
+
+  /* ---------------------------------------------------------------------- */
   /* fake persistence                                                        */
   /* ---------------------------------------------------------------------- */
 
@@ -1376,8 +1539,13 @@
 
     var person = resolvePerson();
     var prior = null;
+    var claimsNow = activeClaims();
+    var myClaim = null;
 
     if (person) {
+      for (var ci = 0; ci < claimsNow.length; ci++) {
+        if (claimsNow[ci].email === person.email) { myClaim = claimsNow[ci]; break; }
+      }
       prior = latestFor(person.email);
       if (!prior && params.mockSubmitted === '1') {
         var options = poolDesksFor(person).slice(0, Math.min(K, poolDesksFor(person).length));
@@ -1403,7 +1571,6 @@
       person: person ? {
         email: person.email,
         name: person.name,
-        year: person.year,
         candidacy: person.candidacy,
         allowedZones: zonesForAttributes(person),
         authMethod: 'google'
@@ -1412,7 +1579,7 @@
         return {
           email: p.email,
           name: p.name,
-          year: p.year,
+          year: p.year,                 // roster metadata; the form never asks for it
           candidacy: p.candidacy,
           keepsDesk: p.keepsDesk,
           currentDesk: p.currentDesk
@@ -1420,6 +1587,13 @@
       }).sort(function (a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); }),
       lockedDesks: LOCKED.slice(),
       allowedZonesFor: ALLOWED_ZONES_FOR,
+      prelock: {
+        enabled: PRELOCK_ENABLED,
+        deadlineIso: PRELOCK_DEADLINE_ISO,
+        deadlinePassed: prelockPassed()
+      },
+      claims: claimsNow,
+      myClaim: myClaim,
       priorSubmission: prior ? {
         email: prior.email,
         choices: prior.choices.slice(),
@@ -1431,6 +1605,32 @@
         onRoster: !!person
       },
       warnings: person ? [] : ['This is the mock server: no Google identity was resolved.']
+    };
+  }
+
+  /* The identity step re-asks this on every candidacy change, and it is the
+     SERVER's rule-table evaluation that answers — not a second implementation
+     in the browser. Mirrors Code.gs getEligibleZonesForClaim(): the answer is
+     the intersection of what the roster entitles them to and what their claimed
+     candidacy entitles them to, so nobody unlocks a zone by retyping it. */
+  function getEligibleZonesForClaim(claim) {
+    if (params.mockFail === 'getEligibleZonesForClaim') {
+      throw new Error('Mock failure: getEligibleZonesForClaim.');
+    }
+    claim = claim || {};
+    var person = rosterByEmail(claim.email);
+    if (!person) {
+      return { ok: false, error: 'That email address is not on the roster.', zones: [] };
+    }
+    var rosterZones = zonesForAttributes(person);
+    var claimed = { candidacy: trim(claim.candidacy) || person.candidacy };
+    var claimZones = zonesForAttributes(claimed);
+    return {
+      ok: true,
+      zones: intersect(rosterZones, claimZones),
+      rosterZones: rosterZones,
+      claimZones: claimZones,
+      reason: decisionForAttributes(person).reason
     };
   }
 
@@ -1450,12 +1650,17 @@
     else if (!person) { errors.push(payload.email + ' is not on the roster.'); }
     if (!trim(payload.name)) { errors.push('No name was submitted.'); }
 
-    var year = parseInt(payload.year, 10);
-    if (isNaN(year) || year < 1) { errors.push('Year must be a whole number of 1 or more.'); }
+    /* No year: the form does not collect it and the payload does not carry it. */
     if (!trim(payload.candidacy)) { errors.push('Candidacy is required.'); }
 
     if (person && person.keepsDesk) {
       errors.push(person.name + ' is keeping desk ' + person.currentDesk + ' and is not in the pool.');
+    }
+
+    var ownClaim = person ? activeClaimFor(person.email) : null;
+    if (ownClaim) {
+      errors.push('You claimed desk ' + ownClaim.deskId + ' in the pre-lock step and are ' +
+        'keeping it, so you are not in the ranking. Release it first.');
     }
 
     if (Date.now() > Date.parse(DEADLINE_ISO)) {
@@ -1463,8 +1668,13 @@
     }
 
     var choices = isArray(payload.choices) ? payload.choices.map(trim) : [];
-    var attrs = { year: year, candidacy: payload.candidacy };
+    var attrs = { candidacy: payload.candidacy };
     var pool = poolDesksFor(attrs);
+
+    var claimedByOthers = {};
+    activeClaims().forEach(function (c) {
+      if (!person || c.email !== person.email) { claimedByOthers[c.deskId] = c.name; }
+    });
 
     /* Exactly K, same as Code.gs and SPEC §3.1 — a response row has K choice
        columns and they all have to be filled. */
@@ -1484,6 +1694,9 @@
       var desk = deskById(id);
       if (!desk) { errors.push(id + ' is not a desk in rooms.json.'); return; }
       if (lockedIds().indexOf(id) >= 0) { errors.push(id + ' is held by someone keeping their desk.'); }
+      else if (has(claimedByOthers, id)) {
+        errors.push(id + ' was claimed by ' + claimedByOthers[id] + ' in the pre-lock step.');
+      }
       else if (!desk.available) { errors.push(id + ' is not in the pool this year.'); }
       else if (zonesForAttributes(attrs).indexOf(desk.zone) < 0) {
         errors.push(id + ' is in the ' + (ROOMS.zones[desk.zone] || {}).label + ', which is not open to you.');
@@ -1493,11 +1706,10 @@
     if (errors.length) { return { ok: false, errors: errors }; }
 
     var record = {
-      submissionId: uuid(),
+      submissionId: freshId(),
       timestampIso: new Date().toISOString(),
       email: lower(payload.email),
       name: trim(payload.name),
-      year: year,
       candidacy: trim(payload.candidacy),
       choices: choices,
       authMethod: payload.authMethod || 'self_select',
@@ -1510,19 +1722,97 @@
     return { ok: true, submissionId: record.submissionId, timestampIso: record.timestampIso };
   }
 
+  /* Same shape and the same refusals as Code.gs claimDesk(). The mock has no
+     lock to take, but it does re-read the claim log before writing, which is
+     the check the lock exists to protect. */
+  function claimDesk(payload) {
+    if (params.mockFail === 'claimDesk') {
+      throw new Error('Mock failure: claimDesk (remove ?mockFail= to recover).');
+    }
+
+    payload = payload || {};
+    var keeping = payload.keeping !== false;
+    var errors = [];
+
+    if (!PRELOCK_ENABLED) {
+      return { ok: false, errors: ['The pre-lock step is not in use this year.'] };
+    }
+    if (Date.now() > Date.parse(DEADLINE_ISO)) {
+      return { ok: false, errors: ['The form closed on ' + DEADLINE_ISO + '.'] };
+    }
+    if (prelockPassed()) {
+      return { ok: false, errors: ['The deadline for keeping your current desk passed on ' +
+        PRELOCK_DEADLINE_ISO + '.'] };
+    }
+
+    var person = rosterByEmail(payload.email);
+    if (!payload.email) { errors.push('No email was submitted.'); }
+    else if (!person) { errors.push(payload.email + ' is not on the roster.'); }
+
+    var deskId = trim(payload.deskId);
+    var desk = deskId ? deskById(deskId) : null;
+    if (!deskId) { errors.push('No desk was named.'); }
+    else if (!desk) { errors.push(deskId + ' is not a desk in rooms.json.'); }
+    else if (keeping && !desk.available) {
+      errors.push(deskId + ' is not in the pool this year.');
+    } else if (keeping && lockedIds().indexOf(deskId) >= 0) {
+      errors.push(deskId + ' is already down on the roster as kept by somebody else.');
+    }
+    if (errors.length) { return { ok: false, errors: errors }; }
+
+    var held = null;
+    activeClaims().forEach(function (c) { if (c.deskId === deskId) { held = c; } });
+    if (keeping && held && held.email !== lower(payload.email)) {
+      return { ok: false, errors: [held.name + ' claimed desk ' + deskId + ' first.'] };
+    }
+    if (!keeping) {
+      var own = activeClaimFor(payload.email);
+      if (!own) { return { ok: false, errors: ['You are not currently keeping a desk.'] }; }
+      if (own.deskId !== deskId) {
+        return { ok: false, errors: ['You are keeping desk ' + own.deskId + ', not ' + deskId + '.'] };
+      }
+    }
+
+    var row = {
+      claimId: freshId(),
+      timestampIso: new Date().toISOString(),
+      email: lower(payload.email),
+      name: trim(payload.name) || (person ? person.name : ''),
+      deskId: desk.id,
+      keeping: keeping,
+      clientVersion: payload.clientVersion || 'unknown'
+    };
+    var rows = storedClaimRows();
+    rows.push(row);
+    writeClaimRows(rows);
+
+    return {
+      ok: true,
+      claimId: row.claimId,
+      timestampIso: row.timestampIso,
+      deskId: row.deskId,
+      keeping: keeping
+    };
+  }
+
   global.MOCK_SERVER = {
     latencyMs: params.mockLatency !== undefined ? (parseInt(params.mockLatency, 10) || 0) : 220,
     getBootstrap: getBootstrap,
+    getEligibleZonesForClaim: getEligibleZonesForClaim,
     submitRanking: submitRanking,
+    claimDesk: claimDesk,
     __state: function () {
       return {
         k: K, desks: DESKS.length, zones: ZONE_IDS, roster: ROSTER.length,
         pool: POOL_PEOPLE.length, locked: LOCKED, deadline: DEADLINE_ISO,
+        prelock: { enabled: PRELOCK_ENABLED, deadline: PRELOCK_DEADLINE_ISO },
+        claims: activeClaims(),
         submissions: readSubmissions()
       };
     },
     __reset: function () {
       writeSubmissions([]);
+      writeClaimRows([]);
       global.location.reload();
     }
   };
@@ -1531,9 +1821,11 @@
     console.info(
       '%c[deskmatch] mock server active%c\n' +
       DESKS.length + ' desks, ' + ZONE_IDS.length + ' zones, K=' + K + ', ' +
-      ROSTER.length + ' roster members, ' + LOCKED.length + ' desks held.\n' +
+      ROSTER.length + ' roster members, ' + LOCKED.length + ' desks held, pre-lock ' +
+      (PRELOCK_ENABLED ? 'ON, ' + activeClaims().length + ' claimed' : 'off') + '.\n' +
       'Switches: ?mockPerson=none|<email>  ?mockSubmitted=1  ?mockDeadline=past|soon|far  ' +
-      '?mockLatency=<ms>  ?mockFail=getBootstrap|submitRanking  ?mockLocked=<n>\n' +
+      '?mockLatency=<ms>  ?mockFail=getBootstrap|submitRanking|claimDesk  ?mockLocked=<n>\n' +
+      '          ?mockPrelock=on|off  ?mockPrelockDeadline=past|soon|far  ?mockClaims=<n>\n' +
       'MOCK_SERVER.__state() / MOCK_SERVER.__reset()',
       'font-weight:bold', 'font-weight:normal'
     );

@@ -453,6 +453,27 @@ body:not([data-booted]) .stepper { visibility: hidden; }
 
 .stepper__item.is-todo .stepper__btn { opacity: 0.62; }
 
+/* A step the coordinator switched off for this cycle. It stays in the list so
+   the numbering does not move under someone mid-flow, but it is visibly not
+   part of the journey: grey, struck through, and genuinely not clickable —
+   JsCore sets both `disabled` and aria-disabled, and this rule makes sure the
+   cursor never suggests otherwise. */
+.stepper__item.is-off .stepper__btn {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.stepper__item.is-off .stepper__mark {
+  background: var(--sunken);
+  border-color: var(--line);
+  border-style: dashed;
+  color: var(--ink-3);
+}
+.stepper__item.is-off .stepper__label {
+  color: var(--ink-3);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
 .stepper__rail {
   position: relative;
   height: 2px;

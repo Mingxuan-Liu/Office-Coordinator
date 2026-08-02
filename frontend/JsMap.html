@@ -8,6 +8,18 @@
    rooms, ranks or people exist, what the zones are called, or which coordinate
    space the plan uses — all of that comes from bootstrap.rooms verbatim.
 
+   TWO MODES, ONE RENDERER
+   -----------------------
+   'rank'   the Choose step: tap desks to build a ranking of K of them.
+   'single' the Pre-lock step: tap ONE desk — the one you are sitting at and
+            want to keep — and nothing else on the page changes.
+
+   The pre-lock view does not own a second map. It calls APP.map.mount(slot),
+   which moves the one #map-wrap element into its own container and flips the
+   mode; APP.map.unmount() puts it back. Every element id stays what it was, so
+   every listener, every measurement and every line of drawing code below is
+   shared. There is one floor-plan renderer in this repository and this is it.
+
    The only numeric literals below are rendering constants (a 44px touch
    target, a zoom ceiling, a double-tap window). None of them describes the
    size of the problem.
@@ -75,8 +87,10 @@
     if (node) { node.style.display = on ? '' : 'none'; }
   }
 
+  /* Announcements go to the live region of the view the map is showing in; a
+     region inside a hidden view is never read out. */
   function live(msg) {
-    var n = $('select-live');
+    var n = $(liveId) || $('select-live');
     if (n) { n.textContent = msg || ''; }
   }
 
@@ -121,6 +135,59 @@
   var pinch = null;
   var wired = false;
   var view = { zoom: 1, fitW: 0, autoZoomDone: false };
+
+  /* --- mode ------------------------------------------------------------- */
+
+  var MODE_RANK = 'rank';
+  var MODE_SINGLE = 'single';
+
+  var mode = MODE_RANK;
+  var hostView = 'select';    /* the view the map is currently living in */
+  var liveId = 'select-live'; /* the live region to announce into */
+  var mapHome = null;         /* where to put #map-wrap back */
+  var defaultHint = null;     /* #map-hint as ViewSelect authored it */
+  var single = { id: null, onPick: null, hint: '' };
+
+  function isSingle() { return mode === MODE_SINGLE; }
+
+  /* Whether this desk can be acted on right now, in whichever mode is running.
+     Everything that paints, announces or reacts goes through here so the two
+     modes cannot drift apart. */
+  function statusOf(id) {
+    return isSingle() ? claimStatus(id) : APP.deskStatus(id);
+  }
+
+  /* Pre-lock eligibility. Deliberately NOT the same test as ranking: the zone
+     rules say where somebody may be *assigned*, and staying at the desk you
+     already occupy is not an assignment. So a claim is refused only when the
+     desk does not exist, is out of the pool, or belongs to somebody else —
+     which is exactly what the server re-checks. Sitting outside your zone is
+     surfaced as a note on the tooltip instead of a refusal. */
+  function claimStatus(id) {
+    var d = APP.deskById(id);
+    if (!d) { return { ok: false, code: 'unknown', reason: 'That desk is not on the floor plan.' }; }
+    if (!d.available) {
+      return { ok: false, code: 'unavailable', reason: 'This desk is not in the pool this year.' };
+    }
+    var held = (typeof APP.claimHolder === 'function') ? APP.claimHolder(id) : null;
+    if (held && held.isMine) { return { ok: true, code: 'ok', reason: '' }; }
+    if (held) {
+      return { ok: false, code: 'locked', reason: held.name + ' has already claimed this desk.' };
+    }
+    var roster = APP.deskStatus(id);
+    if (roster.code === 'locked' || roster.code === 'unavailable') { return roster; }
+    return { ok: true, code: 'ok', reason: '' };
+  }
+
+  /* True when this desk is one the person could never be *assigned*, which is
+     worth saying out loud on the pre-lock step even though it does not stop
+     them keeping it. */
+  function outsideMyZones(id) {
+    var d = APP.deskById(id);
+    var person = APP.state.person;
+    var zones = person && person.allowedZones;
+    return !!(d && isArr(zones) && zones.length && zones.indexOf(d.zone) < 0);
+  }
 
   /* ----------------------------------------------------------------------
      Geometry — coordinate space, shapes, view box
@@ -886,7 +953,7 @@
     /* Roving tabindex starts on something the user can actually use. */
     focusDeskId = null;
     for (var i = 0; i < deskOrder.length; i++) {
-      if (APP.isPicked(deskOrder[i]) || APP.deskStatus(deskOrder[i]).ok) {
+      if (rankOf(deskOrder[i]) || statusOf(deskOrder[i]).ok) {
         focusDeskId = deskOrder[i];
         break;
       }
@@ -894,6 +961,21 @@
     if (!focusDeskId && deskOrder.length) { focusDeskId = deskOrder[0]; }
 
     paintDesks();
+  }
+
+  /* The instructions under the plan say what a tap does, so they change with
+     the mode. The rank wording is whatever ViewSelect authored; it is captured
+     once rather than duplicated here. */
+  function paintHint() {
+    var n = $('map-hint');
+    if (!n) { return; }
+    if (defaultHint === null) { defaultHint = n.textContent; }
+    n.textContent = isSingle()
+      ? (single.hint || 'Tap the desk you are sitting at now. One desk only, and ' +
+         'nothing is saved until you confirm below.') +
+        ' With a keyboard: tab to the plan, move between desks with the arrow keys, ' +
+        'and press Enter or Space to select one.'
+      : defaultHint;
   }
 
   function buildDesk(desk, g) {
@@ -966,11 +1048,22 @@
     var bits = [APP.deskTitle(rec.id)];
     var sub = APP.deskSubtitle(rec.id);
     if (sub) { bits.push(sub); }
-    if (rank) { bits.push('your ' + ordinal(rank) + ' choice'); }
+    if (isSingle()) {
+      if (rank) { bits.push('the desk you are keeping'); }
+      else if (!status.ok) { bits.push(status.reason); }
+      else { bits.push('select to keep this desk'); }
+    } else if (rank) { bits.push('your ' + ordinal(rank) + ' choice'); }
     else if (!status.ok) { bits.push(status.reason); }
     else { bits.push('available'); }
     if (rec.desk.notes) { bits.push(rec.desk.notes); }
     return bits.join('. ');
+  }
+
+  /* In single mode "rank" collapses to 0 or 1: the one desk being kept. The
+     medal then carries a tick instead of a number, and nothing else changes. */
+  function rankOf(id) {
+    if (isSingle()) { return single.id === id ? 1 : 0; }
+    return APP.rankOf(id);
   }
 
   function paintDesks() {
@@ -978,8 +1071,8 @@
     deskOrder.forEach(function (id) {
       var rec = deskNodes[id];
       if (!rec) { return; }
-      var status = APP.deskStatus(id);
-      var rank = APP.rankOf(id);
+      var status = statusOf(id);
+      var rank = rankOf(id);
       var picked = rank > 0;
       var cl = rec.shape.classList;
       var gcl = rec.group.classList;
@@ -1010,7 +1103,7 @@
       rec.label.classList.toggle('on-fill', picked);
 
       svgShow(rec.medal, picked);
-      rec.medalText.textContent = picked ? String(rank) : '';
+      rec.medalText.textContent = picked ? (isSingle() ? '✓' : String(rank)) : '';
 
       rec.shape.setAttribute('aria-pressed', picked ? 'true' : 'false');
       if (status.ok) { rec.shape.removeAttribute('aria-disabled'); }
@@ -1020,7 +1113,7 @@
       rec.shape.setAttribute('data-state',
         picked ? 'picked' : (status.ok ? 'available' : status.code));
       /* Kept for parity with the ranked list; K is only ever read, never assumed. */
-      if (picked && k && rank > k) { cl.add('is-ineligible'); }
+      if (!isSingle() && picked && k && rank > k) { cl.add('is-ineligible'); }
     });
   }
 
@@ -1061,7 +1154,10 @@
     var zones = APP.zones();
     var ids = APP.zoneIds();
     var person = APP.state.person;
-    var allowed = (person && isArr(person.allowedZones)) ? person.allowedZones : null;
+    /* Zones do not gate anything in single mode (see claimStatus), so the
+       "not open to you" annotation would be a lie there. */
+    var allowed = (!isSingle() && person && isArr(person.allowedZones))
+      ? person.allowedZones : null;
 
     var html = '<div class="map-legend__group"><p class="map-legend__title">Areas</p>';
     if (!ids.length) {
@@ -1079,12 +1175,23 @@
     });
     html += '</div>';
 
-    html += '<div class="map-legend__group"><p class="map-legend__title">Desk states</p>' +
-      '<span class="map-legend__item">' + sampleSvg('available') + '<span>Available &mdash; tap to rank</span></span>' +
-      '<span class="map-legend__item">' + sampleSvg('picked') + '<span>Ranked by you &mdash; the number is its rank</span></span>' +
-      '<span class="map-legend__item">' + sampleSvg('locked') + '<span>Kept &mdash; someone is staying at this desk (hatched, padlock)</span></span>' +
-      '<span class="map-legend__item">' + sampleSvg('ineligible') + '<span>Not open to you &mdash; wrong area for you (dotted, crossed)</span></span>' +
-      '</div>';
+    html += '<div class="map-legend__group"><p class="map-legend__title">Desk states</p>';
+    if (isSingle()) {
+      /* No ranks and no zone gate on this step, so neither state is listed —
+         a legend of things that cannot happen is worse than a short legend. */
+      html += '<span class="map-legend__item">' + sampleSvg('available') +
+                '<span>Free &mdash; tap the one you sit at now</span></span>' +
+              '<span class="map-legend__item">' + sampleSvg('picked') +
+                '<span>The desk you are keeping</span></span>' +
+              '<span class="map-legend__item">' + sampleSvg('locked') +
+                '<span>Taken &mdash; someone else is staying here (hatched, padlock)</span></span>';
+    } else {
+      html += '<span class="map-legend__item">' + sampleSvg('available') + '<span>Available &mdash; tap to rank</span></span>' +
+        '<span class="map-legend__item">' + sampleSvg('picked') + '<span>Ranked by you &mdash; the number is its rank</span></span>' +
+        '<span class="map-legend__item">' + sampleSvg('locked') + '<span>Kept &mdash; someone is staying at this desk (hatched, padlock)</span></span>' +
+        '<span class="map-legend__item">' + sampleSvg('ineligible') + '<span>Not open to you &mdash; wrong area for you (dotted, crossed)</span></span>';
+    }
+    html += '</div>';
 
     /* One muted line for all of the structure, deliberately outside the desk
        states: none of it is a state a desk can be in, and none of it can be
@@ -1110,7 +1217,7 @@
 
   function openDeskCount(room) {
     var n = 0;
-    roomDesks(room).forEach(function (d) { if (APP.deskStatus(d.id).ok) { n++; } });
+    roomDesks(room).forEach(function (d) { if (statusOf(d.id).ok) { n++; } });
     return n;
   }
 
@@ -1134,19 +1241,25 @@
     var html = '';
     rooms.forEach(function (room) {
       var sel = String(room.id) === String(activeRoomId);
-      var mine = 0;
-      APP.state.picks.forEach(function (id) {
-        var d = APP.deskById(id);
-        if (d && String(d.roomId) === String(room.id)) { mine++; }
-      });
+      var count;
+      if (isSingle()) {
+        var here = single.id && APP.deskById(single.id) &&
+                   String(APP.deskById(single.id).roomId) === String(room.id);
+        count = here ? 'your desk' : (openDeskCount(room) + ' free');
+      } else {
+        var mine = 0;
+        APP.state.picks.forEach(function (id) {
+          var d = APP.deskById(id);
+          if (d && String(d.roomId) === String(room.id)) { mine++; }
+        });
+        count = mine ? (mine + ' ranked') : (openDeskCount(room) + ' open');
+      }
       html += '<button type="button" class="map-rooms__tab" role="tab" ' +
               'data-room-id="' + esc(room.id) + '" ' +
               'aria-selected="' + (sel ? 'true' : 'false') + '" ' +
               'tabindex="' + (sel ? '0' : '-1') + '">' +
               '<span>' + esc(room.label || room.id) + '</span>' +
-              '<span class="map-rooms__count">' +
-              (mine ? mine + ' ranked' : openDeskCount(room) + ' open') +
-              '</span></button>';
+              '<span class="map-rooms__count">' + esc(count) + '</span></button>';
     });
     host.innerHTML = html;
   }
@@ -1162,6 +1275,13 @@
   function pickInitialRoom() {
     var rooms = roomsList();
     if (!rooms.length) { return null; }
+
+    /* On the pre-lock step the desk they are keeping is the point of the
+       screen, so open the room it is in whatever was showing before. */
+    if (isSingle() && single.id) {
+      var kept = APP.deskById(single.id);
+      if (kept) { return kept.roomId; }
+    }
     if (activeRoomId && roomById(activeRoomId)) { return activeRoomId; }
 
     var picks = APP.state.picks;
@@ -1321,15 +1441,25 @@
   function showTipFor(id) {
     var rec = deskNodes[id];
     if (!rec) { return; }
-    var status = APP.deskStatus(id);
-    var rank = APP.rankOf(id);
+    var status = statusOf(id);
+    var rank = rankOf(id);
     var el = ensureTip();
 
     var html = '<span class="tip__title">' + esc(APP.deskTitle(id)) + '</span>';
     var sub = APP.deskSubtitle(id);
     if (sub) { html += '<span class="tip__row">' + esc(sub) + '</span>'; }
     if (rec.desk.notes) { html += '<span class="tip__row">' + esc(rec.desk.notes) + '</span>'; }
-    if (rank) {
+    if (isSingle()) {
+      if (!status.ok) {
+        html += '<span class="tip__reason">' + esc(status.reason) + '</span>';
+      } else if (rank) {
+        html += '<span class="tip__reason">Selected. Tap again to deselect.</span>';
+      } else if (outsideMyZones(id)) {
+        /* Not a refusal — see claimStatus. Just a thing worth knowing. */
+        html += '<span class="tip__reason">This is not an area you could be assigned ' +
+                'to in the ranking. You can still keep it if it is where you sit.</span>';
+      }
+    } else if (rank) {
       html += '<span class="tip__reason">Your ' + ordinal(rank) +
               ' choice. Tap again to remove it.</span>';
     } else if (!status.ok) {
@@ -1389,14 +1519,35 @@
      ---------------------------------------------------------------------- */
 
   function activateDesk(id) {
-    var status = APP.deskStatus(id);
+    var status = statusOf(id);
     if (!status.ok) {
       /* Do not spam a banner for something the map already shows as blocked;
          say why, right where they tapped. */
       showTipFor(id);
-      live(APP.deskTitle(id) + ' cannot be ranked. ' + status.reason);
+      live(APP.deskTitle(id) + (isSingle() ? ' cannot be kept. ' : ' cannot be ranked. ') +
+           status.reason);
       return;
     }
+
+    /* Single mode: one desk, selected or not. Nothing is written to the server
+       here — the pre-lock view owns that, behind its own explicit confirm.
+
+       The host gets the veto: returning false from onPick leaves the selection
+       exactly as it was and suppresses the announcement, so a host that has
+       already committed a claim can refuse a change without the map having
+       first told a screen reader the opposite. */
+    if (isSingle()) {
+      var next = (single.id === id) ? null : id;
+      if (single.onPick && single.onPick(next, id) === false) { return; }
+      single.id = next;
+      paintDesks();
+      renderRoomTabs();
+      live(next
+        ? (APP.deskTitle(id) + ' selected. Confirm below to keep it.')
+        : (APP.deskTitle(id) + ' deselected.'));
+      return;
+    }
+
     if (APP.isPicked(id)) {
       var was = APP.rankOf(id);
       APP.removePick(id);
@@ -2207,24 +2358,113 @@
   }
 
   function renderAll() {
-    renderHeader();
     renderRoomTabs();
     renderLegend();
     paintDesks();
+    paintHint();
+    /* Everything below lives in #view-select and means nothing on the pre-lock
+       step, which has no ranking, no K and no validation strip. */
+    if (isSingle()) { return; }
+    renderHeader();
     renderPicks();
     renderValidation();
     renderConcentration();
   }
 
-  function isActive() { return APP.state.view === 'select'; }
+  function isActive() { return APP.state.view === hostView; }
+
+  /* ----------------------------------------------------------------------
+     Mounting — how the pre-lock step borrows this renderer
+
+     #map-wrap is moved, not copied. Every id inside it stays what it was, so
+     every listener attached in wireOnce() and every measurement below keeps
+     working; there is no second renderer to keep in step with this one.
+     ---------------------------------------------------------------------- */
+
+  function rememberHome() {
+    var wrap = $('map-wrap');
+    if (!wrap || mapHome) { return wrap; }
+    mapHome = { parent: wrap.parentNode, next: wrap.nextSibling };
+    return wrap;
+  }
+
+  function relayout() {
+    measure(true);
+    /* Layout settles a frame later on some mobile browsers. */
+    global.requestAnimationFrame(function () { measure(); });
+  }
+
+  /* opts: {view, mode, selected, onPick, liveRegion, hint} */
+  function mountMap(slot, opts) {
+    opts = opts || {};
+    var wrap = rememberHome();
+    if (!wrap) { return null; }
+
+    mode = (opts.mode === MODE_SINGLE) ? MODE_SINGLE : MODE_RANK;
+    hostView = opts.view || (isSingle() ? 'prelock' : 'select');
+    liveId = opts.liveRegion || (isSingle() ? 'prelock-live' : 'select-live');
+    single.onPick = typeof opts.onPick === 'function' ? opts.onPick : null;
+    single.hint = opts.hint || '';
+    single.id = opts.selected || null;
+
+    if (slot && wrap.parentNode !== slot) { slot.appendChild(wrap); }
+
+    wireOnce();
+    /* Rebuild rather than re-use: the stage is a different size in a different
+       container, and the mode changes what every desk is painted as. */
+    builtFor = null;
+    ensureBuilt();
+    renderAll();
+    relayout();
+    return wrap;
+  }
+
+  /* Puts the map back where ViewSelect declared it and restores rank mode. */
+  function unmountMap() {
+    hideTip();
+    setLinked(null);
+    mode = MODE_RANK;
+    hostView = 'select';
+    liveId = 'select-live';
+    single.id = null;
+    single.onPick = null;
+    single.hint = '';
+
+    var wrap = $('map-wrap');
+    if (wrap && mapHome && wrap.parentNode !== mapHome.parent) {
+      mapHome.parent.insertBefore(wrap, mapHome.next);
+    }
+    builtFor = null;
+    paintHint();
+  }
+
+  APP.map = {
+    mount: mountMap,
+    unmount: unmountMap,
+    mode: function () { return mode; },
+    selection: function () { return single.id; },
+    setSelection: function (id) {
+      single.id = id || null;
+      if (isSingle()) { paintDesks(); renderRoomTabs(); }
+      return single.id;
+    },
+    redraw: function () { if (isActive()) { renderAll(); } },
+    relayout: relayout
+  };
 
   APP.on('select', {
     onEnter: function () {
       wireOnce();
+      rememberHome();
+      /* Coming back from the pre-lock step, the map is still in that view's
+         slot. Putting it back is what makes the two steps share one renderer. */
+      if (mode !== MODE_RANK || ($('map-wrap') && mapHome &&
+          $('map-wrap').parentNode !== mapHome.parent)) {
+        unmountMap();
+      }
       ensureBuilt();
       renderAll();
       measure();
-      /* Layout settles a frame later on some mobile browsers. */
       global.requestAnimationFrame(function () { measure(); });
     },
     onLeave: function () {
@@ -2247,16 +2487,11 @@
 
   APP.listen('person:set', function () {
     if (!isActive()) { builtFor = null; return; }
-    renderHeader();
-    renderLegend();
-    renderRoomTabs();
-    paintDesks();
-    renderPicks();
-    renderValidation();
-    renderConcentration();
+    renderAll();
   });
 
   APP.listen('picks:changed', function () {
+    if (isSingle()) { return; }          /* the pre-lock step has no ranking */
     if (!isActive() && builtFor === null) { return; }
     paintDesks();
     renderPicks();

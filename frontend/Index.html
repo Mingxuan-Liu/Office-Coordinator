@@ -45,7 +45,12 @@
 
 <!-- Persistent stepper. The step order here is the canonical view order: JsCore
      reads it from the DOM (via [data-step]) rather than hard-coding a list, and
-     paints state onto the enclosing .stepper__item. -->
+     paints state onto the enclosing .stepper__item.
+
+     "Pre-lock" is optional: the PRELOCK_ENABLED script property decides, and
+     JsCore.setStepEnabled() greys the chip out and makes it unclickable when it
+     is off. The chip stays in the list either way, so the numbering does not
+     shift under a student who reloads mid-flow. -->
 <nav class="stepper" id="stepper" aria-label="Progress">
   <ol class="stepper__list">
     <li class="stepper__item">
@@ -61,14 +66,20 @@
       </button>
     </li>
     <li class="stepper__item">
-      <button type="button" class="stepper__btn" data-step="select" disabled>
+      <button type="button" class="stepper__btn" data-step="prelock" disabled>
         <span class="stepper__mark" aria-hidden="true">3</span>
+        <span class="stepper__label">Pre-lock</span>
+      </button>
+    </li>
+    <li class="stepper__item">
+      <button type="button" class="stepper__btn" data-step="select" disabled>
+        <span class="stepper__mark" aria-hidden="true">4</span>
         <span class="stepper__label">Choose</span>
       </button>
     </li>
     <li class="stepper__item">
       <button type="button" class="stepper__btn" data-step="confirm" disabled>
-        <span class="stepper__mark" aria-hidden="true">4</span>
+        <span class="stepper__mark" aria-hidden="true">5</span>
         <span class="stepper__label">Confirm</span>
       </button>
     </li>
@@ -85,6 +96,7 @@
 <main id="main" class="wrap main" tabindex="-1">
   <?!= include('ViewLogin') ?>
   <?!= include('ViewExplainer') ?>
+  <?!= include('ViewPrelock') ?>
   <?!= include('ViewSelect') ?>
   <?!= include('ViewConfirm') ?>
 </main>
@@ -134,6 +146,7 @@
     { file: 'JsCore.html',       into: 'body' },
     { file: 'ViewLogin.html',    into: '#main' },
     { file: 'ViewExplainer.html',into: '#main' },
+    { file: 'ViewPrelock.html',  into: '#main' },
     { file: 'ViewSelect.html',   into: '#main' },
     { file: 'ViewConfirm.html',  into: '#main' },
     { file: 'JsMap.html',        into: 'body' },

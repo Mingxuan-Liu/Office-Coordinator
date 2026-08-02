@@ -1,5 +1,5 @@
 <!-- ==========================================================================
-     ViewConfirm.html — step 4: read it back, then send it.
+     ViewConfirm.html — the last step: read it back, then send it.
 
      The last screen before a row is written to the response sheet, so it says
      exactly what will be sent (desk labels AND ids, in rank order), where those
@@ -10,7 +10,7 @@
      the direct call is kept as the fallback so this view works against a bare
      APP contract. Either way the payload is the same object:
 
-       {email, name, year, candidacy, choices:[deskId…], authMethod, clientVersion}
+       {email, name, candidacy, choices:[deskId…], authMethod, clientVersion}
 
      A rejected submission ({ok:false, errors:[…]}) puts every server message in
      front of the student and sends them back to the select view, because every
@@ -525,7 +525,6 @@
     return {
       email: p.email,
       name: p.name,
-      year: p.year,
       candidacy: p.candidacy,
       choices: picks(),
       authMethod: p.authMethod,

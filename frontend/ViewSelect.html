@@ -27,6 +27,13 @@
      .desk.is-ineligible the same treatment; the brief requires them to be
      visually distinct), the drag affordances and the rank strip.
 
+     The map rules are scoped to `.map-wrap`, NOT to `#view-select`. That is
+     load-bearing: the pre-lock step borrows this renderer by moving #map-wrap
+     into its own container (APP.map.mount), and a selector anchored to this
+     view's id would silently drop every desk texture the moment it did. The
+     list, drag and validation rules below stay scoped to #view-select, because
+     those really do only exist here.
+
      No colour literals, no zone colours, no counts. Tokens only. When these
      files are merged for a release, this block can be pasted into Style.html
      section 10 verbatim.
@@ -152,38 +159,38 @@
      ineligible  dotted stipple, dashed outline, no-entry glyph
    ------------------------------------------------------------------------ */
 
-#view-select .map-svg .desk {
+.map-wrap .map-svg .desk {
   vector-effect: non-scaling-stroke;
   stroke-width: 1.25;
 }
-#view-select .map-svg .desk.is-picked { stroke-width: 3; }
-#view-select .map-svg .desk.is-locked {
+.map-wrap .map-svg .desk.is-picked { stroke-width: 3; }
+.map-wrap .map-svg .desk.is-locked {
   fill: url(#dm-pat-locked);
   stroke: var(--ink-3);
   stroke-dasharray: none;
   stroke-width: 1.5;
 }
-#view-select .map-svg .desk.is-ineligible {
+.map-wrap .map-svg .desk.is-ineligible {
   fill: url(#dm-pat-ineligible);
   stroke: var(--line-2);
   stroke-dasharray: 5 4;
   stroke-width: 1.5;
 }
 /* Hover / focus / list-hover cross-highlight. */
-#view-select .map-svg .deskgroup.is-linked .desk {
+.map-wrap .map-svg .deskgroup.is-linked .desk {
   stroke: var(--focus);
   stroke-width: 3.5;
 }
-#view-select .map-svg .desk:focus-visible {
+.map-wrap .map-svg .desk:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
-#view-select .map-svg .deskgroup.is-flash .desk { animation: dm-desk-flash 900ms var(--ease) 2; }
+.map-wrap .map-svg .deskgroup.is-flash .desk { animation: dm-desk-flash 900ms var(--ease) 2; }
 @keyframes dm-desk-flash { 50% { stroke: var(--focus); stroke-width: 4.5; } }
 
-#view-select .map-svg .desk__label { paint-order: stroke fill; }
-#view-select .map-svg .deskgroup.is-muted .desk__label { fill: var(--ink-3); }
-#view-select .map-svg .desk__glyph {
+.map-wrap .map-svg .desk__label { paint-order: stroke fill; }
+.map-wrap .map-svg .deskgroup.is-muted .desk__label { fill: var(--ink-3); }
+.map-wrap .map-svg .desk__glyph {
   fill: none;
   stroke: var(--ink-3);
   stroke-width: 1.6;
@@ -192,19 +199,19 @@
   pointer-events: none;                /* inherited by the glyph's children */
 }
 /* vector-effect does not inherit, so it has to be named on every stroked node. */
-#view-select .map-svg .desk__glyph,
-#view-select .map-svg .desk__glyph * { vector-effect: non-scaling-stroke; }
-#view-select .map-svg .desk__glyph--fill { fill: var(--ink-3); stroke: none; }
-#view-select .map-svg .desk__medalwrap { pointer-events: none; }
-#view-select .map-svg .desk__medal {
+.map-wrap .map-svg .desk__glyph,
+.map-wrap .map-svg .desk__glyph * { vector-effect: non-scaling-stroke; }
+.map-wrap .map-svg .desk__glyph--fill { fill: var(--ink-3); stroke: none; }
+.map-wrap .map-svg .desk__medalwrap { pointer-events: none; }
+.map-wrap .map-svg .desk__medal {
   fill: var(--ink);
   stroke: var(--zone-ink, #fff);
   stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
   pointer-events: none;
 }
-#view-select .map-svg .desk__rank { fill: var(--surface); dominant-baseline: central; text-anchor: middle; }
-#view-select .map-svg .map-frame {
+.map-wrap .map-svg .desk__rank { fill: var(--surface); dominant-baseline: central; text-anchor: middle; }
+.map-wrap .map-svg .map-frame {
   fill: none;
   stroke: var(--line-2);
   stroke-dasharray: 8 6;
@@ -331,7 +338,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   #view-select .pick.is-shifting { transition: none; }
-  #view-select .map-svg .deskgroup.is-flash .desk { animation: none; }
+  .map-wrap .map-svg .deskgroup.is-flash .desk { animation: none; }
 }
 </style>
 

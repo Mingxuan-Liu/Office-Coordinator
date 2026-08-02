@@ -21,7 +21,7 @@ code, go straight to **[The runbook](#the-runbook)**. It is written for you.
 | `config/` | Everything problem-specific. Desks, structures, zones, roster, scoring curve, seed. |
 | `solver/` | The Python package (Component B). Runs offline from a CSV. |
 | `frontend/` | Google Apps Script web app (Component A) that collects the rankings. |
-| `tools/` | Floor-plan calibration tool, and the config→frontend sync script. |
+| `tools/` | Floor-plan calibration tool, the config→frontend sync script, and the keeper-claim merge. |
 | `tests/` | Test suite, including adversarial and golden-file tests. |
 | `docs/SPEC.md` | The authoritative technical contract. Read before changing code. |
 
@@ -99,8 +99,10 @@ Jocelyn Bell,jbell@umich.edu,6,candidate,yes,D07
 - `candidacy` drives which zones they may sit in. The values you use here must
   match the ones in `config/eligibility.json`.
 
-Stale data is fine — students confirm and correct their own year on the form, and
-every correction is reported back to you.
+Stale data is fine — students confirm and correct their own candidacy on the
+form, and every correction is reported back to you. The form does not ask about
+`year` at all, so a stale year in this file changes nothing unless one of your
+own eligibility rules reads it.
 
 ```bash
 python -m deskmatch validate --config config/
@@ -187,6 +189,27 @@ Then go talk to those people. They do not have to change their first choice —
 they only need to rank further down. Doing this before the deadline is far easier
 than after, which is the entire reason the command exists.
 
+### 5b. Merge the desk-keepers — *only if you turned the Pre-lock step on*
+
+The optional Pre-lock step (`PRELOCK_ENABLED`, see
+[`frontend/DEPLOY.md`](frontend/DEPLOY.md#step-5b--decide-about-the-pre-lock-step))
+lets students claim the desk they already sit at and keep it. Those claims land
+in a `Keepers` tab and mean nothing to the solver until they are in the roster.
+Export that tab as CSV, then:
+
+```bash
+python tools/merge_keepers.py --roster config/roster.csv --keepers keepers.csv --dry-run
+python tools/merge_keepers.py --roster config/roster.csv --keepers keepers.csv
+git add config/roster.csv && git commit -m "Desk keepers, 2026 cycle"
+```
+
+Always the `--dry-run` first: it prints the exact diff and writes nothing. The
+real run refuses to write at all if two people are keeping the same desk, if a
+claimer is not on the roster, or if a desk id is not in `rooms.json`.
+
+Do this **before** step 7, or the solver will happily assign somebody else's
+desk to a stranger.
+
 ### 6. Close the form and export
 
 In Apps Script: **Deploy → Manage deployments → Archive**. Then export the Sheet
@@ -259,7 +282,6 @@ replaced as long as this holds.
 | `email` | string | lower-cased on ingest; joins to the roster |
 | `name` | string | roster value wins on conflict |
 | `candidacy` | string | as confirmed by the student — **overrides the roster** |
-| `year` | int | *optional.* No longer collected; candidacy alone decides zones |
 | `choice_1` … `choice_K` | desk id | exactly K columns, contiguous from 1 |
 | `client_version` | string | frontend build id, for debugging |
 | `auth_method` | `google` \| `self_select` | audit only; never affects the solve |
@@ -268,6 +290,10 @@ Rules:
 
 - **Re-submission is allowed.** The latest row per email wins, by timestamp, ties
   broken by later file position. Superseded rows stay in the file.
+- There is no `year` column. The form stopped collecting it, because candidacy
+  alone decides which zones a person may sit in. A file from an older cycle that
+  still carries one is read without complaint and the value is recorded, but it
+  never affects eligibility.
 - K is discovered by counting `choice_*` columns. It must match the length of the
   scoring curve, or the run stops.
 - An email not on the roster is an **error**, not a warning.
@@ -377,6 +403,7 @@ must not be broken.
 | change the points per rank | `config/scoring.json` |
 | change K | change the length of *every* curve in `config/scoring.json` |
 | change the seed | `config/scoring.json`, and announce it first |
+| let people keep their current desk | set `PRELOCK_ENABLED=true` in Apps Script, then `tools/merge_keepers.py` |
 
 Nothing in that table requires touching Python. If you find yourself editing
 Python to change a number, that is a bug — fix the config schema instead.

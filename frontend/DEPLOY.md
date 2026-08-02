@@ -35,8 +35,8 @@ Two properties make this work without any infrastructure:
 | `Index.html` | Page shell; pulls in everything else | yes |
 | `Style.html` | All CSS | yes |
 | `JsCore.html` | App state machine, server bridge | yes |
-| `ViewLogin/Explainer/Select/Confirm.html` | The four screens | yes |
-| `JsMap.html` | Floor plan renderer | yes |
+| `ViewLogin/Explainer/Prelock/Select/Confirm.html` | The five screens | yes |
+| `JsMap.html` | Floor plan renderer (used by both Pre-lock and Choose) | yes |
 | `JsExplainer.html` | The interactive explainer figures | yes |
 | `mock_server.html` | Offline stand-in for the server. **Dev only** | yes |
 | `_preview.html` | Build artefact. Never edit, never paste into Apps Script | no |
@@ -70,9 +70,21 @@ open frontend/_preview.html
 ```
 
 This expands the Apps Script includes exactly the way Google does and wires in a
-fake server, so you can click the whole flow — login, explainer, desk selection,
-confirmation — with no deployment. Do this first every year. It catches most
-mistakes in thirty seconds.
+fake server, so you can click the whole flow — login, explainer, pre-lock, desk
+selection, confirmation — with no deployment. Do this first every year. It
+catches most mistakes in thirty seconds.
+
+The preview's fake server takes switches on the URL. The ones worth knowing:
+
+```
+?mockPrelock=on          turn the Pre-lock step on (it is off by default,
+                         same as the real script property)
+?mockClaims=3            pretend three other people already claimed a desk
+?mockPerson=none         see the self-select login instead of Google
+?mockDeadline=past       see what a closed form looks like
+```
+
+Open the console once — the mock prints the full list.
 
 ## Step 3 — Create the Sheet
 
@@ -81,7 +93,16 @@ mistakes in thirty seconds.
 3. Leave it empty. The script writes the header row itself, with the right
    number of `choice_N` columns for whatever K your scoring curve uses.
 
+You do not need to create the `Keepers` tab. If you turn the Pre-lock step on
+(step 5b), the script adds it the first time somebody claims a desk.
+
 Do **not** share this Sheet with students. It is the raw response log.
+
+> **Re-using last year's spreadsheet?** The response header changed: `year` is
+> gone, because the form no longer asks for it. The script refuses to append to
+> a tab whose header does not match, which is deliberate — it will not quietly
+> write rows the solver would misread. Start a new tab (or clear the old one)
+> rather than editing the header by hand.
 
 ## Step 4 — Create the script project
 
@@ -131,6 +152,60 @@ Set a deadline the same way if you want the form to close itself:
 |---|---|
 | `DEADLINE_ISO` | `2026-09-22T17:00:00-04:00` |
 
+## Step 5b — Decide about the Pre-lock step
+
+**Optional, and off unless you turn it on.**
+
+The Pre-lock step sits between "How it works" and "Choose". On it, a student who
+is happy where they are can claim the desk they already sit at and keep it,
+instead of ranking anything. Claiming takes **both** that person and that desk
+out of the draw, which is the same thing `keeps_desk` in the roster has always
+meant — the difference is that the students tell you, rather than you asking
+them one at a time.
+
+| property | value | effect |
+|---|---|---|
+| `PRELOCK_ENABLED` | `true` | the step is live |
+| `PRELOCK_ENABLED` | `false`, or not set | **default.** The chip is greyed out and struck through, cannot be clicked, and has a tooltip saying it is not in use this year. The flow goes straight from the explainer to Choose. Nothing else changes. |
+| `PRELOCK_DEADLINE_ISO` | `2026-09-12T17:00:00-04:00` | optional, and usually a few days *before* `DEADLINE_ISO`: you want the keepers settled before everyone else ranks. After it passes, claims and releases are refused. `DEADLINE_ISO` still applies as the outer bound. |
+| `KEEPERS_SHEET_NAME` | `Keepers` | optional. The tab claims are written to. Defaults to `Keepers`. |
+
+What a student sees when it is on:
+
+- the same floor plan as the Choose step, in single-select mode;
+- they tap **one** desk — the one they are sitting at;
+- the consequences appear next to the desk, naming it: they keep it, they leave
+  the ranking, and the desk leaves the pool for everyone else;
+- confirming needs a ticked box *and* a button that names the desk;
+- desks other people have already claimed are hatched and unavailable, exactly
+  as roster keepers' desks are;
+- if they have already claimed one, they see it and can **release** it, which
+  puts them and the desk straight back into the draw.
+
+Zones are deliberately **not** enforced here. The eligibility rules say where
+somebody may be *assigned*; staying at the desk you already occupy is not an
+assignment. A student keeping a desk outside their zone gets a note saying so,
+and you see the claim in the tab.
+
+### The `Keepers` tab
+
+Created on the first claim. Append-only, like `Responses` — releasing writes a
+new row with `keeping=no` rather than deleting anything, and the **latest row
+per email wins**, same rule as responses.
+
+```
+claim_id, timestamp, email, name, desk_id, keeping, client_version
+```
+
+Nothing reads this tab automatically. Claims become real when you merge them
+into the roster, which is one command — see
+[Merging the claims](#merging-the-claims-into-the-roster) below.
+
+**If you turn `PRELOCK_ENABLED` back off** after claims exist, the step
+disappears and those desks stop being shown as taken. The rows stay in the tab
+and merging them still works, but the form will happily let somebody rank a desk
+a claimer thought they had kept. Merge first, then switch it off.
+
 ## Step 6 — Deploy
 
 **Deploy → New deployment → ⚙ → Web app**, then:
@@ -159,13 +234,43 @@ Copy the **Web app URL**. That is what you post.
 
 Open the URL in an incognito window, or ask one student to try it early. Check:
 
-- your name and year appear, and correcting the year updates the zones you are
-  offered;
+- your name and candidacy appear, and changing the candidacy updates the zones
+  you are offered (the year is not asked for — candidacy alone decides seating);
 - desks kept by other people are hatched and unclickable;
 - if you are a pre-candidate, upper-years desks are visibly not available to you;
-- submitting adds exactly one row to the `Responses` tab;
+- submitting adds exactly one row to the `Responses` tab, with the columns in
+  [the schema below](#response-schema);
 - submitting a second time adds a **second** row and does not overwrite the
   first — history is append-only, and the solver takes the latest.
+
+If you turned the Pre-lock step on, also check:
+
+- the Pre-lock chip is clickable and the map appears on it;
+- claiming a desk writes one row to `Keepers` and the student is told plainly
+  that they are out of the ranking;
+- releasing writes a **second** row with `keeping=no` and puts them back;
+- from a different account, that desk now shows as taken.
+
+And if you left it off, check the opposite: the Pre-lock chip is grey, struck
+through, does nothing when clicked, and the explainer's "I'm ready" button goes
+straight to Choose.
+
+### Response schema
+
+The `Responses` tab, written from K (SPEC §3.1). `year` is **not** a column —
+the form stopped asking, because candidacy alone decides which zones a person
+may sit in.
+
+| column | what it is |
+|---|---|
+| `submission_id` | one per row, `Utilities.getUuid()` |
+| `timestamp` | ISO-8601 with a UTC offset |
+| `email` | lower-cased; joins to the roster |
+| `name` | as submitted |
+| `candidacy` | as confirmed by the student; overrides the roster |
+| `choice_1` … `choice_K` | desk ids, best first. K columns, from your scoring curve |
+| `client_version` | frontend build id + config fingerprint |
+| `auth_method` | `google` or `self_select`; audit only |
 
 ---
 
@@ -180,6 +285,48 @@ python -m deskmatch check --config config/ --responses partial.csv --list-outsta
 
 Exit code 3 means the responses so far already cannot all be satisfied, and it
 names who is colliding on what. Talk to those people *before* the deadline.
+
+## Merging the claims into the roster
+
+Only if you turned the Pre-lock step on. Do this **once, after the pre-lock
+deadline and before you solve** — the solver reads `keeps_desk` and
+`current_desk` from `config/roster.csv`, and until you merge, it does not know
+anybody claimed anything.
+
+1. Open the `Keepers` tab, **File → Download → Comma Separated Values**.
+2. See what it would do. Always this first:
+
+   ```bash
+   python tools/merge_keepers.py --roster config/roster.csv \
+                                 --keepers ~/Downloads/keepers.csv --dry-run
+   ```
+
+   It prints one line per changed field and writes nothing:
+
+   ```
+   Changes:
+     Ada Lovelace <alovelace@umich.edu>
+         keeps_desk: no -> yes
+         current_desk: '' -> D09
+     Jocelyn Bell <jbell@umich.edu>
+         keeps_desk: yes -> no
+         current_desk: D07 -> ''
+   ```
+
+3. If that is right, run it again without `--dry-run`. Then commit the roster.
+
+It resolves the latest row per email exactly as the solver resolves responses
+(newest timestamp wins, ties broken by later row), preserves every other column
+and the row order, and only writes if something actually changed.
+
+It **refuses to write anything at all** — reporting every problem at once — if
+two people are keeping the same desk, if somebody claiming is not on the roster,
+or if a desk id is not in `rooms.json`. Each of those means the roster you would
+get is wrong, and a half-applied merge is worse than none. Fix the cause (add
+the person, correct the id, get one of the two to release) and re-export.
+
+People who are not in the keepers file are left alone, so a roster entry you set
+by hand survives the merge.
 
 ## Closing the form
 
@@ -216,6 +363,18 @@ This catches everyone at least once.
 **Desks are wrong / missing.** You edited `config/rooms.json` but did not re-run
 `tools/sync_config.py`, so `ConfigData.gs` is stale. The test suite catches this
 too (`tests/test_frontend_parity.py`).
+
+**"The response sheet header does not match the current config."** Either your
+scoring curve changed length mid-round (do not do that), or the tab is from a
+cycle that still had a `year` column. Start a fresh tab.
+
+**The Pre-lock chip is grey and I want it live.** `PRELOCK_ENABLED` must be the
+string `true`, lower case, and script properties only take effect on the next
+page load — no redeploy needed, but do reload.
+
+**A claim did not appear in the roster.** Merging is a manual step, on purpose.
+Run `tools/merge_keepers.py` (above). Nothing reads the `Keepers` tab
+automatically.
 
 **The page is fine but the map is blank with a warning.** The floor plan image is
 missing from `ConfigData.gs`. See step 1.

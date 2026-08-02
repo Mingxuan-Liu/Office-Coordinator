@@ -1,0 +1,570 @@
+<!-- ==========================================================================
+     ViewPrelock.html — step 3: keep the desk you are already at.
+
+     Optional. The coordinator turns it on with the PRELOCK_ENABLED script
+     property; when it is off, JsCore greys the stepper chip out, the guard
+     below never fires because the guard in JsCore redirects first, and the flow
+     goes straight from the explainer to Choose. Nothing else changes.
+
+     When it is on, this is the one irreversible-feeling decision in the whole
+     form, so it is built to be hard to do by accident and easy to undo:
+
+       * one desk, selected on the SAME floor plan the Choose step uses —
+         APP.map.mount() moves that renderer in here rather than growing a
+         second one (see the header of JsMap.html);
+       * the consequences are spelled out in full, next to the button, not in a
+         paragraph above the fold;
+       * confirming needs a deliberate tick AND a button that names the desk;
+       * a claim can be released from this page for as long as the window is
+         open, and releasing writes a new row rather than deleting anything.
+
+     The server re-checks every one of these in claimDesk(). This view decides
+     what is easy; Code.gs decides what is possible.
+
+     No count of anything — desks, zones, rooms, K — appears in this file.
+     ========================================================================== -->
+
+<section class="view" id="view-prelock" data-view-name="prelock" hidden
+         aria-labelledby="prelock-title">
+
+  <!-- Scoped to #view-prelock. Style.html owns the design system; what is here
+       is only the consequence block and the map slot, which exist nowhere else. -->
+  <style>
+    #view-prelock .prelock-grid { display: grid; gap: var(--s-4); align-items: start; }
+    @media (min-width: 62rem) {
+      #view-prelock .prelock-grid {
+        grid-template-columns: minmax(0, 1fr) minmax(20rem, 24rem);
+        gap: var(--s-5);
+      }
+      #view-prelock .prelock-grid__side { position: sticky; top: calc(var(--header-h) + var(--s-3)); }
+    }
+    #view-prelock .prelock-grid__map,
+    #view-prelock .prelock-grid__side { min-width: 0; }
+    #view-prelock .prelock-grid__side { display: grid; gap: var(--s-4); }
+
+    /* The consequence list. Deliberately heavier than a normal note: this is
+       the text somebody will quote back at us if it goes wrong. */
+    #view-prelock .conseq { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--s-2); }
+    #view-prelock .conseq li {
+      display: flex;
+      gap: var(--s-2);
+      align-items: flex-start;
+      font-size: var(--fs-md);
+      line-height: var(--lh-snug);
+    }
+    #view-prelock .conseq li::before {
+      content: "\2192";
+      flex: 0 0 auto;
+      font-weight: 700;
+      color: var(--warn);
+      line-height: inherit;
+    }
+    #view-prelock .conseq strong { font-weight: 700; }
+
+    #view-prelock .kept {
+      display: flex;
+      align-items: baseline;
+      gap: var(--s-2);
+      flex-wrap: wrap;
+      font-size: var(--fs-lg);
+      font-weight: 600;
+    }
+    #view-prelock .kept .deskid { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--ink-3); }
+    #view-prelock .prelock-empty { color: var(--ink-3); font-size: var(--fs-md); }
+    #view-prelock .prelock-choice { margin-bottom: var(--s-3); }
+  </style>
+
+  <header class="view__head">
+    <h1 class="view__title" id="prelock-title" data-view-focus tabindex="-1">
+      Staying where you are?
+    </h1>
+    <p class="view__lede" id="prelock-lede">
+      If you are happy at the desk you already sit at, you can keep it and skip the
+      ranking entirely. If you would rather move, say so and carry on.
+    </p>
+    <p class="small muted" id="prelock-deadline" hidden></p>
+  </header>
+
+  <div class="prelock-grid">
+
+    <!-- ====================== floor plan ====================== -->
+    <section class="prelock-grid__map" aria-labelledby="prelock-map-heading">
+      <h2 class="sr-only" id="prelock-map-heading">Floor plan</h2>
+      <!-- JsMap moves #map-wrap in here on entry and back out on leave. It is
+           the same element the Choose step uses; there is no second map. -->
+      <div id="prelock-map-slot"></div>
+    </section>
+
+    <!-- ====================== decision ====================== -->
+    <section class="prelock-grid__side" aria-labelledby="prelock-decision-heading">
+
+      <!-- (a) nothing claimed yet -->
+      <div class="card" id="prelock-choose">
+        <div class="card__head">
+          <h2 id="prelock-decision-heading">Keep your current desk</h2>
+        </div>
+        <div class="card__body stack">
+          <p class="prelock-choice" id="prelock-selected">
+            <span class="prelock-empty">
+              Tap the desk you are sitting at now on the plan. Nothing is saved until
+              you confirm.
+            </span>
+          </p>
+
+          <div class="note note--warn" id="prelock-consequences" hidden>
+            <p class="caps" style="margin-bottom: var(--s-2);">What claiming it means</p>
+            <ul class="conseq" id="prelock-conseq-list"></ul>
+          </div>
+
+          <p class="small muted" id="prelock-zone-note" hidden></p>
+
+          <label class="choicebox" id="prelock-ack-box" hidden>
+            <input type="checkbox" id="prelock-ack">
+            <span id="prelock-ack-text">
+              I understand I will not be in the ranking, and neither will this desk.
+            </span>
+          </label>
+
+          <div class="btn-row btn-row--stack">
+            <button type="button" class="btn btn--primary btn--lg" id="prelock-confirm" disabled>
+              Keep this desk
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- (b) already claimed -->
+      <div class="card" id="prelock-kept" hidden>
+        <div class="card__head">
+          <h2 id="prelock-kept-title" tabindex="-1">You are keeping your desk</h2>
+          <span class="spacer"></span>
+          <span class="badge badge--ok">Claimed</span>
+        </div>
+        <div class="card__body stack">
+          <p class="kept" id="prelock-kept-desk"></p>
+          <p class="small muted" id="prelock-kept-when"></p>
+          <p class="small">
+            You are out of the ranking and so is this desk. There is nothing else for
+            you to do — you do not need to submit anything.
+          </p>
+
+          <div id="prelock-release-ask" hidden>
+            <div class="note note--warn">
+              <p id="prelock-release-msg"></p>
+            </div>
+            <div class="btn-row btn-row--stack" style="margin-top: var(--s-3);">
+              <button type="button" class="btn btn--secondary" id="prelock-release-cancel">
+                No, keep it
+              </button>
+              <button type="button" class="btn btn--danger" id="prelock-release-yes">
+                Yes, release it
+              </button>
+            </div>
+          </div>
+
+          <div class="btn-row btn-row--stack" id="prelock-release-row">
+            <button type="button" class="btn btn--secondary" id="prelock-release">
+              Release it and join the ranking
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- (c) the way out, always available -->
+      <div class="card card--quiet" id="prelock-move">
+        <div class="card__body stack">
+          <p class="strong" id="prelock-move-title">No, I want to move</p>
+          <p class="small muted" id="prelock-move-text">
+            Go on to rank desks in the usual way. You can come back to this step
+            until the window closes.
+          </p>
+          <div class="btn-row btn-row--stack">
+            <button type="button" class="btn btn--secondary" id="prelock-skip">
+              No, I want to move &mdash; rank desks instead
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </section>
+  </div>
+
+  <p class="sr-only" id="prelock-live" role="status" aria-live="polite"></p>
+</section>
+
+<script>
+/* ==========================================================================
+   ViewPrelock behaviour. Depends only on the shared APP contract from JsCore
+   and on APP.map, which JsMap publishes.
+   ========================================================================== */
+(function (global) {
+  'use strict';
+
+  var doc = global.document;
+  var APP = global.APP;
+  if (!APP) { return; }
+
+  var U = APP.util;
+  var el = U.el, esc = U.esc;
+
+  var PRELOCK = 'prelock';
+
+  var chosen = null;      /* selected on the plan, not yet sent */
+  var claimed = null;     /* what the server says is claimed, or null */
+  var busy = false;
+  var asking = false;     /* the release confirmation is showing */
+  var wired = false;
+
+  function deskLabel(id) {
+    return APP.deskTitle(id) + ' (' + id + ')';
+  }
+
+  /* Not named open(): that is window.open, and shadowing it in a file this
+     long is the sort of thing that bites somebody at 2am. */
+  function claimWindowOpen() {
+    return typeof APP.prelockOpen === 'function' ? APP.prelockOpen() : true;
+  }
+
+  /* ---- the consequence list -------------------------------------------
+     Generated from the desk, so it names the actual desk rather than "this
+     desk", which is the difference between a warning somebody reads and a
+     warning somebody skims. */
+
+  function consequences(id) {
+    var title = APP.deskTitle(id);
+    var where = APP.deskSubtitle(id);
+    return [
+      '<strong>You keep ' + esc(title) + '.</strong>' +
+        (where ? ' ' + esc(where) + '.' : '') +
+        ' It stays yours and you rank nothing.',
+      '<strong>You are removed from the ranking.</strong> The algorithm will not ' +
+        'assign you a desk, because you already have one. You will not appear in ' +
+        'the results as being assigned anywhere.',
+      '<strong>' + esc(title) + ' is removed from the pool too.</strong> Nobody else ' +
+        'can rank it or be assigned it, including people who have already put it first.',
+      'You can undo this here for as long as this step is open. After that only the ' +
+        'coordinator can change it.'
+    ];
+  }
+
+  /* ---- painting -------------------------------------------------------- */
+
+  function paintChoice() {
+    var card = el('prelock-choose');
+    var line = el('prelock-selected');
+    var box = el('prelock-consequences');
+    var list = el('prelock-conseq-list');
+    var ackBox = el('prelock-ack-box');
+    var ack = el('prelock-ack');
+    var zone = el('prelock-zone-note');
+    var btn = el('prelock-confirm');
+    if (!card) { return; }
+
+    card.hidden = !!claimed;
+    if (claimed) { return; }
+
+    var has = !!chosen;
+    if (line) {
+      line.innerHTML = has
+        ? ('<span class="kept">' + esc(APP.deskTitle(chosen)) +
+           ' <span class="deskid">' + esc(chosen) + '</span></span>' +
+           (APP.deskSubtitle(chosen)
+             ? '<span class="small muted"><br>' + esc(APP.deskSubtitle(chosen)) + '</span>'
+             : ''))
+        : ('<span class="prelock-empty">Tap the desk you are sitting at now on the plan. ' +
+           'Nothing is saved until you confirm.</span>');
+    }
+
+    if (box) { box.hidden = !has; }
+    if (list) {
+      list.innerHTML = has
+        ? consequences(chosen).map(function (t) { return '<li><span>' + t + '</span></li>'; }).join('')
+        : '';
+    }
+
+    /* Keeping a desk outside the zones you could be *assigned* to is allowed —
+       you already sit there — but it is worth saying out loud. */
+    if (zone) {
+      var d = has ? APP.deskById(chosen) : null;
+      var person = APP.state.person;
+      var zones = person && person.allowedZones;
+      var outside = !!(d && zones && zones.length && zones.indexOf(d.zone) < 0);
+      zone.hidden = !outside;
+      if (outside) {
+        zone.textContent = 'Note: ' + APP.deskTitle(chosen) + ' is in the ' +
+          APP.zoneLabel(d.zone) + ', which is not an area you could be assigned to in ' +
+          'the ranking. Keeping a desk you already occupy is a different thing, so this ' +
+          'is allowed — but the coordinator will see it.';
+      }
+    }
+
+    if (ackBox) { ackBox.hidden = !has; }
+    if (ack && !has) { ack.checked = false; }
+    if (ackBox) { ackBox.classList.toggle('is-selected', !!(ack && ack.checked)); }
+
+    if (btn) {
+      btn.disabled = busy || !has || !(ack && ack.checked) || !claimWindowOpen();
+      btn.textContent = has ? ('Keep ' + APP.deskTitle(chosen)) : 'Keep this desk';
+      btn.classList.toggle('is-busy', busy);
+    }
+  }
+
+  function paintKept() {
+    var card = el('prelock-kept');
+    if (!card) { return; }
+    card.hidden = !claimed;
+    if (!claimed) { asking = false; }
+
+    var deskLine = el('prelock-kept-desk');
+    if (deskLine && claimed) {
+      deskLine.innerHTML = esc(APP.deskTitle(claimed)) +
+        ' <span class="deskid">' + esc(claimed) + '</span>' +
+        (APP.deskSubtitle(claimed)
+          ? ' <span class="small muted">&middot; ' + esc(APP.deskSubtitle(claimed)) + '</span>'
+          : '');
+    }
+
+    var when = el('prelock-kept-when');
+    if (when) {
+      var b = APP.state.bootstrap || {};
+      var iso = b.myClaim && b.myClaim.timestampIso;
+      when.textContent = iso ? ('Claimed on ' + U.formatWhen(iso) + ' (your local time).') : '';
+      when.hidden = !iso;
+    }
+
+    var ask = el('prelock-release-ask');
+    var row = el('prelock-release-row');
+    if (ask) { ask.hidden = !asking; }
+    if (row) { row.hidden = asking; }
+
+    var msg = el('prelock-release-msg');
+    if (msg && claimed) {
+      msg.innerHTML = 'Release <strong>' + esc(deskLabel(claimed)) + '</strong>? It goes ' +
+        'back into the pool for everybody, you go back into the ranking, and you will ' +
+        'have to rank desks like everyone else. If you change your mind afterwards the ' +
+        'desk may already have been claimed by somebody else.';
+    }
+
+    var release = el('prelock-release');
+    if (release) {
+      release.disabled = busy || !claimWindowOpen();
+      release.classList.toggle('is-busy', busy && !asking);
+    }
+    var yes = el('prelock-release-yes');
+    if (yes) { yes.disabled = busy; yes.classList.toggle('is-busy', busy); }
+  }
+
+  function paintMove() {
+    var card = el('prelock-move');
+    var title = el('prelock-move-title');
+    var text = el('prelock-move-text');
+    var skip = el('prelock-skip');
+    if (!card) { return; }
+    card.hidden = false;
+
+    if (claimed) {
+      if (title) { title.textContent = 'Changed your mind?'; }
+      if (text) {
+        text.textContent = 'Release the desk above first. While you are keeping it you ' +
+          'are not in the ranking, so there is nothing for you to submit.';
+      }
+      if (skip) { skip.hidden = true; }
+      return;
+    }
+    if (title) { title.textContent = 'No, I want to move'; }
+    if (text) {
+      text.textContent = claimWindowOpen()
+        ? 'Go on to rank desks in the usual way. You can come back to this step until ' +
+          'the window closes.'
+        : 'Go on to rank desks in the usual way.';
+    }
+    if (skip) { skip.hidden = false; }
+  }
+
+  function paintDeadline() {
+    var node = el('prelock-deadline');
+    if (!node) { return; }
+    var cfg = typeof APP.prelock === 'function' ? APP.prelock() : {};
+    if (!cfg.deadlineIso) { node.hidden = true; node.textContent = ''; return; }
+    node.hidden = false;
+    node.textContent = claimWindowOpen()
+      ? ('You can claim or release a desk until ' + U.formatWhen(cfg.deadlineIso) +
+         ' (your local time).')
+      : ('The window for keeping your current desk closed on ' +
+         U.formatWhen(cfg.deadlineIso) + '. Email the coordinator if that is a problem.');
+  }
+
+  function paint() {
+    paintDeadline();
+    paintChoice();
+    paintKept();
+    paintMove();
+  }
+
+  /* ---- the map --------------------------------------------------------- */
+
+  /* JsMap asks before it changes the selection. Returning false vetoes the
+     change — nothing on the map moves and nothing is announced. */
+  function onPick(next) {
+    if (claimed) {
+      APP.warn('Release ' + deskLabel(claimed) + ' first if you want a different desk.',
+               { id: 'prelock-locked', timeout: 7000 });
+      return false;
+    }
+    chosen = next || null;
+    /* Any change of desk invalidates the acknowledgement: it was about the
+       other desk. */
+    var ack = el('prelock-ack');
+    if (ack) { ack.checked = false; }
+    paint();
+    return true;
+  }
+
+  function mount() {
+    if (!APP.map || typeof APP.map.mount !== 'function') { return; }
+    APP.map.mount(el('prelock-map-slot'), {
+      view: PRELOCK,
+      mode: 'single',
+      selected: chosen,
+      liveRegion: 'prelock-live',
+      onPick: onPick,
+      hint: claimed
+        ? 'The ticked desk is the one you are keeping. Release it below to choose ' +
+          'differently.'
+        : 'Tap the desk you are sitting at now. One desk only, and nothing is saved ' +
+          'until you confirm.'
+    });
+  }
+
+  /* ---- server round trips ---------------------------------------------- */
+
+  function setBusy(on) {
+    busy = !!on;
+    paint();
+  }
+
+  function send(deskId, keeping) {
+    if (busy || typeof APP.claimDesk !== 'function') { return; }
+    setBusy(true);
+    APP.claimDesk(deskId, keeping).then(function (res) {
+      setBusy(false);
+      if (!res || res.ok !== true) {
+        APP.error(keeping ? 'That desk was not claimed.' : 'That desk was not released.', {
+          id: 'prelock-failed',
+          list: (res && res.errors) || ['The server did not say why.']
+        });
+        /* The refresh inside APP.claimDesk did not happen, so re-read what we
+           already know rather than leaving a stale selection on screen. */
+        refreshFromState();
+        return;
+      }
+      asking = false;
+      /* Releasing clears the selection. bootstrap:ready has already rebuilt the
+         view by now with the old selection still ticked, so this has to reach
+         the map too — leaving the desk ticked under an open "what claiming it
+         means" panel reads as if nothing happened. */
+      if (!keeping) { chosen = null; refreshFromState(); }
+      if (keeping) {
+        APP.success('You are keeping ' + deskLabel(deskId) + '. Nothing else to do — ' +
+                    'you are not in the ranking.', { id: 'prelock-ok' });
+      } else {
+        APP.success(deskLabel(deskId) + ' released. You are back in the ranking.',
+                    { id: 'prelock-ok' });
+      }
+      /* APP.claimDesk() already refreshed the bootstrap, which re-fires
+         bootstrap:ready and repaints this view through the listener below. */
+      var head = el(keeping ? 'prelock-kept-title' : 'prelock-title');
+      if (head) { try { head.focus({ preventScroll: true }); } catch (e) { /* ignore */ } }
+    });
+  }
+
+  /* ---- wiring ---------------------------------------------------------- */
+
+  function wire() {
+    if (wired) { return; }
+    wired = true;
+
+    var ack = el('prelock-ack');
+    if (ack) { ack.addEventListener('change', paint); }
+
+    var confirmBtn = el('prelock-confirm');
+    if (confirmBtn) {
+      confirmBtn.addEventListener('click', function () {
+        if (!chosen || claimed) { return; }
+        var box = el('prelock-ack');
+        if (!box || !box.checked) {
+          APP.warn('Tick the box first, so we know the consequences are clear.',
+                   { id: 'prelock-ack-needed', timeout: 6000 });
+          return;
+        }
+        send(chosen, true);
+      });
+    }
+
+    var release = el('prelock-release');
+    if (release) {
+      release.addEventListener('click', function () {
+        if (!claimed) { return; }
+        asking = true;
+        paint();
+      });
+    }
+    var cancel = el('prelock-release-cancel');
+    if (cancel) {
+      cancel.addEventListener('click', function () { asking = false; paint(); });
+    }
+    var yes = el('prelock-release-yes');
+    if (yes) {
+      yes.addEventListener('click', function () { if (claimed) { send(claimed, false); } });
+    }
+
+    var skip = el('prelock-skip');
+    if (skip) {
+      skip.addEventListener('click', function () {
+        if (claimed) { return; }
+        APP.go('select');
+      });
+    }
+  }
+
+  /* Pull the truth back out of APP after anything that could have changed it. */
+  function refreshFromState() {
+    claimed = (typeof APP.myClaim === 'function') ? APP.myClaim() : null;
+    if (claimed) { chosen = claimed; }
+    else if (chosen && !APP.deskById(chosen)) { chosen = null; }
+    if (APP.map && typeof APP.map.setSelection === 'function') {
+      APP.map.setSelection(chosen);
+    }
+    paint();
+  }
+
+  function build() {
+    wire();
+    claimed = (typeof APP.myClaim === 'function') ? APP.myClaim() : null;
+    if (claimed) { chosen = claimed; }
+    mount();
+    paint();
+  }
+
+  APP.on(PRELOCK, {
+    onEnter: build,
+    onLeave: function () {
+      asking = false;
+      /* Hand the shared renderer back. The Choose step also puts it back when
+         it is entered, so a direct jump between views cannot strand it. */
+      if (APP.map && typeof APP.map.unmount === 'function') { APP.map.unmount(); }
+    }
+  });
+
+  APP.listen('bootstrap:ready', function () {
+    if (APP.state.view !== PRELOCK) { return; }
+    build();
+  });
+
+  APP.listen('person:set', function () {
+    if (APP.state.view !== PRELOCK) { return; }
+    refreshFromState();
+  });
+
+}(window));
+</script>

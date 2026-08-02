@@ -1058,7 +1058,6 @@
 
     var head = '<p style="margin:0 0 var(--s-2);"><strong>You</strong> — ' +
       esc(p.name || p.email) +
-      (p.year ? ', year ' + esc(p.year) : '') +
       (p.candidacy ? ', ' + esc(p.candidacy) : '') +
       '. Under the rules as they stand, ' + esc(deskCount) +
       (deskCount === 1 ? ' desk in this year’s pool is' : ' desks in this year’s pool are') +
@@ -1084,7 +1083,7 @@
     if (!reason && !reasonFetched && p.email) {
       reasonFetched = true;
       APP.server('getEligibleZonesForClaim',
-        { email: p.email, year: p.year, candidacy: p.candidacy })
+        { email: p.email, candidacy: p.candidacy })
         .then(function (res) {
           if (!res || !res.ok || !res.reason) { return; }
           host.setAttribute('data-reason', res.reason);
@@ -1123,7 +1122,11 @@
       var btn = closest(ev.target, '[data-xp-action]');
       if (!btn) { return; }
       var action = btn.getAttribute('data-xp-action');
-      if (action === 'ready' || action === 'skip') { APP.go('select'); }
+      /* Whatever step is actually in use next — the pre-lock step sits between
+         this view and the ranking, and may be switched off. */
+      if (action === 'ready' || action === 'skip') {
+        APP.go((typeof APP.nextStep === 'function' && APP.nextStep('explainer')) || 'select');
+      }
     });
   }
 

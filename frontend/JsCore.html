@@ -25,7 +25,8 @@
     choose: 'select', picks: 'select', pick: 'select', desks: 'select',
     identity: 'login', signin: 'login', 'sign-in': 'login', who: 'login',
     intro: 'explainer', how: 'explainer', 'how-it-works': 'explainer',
-    review: 'confirm', submit: 'confirm', done: 'confirm'
+    review: 'confirm', submit: 'confirm', done: 'confirm',
+    'pre-lock': 'prelock', keep: 'prelock', claim: 'prelock', lock: 'prelock'
   };
 
   /* ----------------------------------------------------------------------
@@ -169,9 +170,12 @@
   var listeners = {};
   var hooks = {};
   var visited = {};
+  var stepOff = {};           /* step name -> why it is switched off this year */
   var deskList = [];
   var deskIndex = {};
   var lockedIndex = {};
+  var claimIndex = {};        /* desk id -> {email, name} currently keeping it */
+  var myClaimId = null;       /* the desk the current person has claimed */
   var zoneStyles = {};
   var zoneOrder = [];
   var loadingDepth = 0;
@@ -442,10 +446,28 @@
   /* Default guards. Replaceable: APP.guards.confirm = function () {...}. */
   var guards = {
     explainer: function () { return requirePerson(); },
-    select: function () { return requirePerson(); },
+    prelock: function () {
+      var need = requirePerson();
+      if (!need.ok) { return need; }
+      if (!prelockEnabled()) {
+        return {
+          ok: false,
+          redirect: 'select',
+          message: prelockOffReason()
+        };
+      }
+      return { ok: true };
+    },
+    select: function () {
+      var need = requirePerson();
+      if (!need.ok) { return need; }
+      return requireNoClaim();
+    },
     confirm: function () {
       var need = requirePerson();
       if (!need.ok) { return need; }
+      var free = requireNoClaim();
+      if (!free.ok) { return free; }
       var required = requiredPicks();
       if (state.picks.length < required) {
         return {
@@ -462,6 +484,19 @@
   function requirePerson() {
     if (state.person && state.person.email) { return { ok: true }; }
     return { ok: false, redirect: 'login', message: 'Tell us who you are first.' };
+  }
+
+  /* Claiming a desk in the pre-lock step is a way *out* of the ranking, so
+     somebody holding a claim must not be able to wander back into it — by the
+     stepper, a restored session or a stale link. Releasing lifts this. */
+  function requireNoClaim() {
+    if (!myClaimId) { return { ok: true }; }
+    return {
+      ok: false,
+      redirect: 'prelock',
+      message: 'You are keeping ' + deskTitle(myClaimId) + ', so you are not in the ' +
+               'ranking. Release it first if you would rather move.'
+    };
   }
 
   function canEnter(name) {
@@ -503,14 +538,31 @@
     stepNodes().forEach(function (btn, i) {
       var item = btn.closest ? btn.closest('.stepper__item') : btn.parentNode;
       var name = btn.getAttribute('data-step');
+      var off = has(stepOff, name);
       if (item && item.classList) {
         item.classList.remove('is-done', 'is-current', 'is-todo');
-        if (currentIdx >= 0 && i < currentIdx) { item.classList.add('is-done'); }
+        item.classList.toggle('is-off', off);
+        /* A step that is not in use this year is never "done" and never
+           "current": it did not happen. It stays grey. */
+        if (off) { item.classList.add('is-todo'); }
+        else if (currentIdx >= 0 && i < currentIdx) { item.classList.add('is-done'); }
         else if (i === currentIdx) { item.classList.add('is-current'); }
         else { item.classList.add('is-todo'); }
       }
-      if (i === currentIdx) { btn.setAttribute('aria-current', 'step'); }
+      if (i === currentIdx && !off) { btn.setAttribute('aria-current', 'step'); }
       else { btn.removeAttribute('aria-current'); }
+
+      if (off) {
+        /* Both, deliberately: `disabled` is what actually stops the click, and
+           aria-disabled is what a screen reader reads out. The title is the
+           tooltip the coordinator asked for. */
+        btn.setAttribute('disabled', 'disabled');
+        btn.setAttribute('aria-disabled', 'true');
+        btn.setAttribute('title', stepOff[name]);
+        return;
+      }
+      btn.removeAttribute('aria-disabled');
+      btn.removeAttribute('title');
       var reachable = (name === state.view) || visited[name] === true ||
                       (currentIdx >= 0 && i < currentIdx);
       if (reachable && name !== state.view) { btn.removeAttribute('disabled'); }
@@ -593,9 +645,37 @@
     stepNodes().forEach(function (btn) {
       btn.addEventListener('click', function () {
         var name = btn.getAttribute('data-goto') || btn.getAttribute('data-step');
-        if (name) { go(name); }
+        if (!name || has(stepOff, name)) { return; }
+        go(name);
       });
     });
+  }
+
+  /* Switches a step off for the whole cycle: grey, unclickable, and skipped by
+     nextStep(). `reason` becomes its tooltip. Nothing else in the flow has to
+     know the step exists. */
+  function setStepEnabled(name, on, reason) {
+    var key = canonView(name) || lower(name);
+    if (on) { delete stepOff[key]; }
+    else { stepOff[key] = reason || 'This step is not in use this year.'; }
+    paintStepper();
+  }
+
+  function stepEnabled(name) {
+    var key = canonView(name) || lower(name);
+    return !has(stepOff, key);
+  }
+
+  /* The step after `from` that is actually in use. Used by the views that hand
+     off to "whatever comes next" instead of naming a view, so switching a step
+     off is a one-line change in one place. */
+  function nextStep(from) {
+    var order = viewOrder();
+    var i = indexOfView(canonView(from) || state.view);
+    for (var j = i + 1; j < order.length; j++) {
+      if (order[j] && !has(stepOff, order[j]) && viewEl(order[j])) { return order[j]; }
+    }
+    return null;
   }
 
   /* ----------------------------------------------------------------------
@@ -755,6 +835,43 @@
       if (!id) { return; }
       lockedIndex[id] = (entry && entry.reason) ? String(entry.reason) : 'Held by someone keeping their desk.';
     });
+    indexClaims();
+  }
+
+  /* Pre-lock claims. A desk somebody has claimed is out of the pool exactly as
+     a roster keeper's desk is, so it joins the same index and every existing
+     consumer — deskStatus, the map, reconcilePicks, the legend — treats it the
+     same way without being told about claims at all.
+
+     The current person's own claim is deliberately NOT locked: it is the one
+     desk they are allowed to interact with on the pre-lock step, and locking it
+     would show them their own desk as taken by a stranger. Which claim is
+     "mine" depends on who is signed in, so this re-runs whenever that changes.
+  */
+  function indexClaims() {
+    var b = state.bootstrap || {};
+    var mine = lower(state.person && state.person.email);
+    var list = isArray(b.claims) ? b.claims : [];
+
+    claimIndex = {};
+    myClaimId = null;
+
+    list.forEach(function (entry) {
+      if (!entry || !entry.deskId) { return; }
+      var email = lower(entry.email);
+      var who = trim(entry.name) || email || 'Someone';
+      claimIndex[entry.deskId] = { deskId: entry.deskId, email: email, name: who };
+      if (mine && email === mine) { myClaimId = entry.deskId; return; }
+      lockedIndex[entry.deskId] = who + ' is keeping this desk.';
+    });
+
+    /* The server also names it outright, which covers a deployment that sends
+       myClaim without listing it in claims. */
+    if (!myClaimId && b.myClaim && b.myClaim.deskId &&
+        (!b.myClaim.email || !mine || lower(b.myClaim.email) === mine)) {
+      myClaimId = b.myClaim.deskId;
+      delete lockedIndex[myClaimId];
+    }
   }
 
   function deskById(id) { return deskIndex[id] || null; }
@@ -805,6 +922,57 @@
 
   function lockedDeskIds() { return Object.keys(lockedIndex); }
 
+  /* ----------------------------------------------------------------------
+     Pre-lock (claiming the desk you already sit at)
+     ---------------------------------------------------------------------- */
+
+  function prelockConfig() {
+    var b = state.bootstrap || {};
+    var p = (b.prelock && typeof b.prelock === 'object') ? b.prelock : {};
+    return {
+      enabled: p.enabled === true,
+      deadlineIso: p.deadlineIso || null,
+      deadlinePassed: p.deadlinePassed === true
+    };
+  }
+
+  function prelockEnabled() { return prelockConfig().enabled; }
+
+  function prelockOffReason() {
+    return 'Keeping your current desk is not part of this year’s process, so that step ' +
+           'is switched off. Everyone ranks desks.';
+  }
+
+  /* Whether the claim window is still open. The server decides for real; this
+     is only so the form does not invite an action it will then refuse. */
+  function prelockOpen() {
+    var p = prelockConfig();
+    if (!p.enabled || p.deadlinePassed || isPastDeadline()) { return false; }
+    var ms = p.deadlineIso ? Date.parse(p.deadlineIso) : NaN;
+    return isNaN(ms) || Date.now() <= ms;
+  }
+
+  function claims() {
+    var out = [];
+    Object.keys(claimIndex).sort().forEach(function (id) { out.push(claimIndex[id]); });
+    return out;
+  }
+
+  /* Who is keeping this desk through the pre-lock step, or null. `isMine` is
+     what tells the pre-lock map "this one is yours to release". */
+  function claimHolder(deskId) {
+    var entry = claimIndex[deskId];
+    if (!entry) { return null; }
+    return {
+      deskId: entry.deskId,
+      email: entry.email,
+      name: entry.name,
+      isMine: deskId === myClaimId
+    };
+  }
+
+  function myClaim() { return myClaimId; }
+
   function concentration() {
     var b = state.bootstrap || {};
     return (b.concentration && typeof b.concentration === 'object') ? b.concentration : {};
@@ -852,10 +1020,11 @@
   }
 
   /* allowedZonesFor is keyed by email (Code.gs). Eligibility is a pure function
-     of roster attributes, so a "candidacy|year" index can be derived from it by
-     joining against rosterNames. That covers the case where the student has
-     just corrected their year or candidacy (SPEC §3.3) and their own email key
-     is therefore stale. */
+     of roster attributes, and the only attribute the form collects is candidacy
+     (the year is no longer asked for), so a candidacy index can be derived from
+     it by joining against rosterNames. That covers the case where the student
+     has just corrected their candidacy (SPEC §3.3) and their own email key is
+     therefore stale. */
   function attributeZoneIndex() {
     var lookup = zoneMapLookup();
     var index = {};
@@ -863,7 +1032,7 @@
       if (!entry) { return; }
       var zones = lookup[lower(entry.email)];
       if (zones === undefined) { return; }
-      var key = lower(entry.candidacy) + '|' + String(entry.year);
+      var key = lower(entry.candidacy);
       if (!has(index, key)) { index[key] = zones; }
     });
     return index;
@@ -872,14 +1041,17 @@
   /* Resolution order:
        1. person.allowedZones as given by the server (Code.gs computes it from
           eligibility.json and it wins whenever present)
-       2. allowedZonesFor[email], but only while the confirmed year/candidacy
-          still agree with the roster row that key was computed from
-       3. the derived "candidacy|year" index, so a corrected year/candidacy
-          resolves to whatever the rules give anyone with those attributes
-       4. literal "candidacy|year" / "candidacy" / "year:<n>" / "*" keys, for
-          any server that keys the map by attributes instead of email
+       2. allowedZonesFor[email], but only while the confirmed candidacy still
+          agrees with the roster row that key was computed from
+       3. the derived candidacy index, so a corrected candidacy resolves to
+          whatever the rules give anyone with that candidacy
+       4. literal "candidacy" / "*" keys, for any server that keys the map by
+          attributes instead of email
        5. every zone (fail open — the server re-checks on submit, and failing
-          closed would leave the person unable to pick anything at all) */
+          closed would leave the person unable to pick anything at all)
+
+     Steps 2-4 are an estimate, and the one caller that shows them to a student
+     (ViewLogin) labels them as one. */
   function resolveAllowedZones(p) {
     if (!p) { return []; }
     var direct = normaliseZoneList(p.allowedZones);
@@ -888,14 +1060,11 @@
     var lookup = zoneMapLookup();
     var email = lower(p.email);
     var candidacy = lower(p.candidacy);
-    var year = (p.year == null || p.year === '') ? '' : String(p.year);
     var resolved;
 
     if (email && has(lookup, email)) {
       var row = rosterEntry(email);
-      var unchanged = !row ||
-        ((!candidacy || lower(row.candidacy) === candidacy) &&
-         (!year || String(row.year) === year));
+      var unchanged = !row || !candidacy || lower(row.candidacy) === candidacy;
       if (unchanged) {
         resolved = normaliseZoneList(lookup[email]);
         if (resolved) { return resolved; }
@@ -903,13 +1072,12 @@
     }
 
     var byAttrs = attributeZoneIndex();
-    var attrKey = candidacy + '|' + year;
-    if (has(byAttrs, attrKey)) {
-      resolved = normaliseZoneList(byAttrs[attrKey]);
+    if (has(byAttrs, candidacy)) {
+      resolved = normaliseZoneList(byAttrs[candidacy]);
       if (resolved) { return resolved; }
     }
 
-    var keys = [attrKey, candidacy, 'year:' + year, '*'];
+    var keys = [candidacy, '*'];
     for (var i = 0; i < keys.length; i++) {
       if (has(lookup, keys[i])) {
         resolved = normaliseZoneList(lookup[keys[i]]);
@@ -924,18 +1092,15 @@
 
   function normalisePerson(input) {
     if (!input) { return null; }
-    var year = parseInt(input.year, 10);
     var person = {
       email: lower(input.email),
       name: trim(input.name),
-      year: isNaN(year) ? null : year,
       candidacy: trim(input.candidacy),
       authMethod: lower(input.authMethod) || 'self_select',
       allowedZones: []
     };
     person.allowedZones = resolveAllowedZones({
       email: person.email,
-      year: person.year,
       candidacy: person.candidacy,
       allowedZones: input.allowedZones
     });
@@ -955,6 +1120,8 @@
 
     var person = normalisePerson(input);
     state.person = person;
+    /* Which claim is "mine" depends on who this is. */
+    indexClaims();
 
     if (!previous || previous.email !== person.email) {
       migrateAnonPicks(person.email);
@@ -1011,7 +1178,6 @@
     store.set(personKey(), {
       email: state.person.email,
       name: state.person.name,
-      year: state.person.year,
       candidacy: state.person.candidacy,
       authMethod: state.person.authMethod
     });
@@ -1279,8 +1445,16 @@
       errors.push({ code: 'no_person', message: 'We do not know who you are yet.' });
     } else {
       if (!p.name) { errors.push({ code: 'no_name', message: 'Your name is missing.' }); }
-      if (!(p.year > 0)) { errors.push({ code: 'bad_year', message: 'Confirm which year you are in.' }); }
       if (!p.candidacy) { errors.push({ code: 'no_candidacy', message: 'Confirm your candidacy status.' }); }
+    }
+
+    if (myClaimId) {
+      errors.push({
+        code: 'claimed',
+        deskId: myClaimId,
+        message: 'You are keeping ' + deskTitle(myClaimId) + ', so you are not in the ' +
+                 'ranking. Release it first if you would rather move.'
+      });
     }
 
     var seen = {};
@@ -1356,12 +1530,14 @@
     };
   }
 
+  /* Exactly the row Code.gs writes (SPEC §3.1). No `year`: the form does not
+     ask for it, candidacy alone decides eligibility, and sending a value the
+     student never confirmed would be recording a guess as a statement. */
   function submissionPayload() {
     var p = state.person || {};
     return {
       email: p.email,
       name: p.name,
-      year: p.year,
       candidacy: p.candidacy,
       choices: state.picks.slice(),
       authMethod: p.authMethod,
@@ -1438,6 +1614,9 @@
     if (!state.person) { return 'login'; }
     var saved = store.get(viewKey());
     var candidates = [];
+    /* Somebody who already claimed a desk is done: the only screen that means
+       anything to them is the one showing what they kept. */
+    if (myClaimId) { candidates.push('prelock'); }
     if (saved && saved.view) { candidates.push(saved.view); }
     if (state.bootstrap && state.bootstrap.priorSubmission) { candidates.push('confirm'); }
     if (store.get(STORAGE_PREFIX + 'seen.explainer')) { candidates.push('select'); }
@@ -1467,6 +1646,7 @@
 
     installZoneVars();
     indexDesks();
+    applyPrelockChrome();
 
     var tag = el('version-tag');
     if (tag) { tag.textContent = APP.clientVersion; }
@@ -1480,7 +1660,6 @@
       setPerson({
         email: b.person.email,
         name: b.person.name,
-        year: b.person.year,
         candidacy: b.person.candidacy,
         allowedZones: b.person.allowedZones,
         authMethod: b.person.authMethod || 'google'
@@ -1560,6 +1739,7 @@
       APP.state.bootstrap = b;
       installZoneVars();
       indexDesks();
+      applyPrelockChrome();
       reconcilePicks({});
       renderDeadline();
       emit('bootstrap:ready', b);
@@ -1568,6 +1748,57 @@
       banner('warn', 'Could not refresh: ' + errorText(err), { id: 'refresh-failed', timeout: 8000 });
       return null;
     }).then(function (r) { loading(false); return r; });
+  }
+
+  /* Reflects the PRELOCK_ENABLED script property in the stepper. Called on
+     every bootstrap, so flipping the property and reloading is enough — there
+     is no second place to change. */
+  function applyPrelockChrome() {
+    if (!viewEl('prelock')) { return; }
+    setStepEnabled('prelock', prelockEnabled(), prelockOffReason());
+  }
+
+  /* Claim or release a desk in the pre-lock step, then re-read the world so the
+     map greys out what just changed. Always resolves.
+     { ok, deskId?, keeping?, claimId?, timestampIso?, errors?:[strings] } */
+  function claimDesk(deskId, keeping) {
+    var p = state.person || {};
+    var wantKeep = keeping !== false;
+    if (!p.email) {
+      return Promise.resolve({ ok: false, errors: ['We do not know who you are yet.'] });
+    }
+    loading(true, wantKeep ? 'Claiming your desk…' : 'Releasing your desk…');
+
+    return server('claimDesk', {
+      email: p.email,
+      name: p.name,
+      deskId: deskId,
+      keeping: wantKeep,
+      clientVersion: APP.clientVersion
+    }).then(function (res) {
+      if (!res || res.ok !== true) {
+        var errs = (res && isArray(res.errors) && res.errors.length)
+          ? res.errors.map(function (e) { return typeof e === 'string' ? e : (e && e.message) || String(e); })
+          : ['The server refused that but did not say why.'];
+        return { ok: false, errors: errs };
+      }
+      return res;
+    }).catch(function (err) {
+      var msg = err && err.timedOut
+        ? 'We did not get a confirmation from the server. Reload the page to check ' +
+          'whether it went through before trying again.'
+        : errorText(err);
+      return { ok: false, errors: [msg] };
+    }).then(function (result) {
+      loading(false);
+      if (result.ok) {
+        emit('claim:changed', result);
+        /* The claim set is server state; re-read it rather than patching a
+           local copy that could disagree with what was actually written. */
+        return refresh().then(function () { return result; });
+      }
+      return result;
+    });
   }
 
   /* Remember that the explainer has been seen, so a refresh does not force the
@@ -1604,6 +1835,9 @@
     unlisten: unlisten,
     canEnter: canEnter,
     viewOrder: viewOrder,
+    nextStep: nextStep,
+    stepEnabled: stepEnabled,
+    setStepEnabled: setStepEnabled,
 
     /* --- identity --- */
     setPerson: setPerson,
@@ -1643,6 +1877,16 @@
     concentration: concentration,
     concentrationFor: concentrationFor,
     contentionLevel: contentionLevel,
+
+    /* --- pre-lock --- */
+    prelock: prelockConfig,
+    prelockEnabled: prelockEnabled,
+    prelockOpen: prelockOpen,
+    prelockOffReason: prelockOffReason,
+    claims: claims,
+    claimHolder: claimHolder,
+    myClaim: myClaim,
+    claimDesk: claimDesk,
 
     /* --- picks --- */
     maxPicks: maxPicks,
