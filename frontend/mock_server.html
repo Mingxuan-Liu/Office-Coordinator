@@ -1468,7 +1468,11 @@
   }
 
   function activeClaims() {
-    if (!PRELOCK_ENABLED) { return []; }
+    /* Deliberately NOT gated on PRELOCK_ENABLED, mirroring Code.gs: switching
+       the step off stops new claims, it does not release existing ones. Gating
+       here would let the preview show a desk as free that the real server would
+       still refuse. SEEDED_CLAIMS is still gated, because seeding pretend
+       claims only makes sense when the step is in use. */
     var latest = latestClaims();
     var out = [];
     Object.keys(latest).forEach(function (email) {

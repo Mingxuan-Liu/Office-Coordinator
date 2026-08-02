@@ -249,3 +249,60 @@ def test_config_data_gs_is_in_sync_with_config_dir(tmp_path):
         "--out frontend/ConfigData.gs\n"
         f"{proc.stdout}\n{proc.stderr}"
     )
+
+
+# ==========================================================================
+# Pre-lock claim semantics
+# ==========================================================================
+
+
+@requires_js
+def test_existing_claims_are_honoured_even_when_the_step_is_switched_off(tmp_path):
+    """PRELOCK_ENABLED means "students may still claim", not "claims exist".
+
+    Both `getBootstrap` and `submitRanking` must read the claim log
+    unconditionally. If either gated on the switch, turning the step off after
+    people had claimed would silently release their desks: the form would start
+    offering them to everyone, and a student who was told "there is nothing else
+    for you to do" would lose their seat without being asked. And if only *one*
+    of the two gated, the form and the server would disagree -- the form would
+    invite a ranking the server then refuses.
+
+    Asserted against the source because the behaviour lives in Apps Script,
+    which the Python suite cannot execute. Crude, but it pins the decision, and
+    the comment above each site explains it.
+    """
+    code = (FRONTEND / "Code.gs").read_text(encoding="utf-8")
+
+    # Claim *creation* must still be gated: no new claims once the step is off.
+    claim_desk = code[code.index("function claimDesk"):]
+    claim_desk = claim_desk[: claim_desk.index("\nfunction ")]
+    assert "prelock.enabled" in claim_desk or "PRELOCK" in claim_desk, (
+        "claimDesk must refuse new claims when the step is switched off"
+    )
+
+    # Claim *enforcement* must not be gated.
+    submit = code[code.index("function submitRanking"):]
+    submit = submit[: submit.index("\nfunction ")]
+    read_at = submit.find("readKeepers_(")
+    assert read_at != -1, "submitRanking must read the claim log"
+    preceding = submit[:read_at]
+    guard = preceding.rfind("if (person)")
+    gated = preceding.rfind("prelockSettings_().enabled")
+    assert gated == -1 or gated < guard, (
+        "submitRanking must NOT gate reading the claim log on PRELOCK_ENABLED; "
+        "switching the step off would silently free desks people are keeping"
+    )
+
+
+@requires_js
+def test_the_mock_server_matches_that_rule(tmp_path):
+    """A preview that disagrees with the server teaches the wrong thing."""
+    mock = (FRONTEND / "mock_server.html").read_text(encoding="utf-8")
+    body = mock[mock.index("function activeClaims()"):]
+    body = body[: body.index("\n  function ")]
+    assert "if (!PRELOCK_ENABLED) { return []; }" not in body, (
+        "mock activeClaims() must not gate on PRELOCK_ENABLED -- the real server "
+        "does not, so the preview would show a desk as free that the server "
+        "would refuse"
+    )

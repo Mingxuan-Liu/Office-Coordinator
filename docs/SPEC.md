@@ -38,12 +38,16 @@ config/           # the only place problem-specific values live
   roster.csv
   scoring.json
   floorplans/*.png
+tools/
+  sync_config.py       # config/ -> frontend/ConfigData.gs
+  build_local_preview.py
+  merge_keepers.py     # the pre-lock claim log -> roster.csv (§3.5)
+  calibrate/           # standalone floor-plan calibration tool
 solver/
   deskmatch/      # the Python package
   pyproject.toml
   requirements.lock
 frontend/         # Google Apps Script sources + deploy instructions
-tools/calibrate/  # standalone HTML floor-plan calibration tool
 tests/
 docs/
 examples/         # runnable synthetic end-to-end example
@@ -241,8 +245,8 @@ Component B must run from this CSV alone with **no Google dependency**.
 | `timestamp` | ISO-8601 with UTC offset | e.g. `2026-09-15T14:03:22-04:00` |
 | `email` | string | lower-cased on ingest; joins to roster |
 | `name` | string | as submitted; roster value wins on conflict |
-| `candidacy` | string | as confirmed by the student; overrides roster |
-| `year` | int | **OPTIONAL.** No longer collected — candidacy alone decides zones. Read if present, recorded, never used for eligibility. An unparseable value is a warning. |
+| `candidacy` | string | as confirmed by the student; overrides roster. The **only** attribute the form collects, and therefore the only one that can override the roster |
+| `year` | int | **OPTIONAL, and no longer written.** The form does not ask — candidacy alone decides zones. Read if an older file has it, recorded, never used for eligibility. An unparseable value is a warning. |
 | `choice_1` … `choice_K` | desk id | exactly K columns, contiguous from 1 |
 | `client_version` | string | frontend build id, for debugging |
 | `auth_method` | string | `google` \| `self_select` — audit only, never affects the solve |
@@ -284,6 +288,37 @@ pool_people = roster members with keeps_desk falsy AND a valid submission
 A submission ranking a desk that is not in `pool_desks` is a **warning**, and
 that choice is dropped (the person keeps their other choices). If dropping leaves
 them with zero valid choices, that is an error naming the person.
+
+### 3.5 The pre-lock claim log — optional, Component A only
+
+The frontend has an optional step (Apps Script property `PRELOCK_ENABLED`,
+default `false`) on which a student claims the desk they already occupy and
+keeps it instead of ranking. It writes a second append-only sheet with its own
+CSV shape:
+
+| column | type | notes |
+|---|---|---|
+| `claim_id` | string | unique per row |
+| `timestamp` | ISO-8601 with UTC offset | as §3.1 |
+| `email` | string | lower-cased on ingest; joins to the roster |
+| `name` | string | as submitted |
+| `desk_id` | desk id | must exist in `rooms.json` |
+| `keeping` | bool | `yes`/`no` vocabulary of §2.3 |
+| `client_version` | string | audit only |
+
+**Row semantics are §3.2's, unchanged**: one row per action, releasing a desk
+appends `keeping=no` rather than deleting, and the latest row per email wins
+(timestamp, ties by later file position).
+
+The solver never reads this file. It is folded into `config/roster.csv` by
+`tools/merge_keepers.py`, which sets `keeps_desk`/`current_desk` and so feeds the
+existing §3.4 keeper mechanism — there is no second concept of "out of the pool".
+The merge refuses to write anything if two people are keeping the same desk, a
+claimer is not on the roster, or a desk id is unknown.
+
+A claim is deliberately **not** checked against `eligibility.json`. The rule
+table governs where a person may be *assigned*; remaining where they already sit
+is not an assignment, and §3.4 has never zone-checked `current_desk` either.
 
 ---
 

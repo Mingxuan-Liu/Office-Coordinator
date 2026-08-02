@@ -63,6 +63,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # The package lives in solver/, which is not necessarily installed.
 sys.path.insert(0, str(REPO_ROOT / "solver"))
 
+from deskmatch import eligibility                                  # noqa: E402
+from deskmatch.config import load_config                           # noqa: E402
 from deskmatch.responses import parse_timestamp                    # noqa: E402
 from deskmatch.validate import (                                   # noqa: E402
     desk_ids_of,
@@ -144,8 +146,8 @@ def read_table(path: Path, what: str) -> tuple[list[str], list[dict[str, str]]]:
     return header, rows
 
 
-def load_desk_ids(rooms_path: Path) -> frozenset[str]:
-    """Desk ids from ``rooms.json``, validated by the same code the solver uses."""
+def load_desk_zones(rooms_path: Path) -> dict[str, str]:
+    """Desk id -> zone id, from ``rooms.json``, validated by the solver's own code."""
     text = read_text(rooms_path, "rooms.json")
     try:
         doc = json.loads(text)
@@ -161,7 +163,12 @@ def load_desk_ids(rooms_path: Path) -> frozenset[str]:
     ids = desk_ids_of(doc)
     if not ids:
         die(f"{rooms_path} declares no desks at all.", EXIT_INVALID)
-    return frozenset(ids)
+    return {
+        str(desk["id"]): str(desk.get("zone", ""))
+        for room in doc.get("rooms", [])
+        for desk in room.get("desks", [])
+        if isinstance(desk, dict) and desk.get("id")
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +337,58 @@ def index_roster(rows: Sequence[Mapping[str, str]], path: Path) -> dict[str, int
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
+
+
+def warn_out_of_zone(
+    latest: Mapping[str, Claim],
+    roster_rows: Sequence[Mapping[str, str]],
+    roster_index: Mapping[str, int],
+    desk_zones: Mapping[str, str],
+    config_dir: Path,
+) -> None:
+    """Flag a claim on a desk the claimer could not have been *assigned*.
+
+    This is a warning, never an error. Keeping the desk you already sit at is
+    not an assignment, and `keeps_desk` has never been zone-checked -- a
+    pre-candidate who is already in the upper-years room is not doing anything
+    wrong by staying there.
+
+    But it is worth saying out loud. The zone exists because the cohort is meant
+    to sit together, and pre-lock is precisely the change that stops the
+    coordinator from hearing about each of these in person. If nobody printed
+    it here, nobody would find out.
+    """
+    try:
+        config = load_config(config_dir)
+    except Exception:
+        return  # config problems are reported elsewhere; do not double up
+
+    for email in sorted(latest):
+        claim = latest[email]
+        if not claim.keeping or email not in roster_index:
+            continue
+        zone = desk_zones.get(claim.desk_id, "")
+        person = config.roster.by_email(email)
+        if person is None or not zone:
+            continue
+        try:
+            allowed = eligibility.allowed_zones(config.eligibility, config.rooms, person)
+        except Exception:
+            continue
+        if zone in allowed:
+            continue
+        zone_label = getattr(config.rooms.zones.get(zone), "label", zone)
+        allowed_labels = ", ".join(
+            getattr(config.rooms.zones.get(z), "label", z) for z in allowed
+        ) or "(none)"
+        who = f"{claim.name} <{email}>" if claim.name else email
+        warn(
+            f"{who} is keeping {claim.desk_id}, which is in '{zone_label}'. The "
+            f"eligibility rules would only ever ASSIGN them to: {allowed_labels}. "
+            f"Keeping a desk you already occupy is allowed and this is not an "
+            f"error -- but the zone exists for a reason, so check this is what "
+            f"you intend."
+        )
 
 
 def validate(
@@ -551,7 +610,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"next to the roster."
         )
 
-    desk_ids = load_desk_ids(rooms_path)
+    desk_zones = load_desk_zones(rooms_path)
+    desk_ids = frozenset(desk_zones)
     roster_header, roster_rows = read_table(roster_path, "roster")
     for column in (ROSTER_EMAIL, ROSTER_KEEPS, ROSTER_DESK):
         if column not in roster_header:
@@ -579,6 +639,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_OK
 
     validate(latest, roster_rows, roster_index, desk_ids, keepers_path)
+    warn_out_of_zone(latest, roster_rows, roster_index, desk_zones, rooms_path.parent)
 
     vocabulary = Vocabulary.of(roster_rows)
     updated, changes = apply_claims(roster_rows, roster_index, latest, vocabulary)

@@ -242,7 +242,19 @@ function getBootstrap() {
   var prelock = prelockSettings_();
   var claims = [];
   var myClaim = null;
-  if (prelock.enabled) {
+  // Claims are read ALWAYS, not only while the step is switched on.
+  //
+  // PRELOCK_ENABLED means "students may still claim a desk", not "claims
+  // exist". If reading them were gated on the switch, turning the step off
+  // after people had claimed would silently un-hold their desks: the form would
+  // start offering those desks to everyone, and a student who was told "there
+  // is nothing else for you to do" could lose their seat without ever being
+  // asked. That failure is invisible to the coordinator and lands on the one
+  // person who did what the form told them to.
+  //
+  // submitRanking() reads them unconditionally for the same reason, so the two
+  // always agree and the form can never invite a ranking the server will refuse.
+  {
     try {
       claims = activeClaims_(roster);
       var mine = person ? person.email : '';
@@ -595,6 +607,11 @@ function submitRanking(payload) {
   // ---- pre-lock claim ---------------------------------------------------
   // Claiming a desk is a way out of the ranking, so someone holding a claim
   // cannot also submit one. Releasing the desk puts them back in the pool.
+  //
+  // NOT gated on PRELOCK_ENABLED. getBootstrap() reads claims unconditionally
+  // too, so the two agree and this can never reject a ranking the form invited.
+  // Switching the step off stops new claims; it does not release existing ones.
+  // See the comment in getBootstrap().
   var keepers = null;
   if (person) {
     try {
@@ -690,7 +707,7 @@ function submitRanking(payload) {
         errors.push('Choice ' + rank + ', ' + deskDescription_(deskIndex, desk.id) +
           ', is in ' + zoneLabel_(desk.zone) + ', which is not open to you' +
           (eligibilityReason ? ' — ' + eligibilityReason : '') +
-          ' If your year or candidacy is out of date, ask the coordinator to fix the roster.');
+          ' If your candidacy is out of date, ask the coordinator to fix the roster.');
       }
       canonical.push(desk.id);
     }

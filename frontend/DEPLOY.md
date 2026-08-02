@@ -202,9 +202,19 @@ into the roster, which is one command — see
 [Merging the claims](#merging-the-claims-into-the-roster) below.
 
 **If you turn `PRELOCK_ENABLED` back off** after claims exist, the step
-disappears and those desks stop being shown as taken. The rows stay in the tab
-and merging them still works, but the form will happily let somebody rank a desk
-a claimer thought they had kept. Merge first, then switch it off.
+disappears and nobody can make a *new* claim — but claims already made are still
+honoured. Those desks stay shown as taken, and anyone holding one still cannot
+submit a ranking. The switch means "students may still claim a desk", not
+"claims exist".
+
+That is deliberate. The alternative — releasing the claims when the step is
+switched off — fails silently and lands on exactly the wrong person: someone who
+did what the form told them, was shown "there is nothing else for you to do",
+and would then lose their desk without ever being asked.
+
+Merge the claims into the roster anyway, before you close the form. After
+merging, `keeps_desk` in `roster.csv` is what holds the desk, which is the
+version the solver reads and the version that is visible in git.
 
 ## Step 6 — Deploy
 
@@ -327,6 +337,23 @@ the person, correct the id, get one of the two to release) and re-export.
 
 People who are not in the keepers file are left alone, so a roster entry you set
 by hand survives the merge.
+
+### Watch for out-of-zone keeps
+
+`merge_keepers.py` prints a **warning**, not an error, when somebody keeps a desk
+the eligibility rules would never have *assigned* them — a pre-candidate staying
+at an upper-years desk, say:
+
+```
+merge_keepers: warning: Vera Rubin <vrubin@umich.edu> is keeping D01, which is in
+'Upper years side'. The eligibility rules would only ever ASSIGN them to: First
+and second years side. ...
+```
+
+Keeping the desk you already sit at is not an assignment, so this is allowed and
+the merge proceeds. But the zone exists because that cohort is meant to sit
+together, and pre-lock is the change that stops you hearing about each of these
+in person — so this line is the only place it surfaces. Read it, then decide.
 
 ## Closing the form
 
