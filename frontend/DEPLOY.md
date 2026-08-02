@@ -10,8 +10,8 @@ card, no command line beyond one Python script.
 
 ## What you are building
 
-A web page, hosted by Google, that shows students the floor plan and records
-their ranked desk choices into a Google Sheet you own. That Sheet is the only
+A web page, hosted by Google, that shows students a plan of the desks and
+records their ranked choices into a Google Sheet you own. That Sheet is the only
 thing the Python solver needs.
 
 Two properties make this work without any infrastructure:
@@ -30,7 +30,7 @@ Two properties make this work without any infrastructure:
 | file | what it is | hand-edit? |
 |---|---|---|
 | `Code.gs` | Server: serves the page, validates, writes to the Sheet | yes |
-| `ConfigData.gs` | Desks, zones, roster, floor plan image | **no — generated** |
+| `ConfigData.gs` | Desks, zones, roster | **no — generated** |
 | `appsscript.json` | Project manifest (timezone, scopes, deployment) | rarely |
 | `Index.html` | Page shell; pulls in everything else | yes |
 | `Style.html` | All CSS | yes |
@@ -55,10 +55,14 @@ From the repo root:
 python tools/sync_config.py --config-dir config/ --out frontend/ConfigData.gs
 ```
 
-If it warns that the floor plan image is missing, fix that first: put the plan
-PNG at the path `config/rooms.json` names (see `config/floorplans/README.md`) and
-re-run. The solver survives a missing image; students being asked to rank desks
-with no plan to look at do not.
+No floor-plan bitmap is involved. `config/rooms.json` is a schematic — the desk
+rectangles are the map, and their spacing carries the layout (narrow gap = two
+columns facing each other, wide gap = an aisle, widest = the wall between the two
+sides). That is why the generated file is about 20 KB rather than a megabyte.
+
+If the script warns that a room *declares* an `image`, that is a leftover key:
+the form cannot draw one. Remove the key, or leave it if you want it for the
+validator's sake — either way nothing is embedded.
 
 Commit the result.
 
@@ -403,5 +407,11 @@ page load — no redeploy needed, but do reload.
 Run `tools/merge_keepers.py` (above). Nothing reads the `Keepers` tab
 automatically.
 
-**The page is fine but the map is blank with a warning.** The floor plan image is
-missing from `ConfigData.gs`. See step 1.
+**The map looks like plain rectangles.** That is what it is. There is no floor
+plan drawing: the desk shapes and the gaps between them are the map. Desks 1-2,
+15-16, 17-18 and 27-28 sit against walls, and a wide gap means an aisle.
+
+**A desk is in the wrong place.** Fix it in `tools/calibrate/index.html`
+(Import `config/rooms.json`, correct it, Export), commit, then re-run
+`tools/sync_config.py` and redeploy. Opening the tool and exporting without
+changing anything produces no diff, so `git diff` shows exactly what you moved.

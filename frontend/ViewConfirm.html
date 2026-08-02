@@ -57,7 +57,6 @@
       dominant-baseline: central;
       pointer-events: none;
     }
-    #view-confirm .thumb__plan { opacity: 0.35; }
     #view-confirm .receipt__id {
       font-family: var(--font-mono);
       font-size: var(--fs-sm);
@@ -316,8 +315,6 @@
     var ids = picks();
     if (!ids.length) { card.hidden = true; return; }
 
-    var b = APP.state.bootstrap || {};
-    var plans = (b.floorplans && typeof b.floorplans === 'object') ? b.floorplans : {};
     var normalized = APP.coordSpace() !== 'pixels';
     var rank = {};
     ids.forEach(function (id, i) { rank[id] = i + 1; });
@@ -334,13 +331,6 @@
       var svg = ['<svg class="thumb__svg" viewBox="0 0 ' + canvas.w + ' ' + canvas.h + '" ' +
                  'role="img" aria-label="' + esc(room.label || room.id) +
                  ', with your ranked desks numbered">'];
-
-      var plan = plans[room.id];
-      if (plan) {
-        svg.push('<image class="thumb__plan" href="' + esc(plan) + '" x="0" y="0" ' +
-                 'width="' + canvas.w + '" height="' + canvas.h + '" ' +
-                 'preserveAspectRatio="none"></image>');
-      }
 
       desks.forEach(function (d) {
         var geo = bbox(d.shape, canvas.sx, canvas.sy);

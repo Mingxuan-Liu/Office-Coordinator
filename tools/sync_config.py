@@ -14,7 +14,6 @@ What it emits (all of it read from the config, none of it written down here):
     var ELIGIBILITY_JSON    eligibility.json, verbatim
     var SCORING_JSON        scoring.json, verbatim  (K = len of the primary curve)
     var ROSTER              roster.csv as a list of objects, every column kept
-    var FLOORPLAN_DATA_URI  room id -> "data:image/png;base64,..." | null,
                             for the rooms that declare an `image` — normally
                             none, so normally ``{}``
     var CONFIG_FINGERPRINT  sha256 prefix over every input that ends up in here
@@ -258,10 +257,6 @@ def render(
         "var ELIGIBILITY_JSON = " + js_literal(eligibility) + ";\n\n",
         "var SCORING_JSON = " + js_literal(scoring) + ";\n\n",
         "var ROSTER = " + js_literal(roster) + ";\n\n",
-        "// Room id -> data URI, or null if the declared image file was missing.\n"
-        "// Only rooms with an \"image\" key in rooms.json appear, so {} is the normal\n"
-        "// result: the desk rectangles are the map. Absent and null read alike.\n",
-        "var FLOORPLAN_DATA_URI = " + js_literal(floorplans) + ";\n\n",
         "var CONFIG_FINGERPRINT = " + json.dumps(fingerprint) + ";\n",
     ]
     return "".join(parts)
@@ -306,6 +301,16 @@ def build(config_dir: Path) -> tuple[str, dict]:
         if not rel:
             continue
         declared.append(room_id)
+        # The frontend has no bitmap path at all any more: the student map is
+        # drawn from the desk rectangles. Embedding the file would add a
+        # megabyte to ConfigData.gs that nothing would ever render, and the
+        # coordinator would have no way to tell. Say so instead.
+        warn(
+            f'room "{room_id}": rooms.json declares an image ({rel}), but the web '
+            f"form no longer draws floor-plan bitmaps -- the desk rectangles are "
+            f"the map. The image is NOT embedded. It still affects the validator "
+            f'and the report; remove the "image" key if you did not mean to keep it.'
+        )
         uri, data = encode_image(config_dir, rel)
         floorplans[room_id] = uri
         if data is None:

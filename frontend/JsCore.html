@@ -905,13 +905,27 @@
     if (has(lockedIndex, d.id)) { return { ok: false, code: 'locked', reason: lockedIndex[d.id] }; }
     var zones = state.person && state.person.allowedZones;
     if (isArray(zones) && zones.length && zones.indexOf(d.zone) < 0) {
+      /* The tooltip already prints the zone as the desk's subtitle, so naming
+         it again here read as a stutter -- and with a whole cohort's side now
+         barred, that is twelve desks repeating themselves. Say what to do
+         instead, which is the part the student does not already know. */
       return {
         ok: false,
         code: 'zone',
-        reason: 'You are not eligible for the ' + zoneStyle(d.zone).label + '.'
+        reason: 'Not open to you. You can be seated in: ' + allowedZoneLabels() + '.'
       };
     }
     return { ok: true, code: 'ok', reason: '' };
+  }
+
+  /* The zones this person may be seated in, as human labels, in the order
+     rooms.json declares them. Empty string if we do not know yet. */
+  function allowedZoneLabels() {
+    var zones = state.person && state.person.allowedZones;
+    if (!isArray(zones) || !zones.length) { return 'your assigned area'; }
+    var labels = zones.map(function (z) { return zoneStyle(z).label; });
+    if (labels.length === 1) { return labels[0]; }
+    return labels.slice(0, -1).join(', ') + ' and ' + labels[labels.length - 1];
   }
 
   function isSelectable(id) { return deskStatus(id).ok; }

@@ -45,6 +45,14 @@ var ROOMS_JSON = {
     "The main office has none on purpose -- the tabs already say which room",
     "you are in, and the spacing says the rest.",
     "",
+    "A door's \"swing\" is the corner it is hinged on: nw / ne / sw / se.",
+    "The senior office door is \"se\", which opens it the opposite way to the",
+    "renderers' default of \"sw\". Change that one word to move the hinge.",
+    "",
+    "A feature's \"note\" is shown to STUDENTS as a tooltip on the plan, so",
+    "keep it a plain description. Anything aimed at the coordinator belongs",
+    "here in _comment instead.",
+    "",
     "VERIFY BEFORE DEPLOYING: tools/calibrate/index.html, Import, Preview."
   ],
   "coord_space": "normalized",
@@ -529,7 +537,7 @@ var ROOMS_JSON = {
               0.135
             ]
           },
-          "note": "Hinged on the south-east corner, so it opens the opposite way to the renderer's default. Change 'swing' to sw/nw/ne to move the hinge.",
+          "note": "Door to the corridor.",
           "swing": "se"
         }
       ],
@@ -863,9 +871,4 @@ var ROSTER = [
   }
 ];
 
-// Room id -> data URI, or null if the declared image file was missing.
-// Only rooms with an "image" key in rooms.json appear, so {} is the normal
-// result: the desk rectangles are the map. Absent and null read alike.
-var FLOORPLAN_DATA_URI = {};
-
-var CONFIG_FINGERPRINT = "a774ab3f2e0bf6d9";
+var CONFIG_FINGERPRINT = "0c5a1d8178e43643";

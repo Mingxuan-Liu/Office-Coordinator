@@ -152,7 +152,6 @@ function getBootstrap() {
       deadlinePassed: false,
       clientVersion: clientVersion_(),
       rooms: null,
-      floorplans: {},
       zones: {},
       person: null,
       identity: { sessionEmail: '', onRoster: false },
@@ -281,7 +280,6 @@ function getBootstrap() {
     clientVersion: clientVersion_(),
     configFingerprint: safeCfg_('CONFIG_FINGERPRINT', ''),
     rooms: rooms,                                  // rooms.json, verbatim
-    floorplans: safeCfg_('FLOORPLAN_DATA_URI', {}), // room id -> data URI | null
     zones: zones,
     person: person,
     identity: { sessionEmail: sessionEmail, onRoster: !!matched },
