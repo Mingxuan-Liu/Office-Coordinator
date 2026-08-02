@@ -61,6 +61,10 @@ last two against the bytes that were actually written:
    the same question is asked again through a completely different extractor.
    It is optional — it is not in ``requirements.lock`` — and the primary audit
    is self-contained: stdlib ``zlib`` and ``re`` only.
+4. **Private-note search (SPEC §7.3).** When the run has private notes, the same
+   text layer is searched for them. Those are a different kind of secret from a
+   ranking — disclosive on their own, not merely when attributed — so the rule
+   is absence, not anonymity. Check G in :func:`audit_public_pdf`.
 
 Floor-plan images
 -----------------
@@ -96,10 +100,11 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
 
+from . import accommodations as acc_mod  # noqa: E402
 from . import figures_map as fmap  # noqa: E402
 from . import figures_stats as fstats  # noqa: E402
 from . import provenance as prov_mod  # noqa: E402
-from .errors import DeskMatchError  # noqa: E402
+from .errors import PrivacyError  # noqa: E402  (re-exported; see __all__)
 from .types import Infeasibility, Problem, Solution  # noqa: E402
 
 __all__ = [
@@ -175,6 +180,7 @@ COORDINATOR_ONLY_PAGE_KINDS: frozenset[str] = frozenset({
     "preference-matrix",
     "rank-by-name",
     "ledger",
+    "accommodations",
     "diagnostic-summary",
     "diagnostic-blocking",
     "diagnostic-roster",
@@ -225,15 +231,10 @@ def _check_audience_agreement() -> None:
 _check_audience_agreement()
 
 
-class PrivacyError(DeskMatchError):
-    """The public report contains per-person preference data. Refuse to ship it.
-
-    Deliberately an error and not a warning. A report that leaks is not a
-    slightly-worse report; it is the one failure mode of this system that cannot
-    be undone once the PDF has been circulated.
-    """
-
-    exit_code = 1
+# `PrivacyError` is imported from `errors` and re-exported here, where it used to
+# be defined. It moved because `accommodations.assert_absent_from` enforces the
+# same rule against the non-PDF artefacts, and one rule with two exception types
+# is how a caller ends up catching only half of it.
 
 
 # ==========================================================================
@@ -1285,10 +1286,11 @@ def audit_public_pdf(
     solution: Solution | None,
     *,
     expect_names: bool | None = None,
+    accommodations: Any = None,
 ) -> PrivacyAudit:
     """Re-read a finished public PDF and look for attributed preference data.
 
-    Four overlapping checks, run against the bytes that were written rather than
+    Five overlapping checks, run against the bytes that were written rather than
     the objects they were drawn from:
 
     **A — same line.** Runs are clustered into visual lines by baseline. A desk
@@ -1310,6 +1312,14 @@ def audit_public_pdf(
 
     **D — audience markings.** No coordinator banner may appear, and every page
     must be footed ``PUBLIC``.
+
+    **G — private-note text.** Given ``accommodations``, no five-word run from
+    any note may appear anywhere in the document. Unlike A–C this is not about
+    attribution: a note is disclosive on its own ("I need to be away from Ada"
+    names somebody whether or not the author is identified), so the text must be
+    absent outright rather than merely unattributed. The comparison is over
+    normalised words, so line wrapping, hyphenation and page breaks cannot hide
+    a leak. See ``accommodations.fingerprints``.
 
     Honest limits, in order of how much they matter:
 
@@ -1352,6 +1362,28 @@ def audit_public_pdf(
     )
     limitations.append("reads the text layer only; raster content is not examined.")
     findings: list[PrivacyFinding] = []
+
+    # ---- G: private-note text, anywhere in the document ------------------
+    # Done over the whole document rather than page by page, so a note split
+    # across a page break is still caught.
+    # Keyed on `is not None`, not on truthiness: an Accommodations whose *latest*
+    # view is empty can still hold superseded and withdrawn text, and that text
+    # must not appear in a public file either.
+    note_marks = (
+        acc_mod.all_fingerprints(accommodations) if accommodations is not None else ()
+    )
+    if note_marks:
+        checks.append("G private-note text")
+        whole = acc_mod.normalise_words(" ".join(run.text for run in runs))
+        for email, phrase in note_marks:
+            if phrase in whole:
+                findings.append(PrivacyFinding(
+                    "G", 0, email, "",
+                    f"the public report contains private-note text from {email} "
+                    f"(\"{acc_mod._excerpt(phrase)}\"). Per SPEC §7.3 these notes "
+                    f"never appear outside the coordinator copy.",
+                ))
+                break   # one is already a failure; do not print the note twice
 
     n_pages = len(page_sizes) if page_sizes else 1 + max(
         (r.page for r in runs), default=-1)
@@ -1543,13 +1575,16 @@ def assert_public_safe(
     solution: Solution | None,
     *,
     corroborate: bool = True,
+    accommodations: Any = None,
 ) -> PrivacyAudit:
     """Run `audit_public_pdf`, and raise `PrivacyError` if anything is attributed.
 
     This is what `build_report(full=False)` calls before it returns, so a
     leaking public PDF is never handed back to the caller as a success.
     """
-    audit = audit_public_pdf(path, config, problem, solution)
+    audit = audit_public_pdf(
+        path, config, problem, solution, accommodations=accommodations
+    )
     if corroborate:
         ok, extra, status = _corroborate_with_pypdf(path, config, problem, solution)
         audit = PrivacyAudit(
@@ -1565,8 +1600,9 @@ def assert_public_safe(
         )
     if not audit.ok:
         raise PrivacyError(
-            "the public report attributes per-person preference data, which "
-            "SPEC §7.2 forbids. The file has NOT been deleted — inspect "
+            "the public report carries data that SPEC §7.2/§7.3 keeps out of it — "
+            "per-person preferences attributed to a name, or private-note text. "
+            "The file has NOT been deleted — inspect "
             f"{os.fspath(path)} and fix the figure that produced it.\n"
             + audit.render()
         )
@@ -2079,6 +2115,87 @@ def _flow(deck: _Deck, kind: str, title: str, items: Sequence[_Item],
             return
 
 
+def _accommodation_items(
+    accommodations: Any, config: Any, solution: Solution
+) -> list[_Item]:
+    """The coordinator-only private-notes section (SPEC §7.3).
+
+    One entry per person: who they are, what desk the solve gave them, and the
+    note verbatim. `_flow` paginates it, so a note of any length lays out across
+    as many pages as it needs and nothing is truncated — which matters, because
+    truncating the one sentence that explains *why* somebody needs a particular
+    desk would defeat the point of collecting it.
+    """
+    latest = dict(getattr(accommodations, "latest", {}) or {})
+    items: list[_Item] = [
+        _Item(
+            "Free-text notes students left on the confirm page, private to the "
+            "coordinator. They were written on the understanding that nobody else "
+            "reads them, and they contain what that invites: health, "
+            "accessibility, caring responsibilities, and conflict with a named "
+            "person. They are in this copy and in "
+            f"out/{acc_mod.COORDINATOR_TXT_NAME} (owner-readable only), and "
+            "nowhere else — not in results.json, not in the anonymised responses, "
+            "and not in the public report, which is checked for them before it is "
+            "released.",
+            size=8.8, color=_MUTED, gap_after=0.10,
+        ),
+        _Item(
+            "None of this entered the solve. The assignment was computed from the "
+            "rankings, the config and the seed alone (SPEC I2); there is no code "
+            "path by which a note could have moved anybody. To act on one, change "
+            "an input — take a desk out of the pool in rooms.json — and re-run, so "
+            "that what you did is visible in git.",
+            size=8.8, color=_WARN, gap_after=0.16,
+        ),
+    ]
+
+    if not latest:
+        items.append(_Item("No notes were submitted this cycle.", size=8.8,
+                           color=_MUTED))
+        return items
+
+    desk_of: dict[str, str] = {}
+    for assignment in getattr(solution, "assignments", ()) or ():
+        desk_of[assignment.email] = (
+            f"desk {assignment.desk_id} ({assignment.desk_label}), "
+            f"choice #{assignment.rank_received}"
+        )
+
+    for index, email in enumerate(sorted(latest), start=1):
+        note = latest[email]
+        where = desk_of.get(email)
+        if where is None:
+            person = None
+            roster = getattr(config, "roster", None)
+            if roster is not None:
+                person = roster.by_email(email)
+            if person is not None and person.keeps_desk and person.current_desk:
+                where = (f"desk {person.current_desk} — keeping their current "
+                         f"seat, not in the pool")
+            elif person is None:
+                where = "not on the roster; no desk assigned"
+            else:
+                where = "no desk assigned (not in the pool this cycle)"
+        items.append(_Item(
+            f"{index}. {note.name or email} <{email}> — {where}",
+            size=9.0, weight="bold", gap_before=0.18, gap_after=0.04,
+        ))
+        if note.timestamp:
+            items.append(_Item(f"submitted {note.timestamp}", size=7.8,
+                               color=_MUTED, indent=0.17, gap_after=0.06))
+        items.append(_Item(note.text, size=9.0, indent=0.17, gap_after=0.06))
+
+    warnings = tuple(getattr(accommodations, "warnings", ()) or ())
+    if warnings:
+        items.append(_Item("NOTES FROM READING THE FILE", size=8.2, color=_ACCENT,
+                           weight="bold", gap_before=0.24, gap_after=0.06))
+        for warning in warnings:
+            items.append(_Item(warning, size=8.2, color=_MUTED, indent=0.17,
+                               gap_after=0.035))
+    return items
+
+
 def _ledger_items(build: Any, responses: Any, solution: Solution) -> list[_Item]:
     items: list[_Item] = []
 
@@ -2311,7 +2428,7 @@ def _provenance_page(
 # ==========================================================================
 
 
-def _page_index(full: bool) -> list[tuple[str, str]]:
+def _page_index(full: bool, has_notes: bool = False) -> list[tuple[str, str]]:
     index = [
         ("1", "the result in one sentence, with the seed and the response hash."),
         ("2", "this page."),
@@ -2326,9 +2443,10 @@ def _page_index(full: bool) -> list[tuple[str, str]]:
     if full:
         index.append(("10", "coordinator only: the full preference table, rank "
                             "received by name, and the data-quality ledger."))
-        index.append(("last", "provenance and the command to reproduce this run."))
-    else:
-        index.append(("last", "provenance and the command to reproduce this run."))
+        if has_notes:
+            index.append(("11", "coordinator only: the private notes students left "
+                                "for you. Not in the public copy."))
+    index.append(("last", "provenance and the command to reproduce this run."))
     return index
 
 
@@ -2356,6 +2474,7 @@ def build_report(
     seed_rows: Sequence[Any] = (),
     provenance: Mapping[str, Any] | None = None,
     responses: Any = None,
+    accommodations: Any = None,
     page_size: tuple[float, float] = PAGE_SIZE,
     verify_privacy: bool = True,
 ) -> ReportResult:
@@ -2391,6 +2510,12 @@ def build_report(
         Optional `types.Responses`. Only the coordinator ledger needs it, for
         the superseded-submission count; without it that one line says so rather
         than guessing.
+    accommodations
+        Optional `accommodations.Accommodations` (SPEC §7.3). Under `full=True`
+        its contents get a coordinator-only section. Under `full=False` it is
+        used the other way round: as the list of strings the finished public PDF
+        is searched for and must not contain. Passing it therefore makes the
+        public build *stricter*, never different — no page depends on it.
     verify_privacy
         When building the public report, re-open the finished file and audit it
         (see `assert_public_safe`). Leave this on.
@@ -2427,7 +2552,7 @@ def build_report(
         _title_page(deck, config=config, build=build, solution=solution,
                     provenance=prov, responses=responses, full=full)
         _method_page(deck, build=build, solution=solution, full=full,
-                     page_index=_page_index(full))
+                     page_index=_page_index(full, bool(accommodations)))
         _outcome_page(deck, solution)
         _rank_strip_page(deck, solution)
         _map_pages(deck, config=config, problem=problem, solution=solution,
@@ -2445,6 +2570,10 @@ def build_report(
             _flow(deck, "ledger", "Pool, conflicts and data quality",
                   _ledger_items(build, responses, solution),
                   page_size=page_size, banner=AUDIENCE_COORDINATOR)
+            if accommodations is not None:
+                _flow(deck, "accommodations", "Private notes to the coordinator",
+                      _accommodation_items(accommodations, config, solution),
+                      page_size=page_size, banner=AUDIENCE_COORDINATOR)
         _provenance_page(deck, config=config, solution=solution,
                          provenance=prov, responses=responses)
 
@@ -2452,7 +2581,8 @@ def build_report(
 
     audit: PrivacyAudit | None = None
     if not full and verify_privacy:
-        audit = assert_public_safe(target, config, problem, solution)
+        audit = assert_public_safe(target, config, problem, solution,
+                                   accommodations=accommodations)
 
     return ReportResult(
         path=str(target),

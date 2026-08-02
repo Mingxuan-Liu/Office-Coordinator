@@ -11,6 +11,14 @@ seeds is driven by `sensitivity_seeds` in the same file and is reported
 alongside the result, so the question "would another seed have changed this?"
 is answered in the PDF rather than by re-running with a different flag.
 
+`solve --accommodations` is not a counter-example to any of that. It feeds the
+private notes (SPEC §7.3) to the coordinator's own outputs and to nothing else:
+`results.json`, `assignments.csv`, `responses_anonymized.csv` and
+`results_public.pdf` are byte-identical whether or not the flag is passed, which
+is asserted by a test that runs both ways and diffs them. A note is advice to a
+human. Acting on one means changing an input -- a desk marked unavailable in
+`rooms.json` -- which is visible in git, exactly like changing the seed.
+
 Exit codes are documented in docs/SPEC.md §9.
 """
 
@@ -72,6 +80,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
 
 def cmd_solve(args: argparse.Namespace) -> int:
+    from . import accommodations as acc_mod
     from . import baselines, diagnostics, problem as problem_mod, provenance, report
     from . import responses as responses_mod
     from . import solve as solve_mod
@@ -79,6 +88,16 @@ def cmd_solve(args: argparse.Namespace) -> int:
 
     cfg = load_config(Path(args.config))
     resp = responses_mod.load_responses(Path(args.responses), cfg.k)
+    # Loaded here, before anything is written, so a broken notes export fails the
+    # run early rather than after the department's PDF is on disk. It is read
+    # only by the coordinator outputs below: no part of the solve can see it
+    # (SPEC I2, §7.3).
+    notes = None
+    if args.accommodations:
+        notes = acc_mod.load(
+            Path(args.accommodations),
+            roster_emails=[p.email for p in cfg.roster.people],
+        )
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -90,6 +109,12 @@ def cmd_solve(args: argparse.Namespace) -> int:
     print(f"  sha256      : {resp.sha256}")
     print(f"  submissions : {len(resp.submissions)} row(s), "
           f"{len(resp.latest)} person/people after de-duplication")
+    if notes is not None:
+        # The COUNT is a normal run-summary line. The CONTENT goes only to the
+        # coordinator report and the 0600 text file -- never to stdout, which
+        # ends up in scrollback, terminal logs and screen shares.
+        print(f"  notes       : {len(notes)} private note(s) recorded "
+              f"(content is written only to the coordinator files)")
     print(f"  seed        : {seed!r}")
     if cfg.scoring.seed_year is not None and cfg.scoring.seed_year_from_clock:
         print(f"                (cycle year {cfg.scoring.seed_year}, resolved now and "
@@ -111,15 +136,19 @@ def cmd_solve(args: argparse.Namespace) -> int:
     print(f"  {prob.n_people} people competing for {prob.n_desks} desks (K={prob.k})")
     if build.locked_desks:
         print(f"  {len(build.locked_desks)} desk(s) held by people keeping their seat")
-    notes = build.render_warnings()
-    if notes:
+    pool_notes = build.render_warnings()
+    if pool_notes:
         print("\nNotes:")
-        print(notes)
+        print(pool_notes)
+    if notes is not None and notes.warnings:
+        print(f"\nPrivate notes file ({len(notes.warnings)} warning(s)):")
+        for warning in notes.warnings:
+            print(f"  ! {warning}")
 
     try:
         solution = solve_mod.solve(prob, seed, args.backend)
     except InfeasibleError as exc:
-        return _handle_infeasible(exc, cfg, build, out, seed)
+        return _handle_infeasible(exc, cfg, build, out, seed, notes)
 
     _rule("RESULT")
     hist = solution.rank_histogram()
@@ -151,6 +180,17 @@ def cmd_solve(args: argparse.Namespace) -> int:
     responses_mod.write_anonymized(anon_path, resp, seed)
     print(f"  wrote {anon_path}")
 
+    if notes is not None:
+        # SPEC §7.3: these three files go to the whole department, so the notes
+        # must not be in them. Checked against the bytes just written rather than
+        # trusted, for the same reason the public PDF is re-opened and audited:
+        # a leak here cannot be undone once the folder has been posted.
+        acc_mod.assert_absent_from(notes, {
+            str(results_path): results_path.read_bytes(),
+            str(out / "assignments.csv"): (out / "assignments.csv").read_bytes(),
+            str(anon_path): anon_path.read_bytes(),
+        })
+
     # ---- analysis for the report ---------------------------------------
     rsd = baselines.random_serial_dictatorship(prob, args.trials, seed)
     unif = baselines.uniform_random_assignment(prob, args.trials, seed)
@@ -178,15 +218,25 @@ def cmd_solve(args: argparse.Namespace) -> int:
         public_pdf, cfg, build, solution, full=False,
         baselines=[rsd, unif], curve_rows=curve_rows, seed_rows=seed_rows,
         provenance=prov,
+        # Not drawn: searched for. Passing the notes here makes the finished
+        # public PDF get audited for their text as well as for attributed
+        # rankings. It cannot change a byte of the file (SPEC §7.3).
+        accommodations=notes,
     )
     print(f"  wrote {public_pdf}")
+
+    if notes is not None:
+        notes_path = out / acc_mod.COORDINATOR_TXT_NAME
+        acc_mod.write_coordinator_text(notes_path, notes, solution=solution,
+                                       config=cfg)
+        print(f"  wrote {notes_path}   *** PRIVATE NOTES -- 0600, DO NOT SHARE ***")
 
     if args.full:
         coord_pdf = out / "results_coordinator.pdf"
         report.build_report(
             coord_pdf, cfg, build, solution, full=True,
             baselines=[rsd, unif], curve_rows=curve_rows, seed_rows=seed_rows,
-            provenance=prov,
+            provenance=prov, accommodations=notes,
         )
         print(f"  wrote {coord_pdf}   *** CONTAINS INDIVIDUAL PREFERENCES ***")
 
@@ -200,11 +250,15 @@ def cmd_solve(args: argparse.Namespace) -> int:
     print(f"  Publish: {results_path.name}, {public_pdf.name}, "
           f"{anon_path.name}, and the response file whose sha256 is\n"
           f"  {resp.sha256}")
+    if notes is not None:
+        print(f"  Do NOT publish: {acc_mod.COORDINATOR_TXT_NAME}"
+              + (f", {(out / 'results_coordinator.pdf').name}" if args.full else ""))
     return 0
 
 
-def _handle_infeasible(exc, cfg, build, out: Path, seed: str) -> int:
+def _handle_infeasible(exc, cfg, build, out: Path, seed: str, notes=None) -> int:
     """The K-floor could not be met. Write diagnostics and refuse to assign."""
+    from . import accommodations as acc_mod
     from . import diagnostics, report
 
     diagnosis = exc.diagnosis
@@ -234,6 +288,14 @@ def _handle_infeasible(exc, cfg, build, out: Path, seed: str) -> int:
         print(f"  wrote {pdf}")
     except Exception as err:  # a missing figure must not hide the diagnosis
         _eprint(f"  ! could not render the diagnostic PDF: {err}")
+
+    if notes is not None:
+        # Written on a failed run too. This is exactly when the coordinator has
+        # to go and talk to people, and the notes are what tell them who they are
+        # talking to. There is no assignment to report alongside them.
+        notes_path = out / acc_mod.COORDINATOR_TXT_NAME
+        acc_mod.write_coordinator_text(notes_path, notes, solution=None, config=cfg)
+        print(f"  wrote {notes_path}   *** PRIVATE NOTES -- 0600, DO NOT SHARE ***")
 
     print(
         "\nWhat to do next:\n"
@@ -357,6 +419,9 @@ def cmd_publish(args: argparse.Namespace) -> int:
     results = Path(args.results_dir)
     repo = Path(__file__).resolve().parents[2]
 
+    # An ALLOW-list, deliberately, not "everything in results_dir minus a few".
+    # `out/` also holds the coordinator PDF and accommodations_coordinator.txt;
+    # a deny-list would publish the next coordinator-only file somebody adds.
     copied: list[str] = []
     for name in ("results.json", "results_public.pdf", "assignments.csv",
                  "responses_anonymized.csv", "diagnostics.json"):
@@ -426,6 +491,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--curve", default=None,
                    help="override which scoring curve is primary (recorded in "
                         "the output; the default comes from scoring.json)")
+    s.add_argument("--accommodations", default=None, metavar="FILE.csv",
+                   help="the exported private-notes sheet (SPEC §7.3). Optional. "
+                        "The notes never enter the solve and never reach a "
+                        "published file; they are written to "
+                        "out/accommodations_coordinator.txt (mode 0600) and, with "
+                        "--full, to the coordinator PDF")
     s.add_argument("--full", action="store_true",
                    help="also write the coordinator report, which contains "
                         "individual preferences")

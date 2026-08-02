@@ -10,11 +10,27 @@
      the direct call is kept as the fallback so this view works against a bare
      APP contract. Either way the payload is the same object:
 
-       {email, name, candidacy, choices:[deskId…], authMethod, clientVersion}
+       {email, name, candidacy, choices:[deskId…], accommodation,
+        authMethod, clientVersion}
 
      A rejected submission ({ok:false, errors:[…]}) puts every server message in
      front of the student and sends them back to the select view, because every
      error the server can raise here is about the picks.
+
+     `accommodation` is the private note in the box at the bottom of this page.
+     Three things about it are not negotiable:
+
+       - It is OPTIONAL and is never validated. Empty is the normal case. A
+         short note is still a note. Nothing here blocks, nags, marks the field
+         invalid, or disables Submit because of what is or is not in it — the
+         people most likely to use this box are the least able to argue with a
+         form. The most this file does is offer one quiet inline hint.
+       - It is NOT an input to the assignment (SPEC I2). Code.gs writes it to a
+         separate, confidential tab; the solver never sees it. If the
+         coordinator acts on one they change an input, in git.
+       - Its text is never rendered back to the screen after submission. These
+         notes concern health, care and conflict between people who share an
+         office, and the receipt is the screen somebody reads over a shoulder.
 
      Nothing in this file knows how many desks, zones, rooms or choices exist.
      Rank count comes from APP.K, geometry from rooms.json as the server sent it.
@@ -75,6 +91,113 @@
       font-weight: 600;
       font-size: var(--fs-sm);
     }
+
+    /* ---- the private note ------------------------------------------------
+       Everything here is scoped to this card. All colours come from the
+       palette in Style.html, so dark mode is inherited rather than re-stated,
+       and every length is in rem/em so the card reflows at any text size. */
+    #view-confirm .notebox__sub {
+      margin: 0;
+      font-size: var(--fs-md);
+      font-weight: 600;
+      color: var(--ink-2);
+    }
+    #view-confirm .notebox__intro,
+    #view-confirm .notebox__next {
+      margin: 0;
+      font-size: var(--fs-md);
+      line-height: var(--lh-base);
+      color: var(--ink-2);
+      max-width: var(--maxw-prose);
+    }
+    #view-confirm .notebox__intro em { font-style: italic; font-weight: 600; color: var(--ink); }
+
+    #view-confirm .notebox__req {
+      border: 1px solid var(--accent-line);
+      border-left-width: 3px;
+      background: var(--accent-soft);
+      border-radius: 0 var(--r-2) var(--r-2) 0;
+      padding: var(--s-3) var(--s-4);
+    }
+    #view-confirm .notebox__reqhead {
+      margin: 0 0 var(--s-2);
+      font-size: var(--fs-sm);
+      font-weight: 700;
+      letter-spacing: var(--tracking-caps);
+      text-transform: uppercase;
+      color: var(--ink);
+    }
+    #view-confirm .notebox__both {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: var(--s-2);
+      font-size: var(--fs-md);
+      line-height: var(--lh-snug);
+      color: var(--ink-2);
+    }
+    #view-confirm .notebox__key { font-weight: 700; color: var(--ink); }
+
+    #view-confirm .notebox__nexthead {
+      margin: 0 0 var(--s-1);
+      font-size: var(--fs-sm);
+      font-weight: 700;
+      letter-spacing: var(--tracking-caps);
+      text-transform: uppercase;
+      color: var(--ink-3);
+    }
+
+    #view-confirm .notebox__privacy {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--s-3);
+      margin: 0;
+      padding: var(--s-3) var(--s-4);
+      border: 1px solid var(--ok-line);
+      border-radius: var(--r-2);
+      background: var(--ok-soft);
+      color: var(--ink);
+      font-size: var(--fs-md);
+      line-height: var(--lh-snug);
+    }
+    #view-confirm .notebox__lock {
+      flex: 0 0 auto;
+      width: 1.1em;
+      height: 1.1em;
+      margin-top: 0.15em;
+      color: var(--ok);
+    }
+
+    #view-confirm .notebox__field { margin: 0; }
+    #view-confirm .notebox__foot {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: var(--s-2) var(--s-3);
+      margin-top: var(--s-2);
+      min-height: 1.25em;          /* no reflow when the hint appears */
+    }
+    #view-confirm .notebox__status {
+      flex: 1 1 12rem;
+      margin: 0;
+      min-width: 0;
+      font-size: var(--fs-sm);
+      line-height: var(--lh-snug);
+      color: var(--ink-3);
+    }
+    #view-confirm .notebox__status.is-warn { color: var(--warn); font-weight: 600; }
+    #view-confirm .notebox__count {
+      flex: 0 0 auto;
+      margin: 0 0 0 auto;
+      font-size: var(--fs-sm);
+      font-variant-numeric: tabular-nums;
+      color: var(--ink-3);
+    }
+    #view-confirm .notebox__count.is-warn { color: var(--warn); font-weight: 600; }
+
+    #view-confirm .receipt__note { margin: 0; }
+    #view-confirm .receipt__note.is-warn { color: var(--warn); font-weight: 600; }
   </style>
 
   <div class="view__head">
@@ -103,6 +226,13 @@
         </dd>
         <dt>Recorded as</dt>
         <dd id="confirm-receipt-who"></dd>
+        <!-- Says THAT a note was recorded. Never what it says: this screen gets
+             read over shoulders, and the note may be about one of the people
+             reading it. -->
+        <dt id="confirm-receipt-private-label" hidden>Private note</dt>
+        <dd id="confirm-receipt-private" hidden>
+          <p class="receipt__note" id="confirm-receipt-private-text"></p>
+        </dd>
       </dl>
       <p id="confirm-receipt-note"></p>
       <div class="btn-row">
@@ -142,6 +272,86 @@
 
   <div class="note" id="confirm-deadline" style="margin-top: var(--s-4);"></div>
 
+  <!-- The private note: the last thing on the page before Submit, because it
+       is the one thing here a ranked list cannot say. Optional throughout. -->
+  <section class="card" id="confirm-note-card" aria-labelledby="confirm-note-title"
+           style="margin-top: var(--s-4);">
+    <div class="card__head">
+      <h2 id="confirm-note-title">Private note to the coordinator</h2>
+      <span class="spacer"></span>
+      <span class="badge">Optional</span>
+    </div>
+    <div class="card__body stack">
+
+      <p class="notebox__sub">Optional. Nobody but the coordinator reads this.</p>
+
+      <p class="notebox__intro">
+        Your ranking is the fair mechanism and it handles ordinary preferences
+        well — if you want a window desk, rank window desks. Use this box only
+        when <em>where</em> you sit matters for a reason a ranked list cannot
+        express: an accessibility or health need, needing distance from a
+        specific person in order to work, or equipment and schedules that
+        constrain where you can be.
+      </p>
+
+      <div class="notebox__req" id="confirm-note-req">
+        <p class="notebox__reqhead">If you write something here, tell me both</p>
+        <ul class="notebox__both">
+          <li>
+            <span class="notebox__key">What you need</span> — specifically enough
+            to act on. &ldquo;Not within earshot of desk 12&rdquo; is actionable;
+            &ldquo;somewhere quiet&rdquo; is not.
+          </li>
+          <li>
+            <span class="notebox__key">Why</span> — a real reason. I have to weigh
+            this against everyone else&rsquo;s equally fair claim, and I cannot do
+            that from a preference.
+          </li>
+        </ul>
+      </div>
+
+      <div>
+        <p class="notebox__nexthead">What happens next</p>
+        <p class="notebox__next" id="confirm-note-next">
+          I read these before publishing. I will do what I can without making the
+          process unfair to anyone else — usually by using desks nobody ranked
+          highly, not by taking one off somebody who did. If honouring your
+          request would cost another person a desk they ranked, I will come and
+          talk to you first. This is not a guarantee, and leaving it blank costs
+          you nothing.
+        </p>
+      </div>
+
+      <p class="notebox__privacy" id="confirm-note-privacy">
+        <svg class="notebox__lock" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M4.75 7V4.9a3.25 3.25 0 0 1 6.5 0V7" fill="none"
+                stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          <rect x="2.9" y="7" width="10.2" height="6.6" rx="1.6" fill="currentColor"/>
+        </svg>
+        <span>
+          It is stored separately from the rankings, it is not in the anonymised
+          file that gets published, and it never reaches the algorithm — the
+          assignment is computed from the rankings alone.
+        </span>
+      </p>
+
+      <div class="field notebox__field">
+        <label class="sr-only" for="confirm-note-text">
+          Private note to the coordinator, optional: what you need, and why.
+        </label>
+        <textarea class="textarea" id="confirm-note-text" rows="6"
+                  placeholder="What you need, and why."
+                  autocomplete="off" spellcheck="true" enterkeyhint="enter"
+                  aria-describedby="confirm-note-req confirm-note-privacy confirm-note-status"></textarea>
+        <div class="notebox__foot">
+          <p class="notebox__status" id="confirm-note-status" role="status"></p>
+          <p class="notebox__count" id="confirm-note-count" hidden aria-hidden="true"></p>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
   <div class="actionbar">
     <div class="actionbar__inner">
       <p class="validation" id="confirm-validation">
@@ -174,9 +384,32 @@
   var CONFIRM = 'confirm';
   var SELECT = 'select';
 
+  /* Private-note tuning. The cap itself comes from the server
+     (APP.accommodationMax()); this is only the fallback for a bare APP. The
+     rest are presentation thresholds, all derived from the cap or from what
+     reads as "a sentence", never from anything about the problem's size. */
+  var NOTE_MAX_FALLBACK = 1500;
+  var NOTE_COUNTER_AT = 0.2;      /* show the counter inside the last fifth */
+  var NOTE_COUNTER_WARN = 0.05;   /* and colour it inside the last twentieth */
+  var NOTE_SHORT_CHARS = 60;      /* under this is "a phrase", not "what + why" */
+  var NOTE_HINT_IDLE_MS = 1500;   /* say nothing until they stop typing */
+  var NOTE_CUT_MS = 9000;         /* how long the over-the-limit message stays */
+
   var busy = false;
-  var receipt = null;      /* {submissionId, timestampIso, choices[]} once sent */
+  var receipt = null;      /* {submissionId, timestampIso, choices[], note} once sent */
   var wired = false;
+
+  /* Note state. `noteTouched` stops a re-render overwriting half-typed text
+     with the server's copy; `noteLocal` is only used when JsCore is not there
+     to hold it. Neither the text nor its length is ever persisted to storage
+     or logged — see the header of this file. */
+  var noteTouched = false;
+  var noteLocal = '';
+  var noteComposing = false;
+  var noteHintArmed = false;
+  var noteCutAt = 0;
+  var noteIdleTimer = null;
+  var noteCutTimer = null;
 
   function isArr(v) { return Object.prototype.toString.call(v) === '[object Array]'; }
   function picks() { return APP.state.picks.slice(); }
@@ -184,6 +417,136 @@
     if (!isArr(a) || !isArr(b) || a.length !== b.length) { return false; }
     for (var i = 0; i < a.length; i++) { if (a[i] !== b[i]) { return false; } }
     return true;
+  }
+
+  /* ---- the private note ------------------------------------------------
+     JsCore owns the value (APP.accommodation / APP.setAccommodation) so that
+     APP.submit() carries it; the local copy below is the fallback for a bare
+     APP contract, exactly like payload() further down. */
+
+  function noteMax() {
+    var n = (typeof APP.accommodationMax === 'function') ? APP.accommodationMax() : 0;
+    n = parseInt(n, 10);
+    return (!isNaN(n) && n > 0) ? n : NOTE_MAX_FALLBACK;
+  }
+
+  function noteValue() {
+    if (typeof APP.accommodation === 'function') { return String(APP.accommodation() || ''); }
+    return noteLocal;
+  }
+
+  /* Stores the note and returns what was actually kept (capped). */
+  function noteStore(text) {
+    if (typeof APP.setAccommodation === 'function') {
+      return String(APP.setAccommodation(text) || '');
+    }
+    var next = String(text == null ? '' : text).replace(/\r\n?/g, '\n');
+    var max = noteMax();
+    noteLocal = next.length > max ? next.slice(0, max) : next;
+    return noteLocal;
+  }
+
+  function noteBox() { return el('confirm-note-text'); }
+
+  /* The counter and the one hint. Neither ever blocks anything, and the hint
+     waits until they have stopped typing — a box that answers back on the
+     third keystroke is a box people give up on. */
+  function renderNoteMeta() {
+    var box = noteBox();
+    if (!box) { return; }
+
+    var max = noteMax();
+    var len = noteValue().length;
+    var left = Math.max(0, max - len);
+    var showAt = Math.max(1, Math.round(max * NOTE_COUNTER_AT));
+    var warnAt = Math.max(1, Math.round(max * NOTE_COUNTER_WARN));
+
+    var count = el('confirm-note-count');
+    if (count) {
+      var show = left <= showAt;
+      count.hidden = !show;
+      if (show) {
+        count.textContent = left === 0
+          ? 'That is the whole box.'
+          : (left + ' character' + (left === 1 ? '' : 's') + ' left');
+        if (left <= warnAt) { count.classList.add('is-warn'); }
+        else { count.classList.remove('is-warn'); }
+      }
+    }
+
+    var status = el('confirm-note-status');
+    if (!status) { return; }
+
+    var text = '';
+    var warn = false;
+    if (noteCutAt && (Date.now() - noteCutAt) < NOTE_CUT_MS) {
+      text = 'That was longer than the ' + max + '-character limit, so the end was not ' +
+             'kept. Check that nothing important was cut.';
+      warn = true;
+    } else if (noteHintArmed && len > 0 && len < NOTE_SHORT_CHARS) {
+      /* The only nudge in here, and it is a nudge: submitting is unaffected. */
+      text = 'The coordinator will need to know why, too.';
+    }
+
+    if (status.textContent !== text) { status.textContent = text; }
+    if (warn) { status.classList.add('is-warn'); }
+    else { status.classList.remove('is-warn'); }
+  }
+
+  function onNoteInput() {
+    var box = noteBox();
+    /* Mid-composition (pinyin, kana, dictation) the value is a half-finished
+       guess. Truncating it there mangles the word; wait for compositionend. */
+    if (!box || noteComposing) { return; }
+
+    noteTouched = true;
+
+    var max = noteMax();
+    var normalised = String(box.value).replace(/\r\n?/g, '\n');
+    var cut = normalised.length > max;
+    var kept = noteStore(normalised);
+
+    if (box.value !== kept) {
+      /* Paste over the limit. Keep the tail off rather than the head, put the
+         caret back where the typist left it, and say what happened. */
+      var caret = box.selectionStart;
+      box.value = kept;
+      var at = Math.min(typeof caret === 'number' ? caret : kept.length, kept.length);
+      try { box.setSelectionRange(at, at); } catch (e) { /* older mobile */ }
+    }
+
+    if (cut) {
+      noteCutAt = Date.now();
+      if (noteCutTimer) { global.clearTimeout(noteCutTimer); }
+      noteCutTimer = global.setTimeout(function () {
+        noteCutTimer = null;
+        renderNoteMeta();
+      }, NOTE_CUT_MS + 100);
+    }
+
+    if (noteIdleTimer) { global.clearTimeout(noteIdleTimer); }
+    noteIdleTimer = global.setTimeout(function () {
+      noteIdleTimer = null;
+      noteHintArmed = true;
+      renderNoteMeta();
+    }, NOTE_HINT_IDLE_MS);
+
+    renderNoteMeta();
+    /* Editing the note after submitting is a change worth sending again, so
+       the action bar has to notice — but only the action bar. Re-rendering the
+       whole page (and the floor-plan SVG) on every keystroke is not free on a
+       phone. */
+    renderActions();
+  }
+
+  /* Puts the stored note in the box without stamping on anything half-typed. */
+  function syncNote() {
+    var box = noteBox();
+    if (!box) { return; }
+    var val = noteValue();
+    if (!noteTouched && box.value !== val) { box.value = val; }
+    box.disabled = APP.isPastDeadline();
+    renderNoteMeta();
   }
 
   /* Local time, spelled out, with the zone named so nobody has to guess which
@@ -394,6 +757,13 @@
         'like until then; the most recent submission is the one that counts.';
   }
 
+  /* What has moved since the last successful submission. The note counts: if
+     it did not, editing it would leave Submit disabled and the change would be
+     silently thrown away. Only ever compared, never displayed. */
+  function picksMoved() { return !!receipt && !same(receipt.choices, picks()); }
+  function noteMoved() { return !!receipt && receipt.note !== noteValue(); }
+  function settled() { return !!receipt && !picksMoved() && !noteMoved(); }
+
   function renderStrip(check) {
     var strip = el('confirm-validation');
     var msg = el('confirm-validation-msg');
@@ -408,27 +778,57 @@
       msg.textContent = check.summary;
       return;
     }
-    if (receipt && same(receipt.choices, picks())) {
+    if (settled()) {
       strip.classList.add('is-ok');
       msg.textContent = 'Saved. Nothing more to do.';
       return;
     }
     strip.classList.add(receipt ? 'is-warn' : 'is-ok');
-    msg.textContent = receipt ? 'Changed since your last submission.' : 'Ready to submit.';
+    msg.textContent = receipt
+      ? (picksMoved() ? 'Changed since your last submission.'
+                      : 'Your private note has changed since your last submission.')
+      : 'Ready to submit.';
+  }
+
+  /* The action bar, the Submit button and the unsent-edits warning: everything
+     that depends on "is what is on screen the same as what was sent". */
+  function renderActions() {
+    var check = APP.validate();
+    renderStrip(check);
+
+    var btn = el('confirm-submit');
+    if (btn) {
+      btn.disabled = busy || !check.ok || APP.isPastDeadline() || settled();
+      if (!busy) {
+        btn.textContent = receipt
+          ? (settled() ? 'Already submitted'
+                       : (picksMoved() ? 'Submit the updated ranking' : 'Submit the updated note'))
+          : 'Submit my ranking';
+      }
+    }
+
+    var stale = el('confirm-stale');
+    if (stale) {
+      stale.hidden = !receipt || settled();
+      if (!stale.hidden) {
+        stale.textContent = picksMoved()
+          ? 'You have changed your ranking since that submission. It is not saved until ' +
+            'you submit again.'
+          : 'You have changed your private note since that submission. It is not saved ' +
+            'until you submit again.';
+      }
+    }
   }
 
   function renderReceipt() {
     var card = el('confirm-receipt');
-    var stale = el('confirm-stale');
     if (!card) { return; }
 
     if (!receipt) {
       card.hidden = true;
-      if (stale) { stale.hidden = true; }
       return;
     }
     card.hidden = false;
-    if (stale) { stale.hidden = same(receipt.choices, picks()); }
 
     /* A receipt seeded from the bootstrap (submitted in an earlier session, or
        on another device) has a timestamp but no id — say which it is rather
@@ -456,6 +856,8 @@
         (p.authMethod === 'google' ? '' : ' <span class="badge badge--warn">self-selected</span>');
     }
 
+    renderReceiptNote();
+
     var note = el('confirm-receipt-note');
     var b = APP.state.bootstrap || {};
     if (note) {
@@ -468,6 +870,43 @@
         : 'You can change this and submit again until the form closes. Whatever you send ' +
           'last is the one the solver uses; earlier submissions are kept only for the audit trail.');
     }
+  }
+
+  /* Confirms that a note was recorded — and nothing else about it. The text is
+     never put back on screen: the receipt is what a student shows a friend, or
+     leaves open on a shared machine, and the note may be about that friend.
+     `receipt.noteState` is set once, when the server answers. */
+  function renderReceiptNote() {
+    var label = el('confirm-receipt-private-label');
+    var value = el('confirm-receipt-private');
+    var text = el('confirm-receipt-private-text');
+    if (!label || !value || !text) { return; }
+
+    var st = (receipt && receipt.noteState) || null;
+    if (!st || st.kind === 'none') {
+      label.hidden = true;
+      value.hidden = true;
+      return;
+    }
+    label.hidden = false;
+    value.hidden = false;
+
+    if (st.kind === 'failed') {
+      text.textContent = 'Not saved. Your ranking was recorded, but the note was not: ' +
+        st.detail + ' Email it to the coordinator instead.';
+    } else if (st.kind === 'withdrawn') {
+      text.textContent = 'Removed. The note you sent earlier is no longer attached to ' +
+        'your submission.';
+    } else {
+      text.textContent = 'Recorded, and readable only by the coordinator. It is not shown ' +
+        'here, it is not in the published file, and it did not affect the assignment.' +
+        (st.truncated
+          ? ' It was longer than the ' + noteMax() + '-character limit, so the end was ' +
+            'not saved.'
+          : '');
+    }
+    if (st.kind === 'failed' || st.truncated) { text.classList.add('is-warn'); }
+    else { text.classList.remove('is-warn'); }
   }
 
   function setBusy(on) {
@@ -487,28 +926,18 @@
     renderThumb();
     renderDeadline();
     renderReceipt();
+    syncNote();
+    renderActions();
 
-    var check = APP.validate();
-    renderStrip(check);
-
-    var btn = el('confirm-submit');
-    if (btn) {
-      var settled = !!(receipt && same(receipt.choices, picks()));
-      btn.disabled = busy || !check.ok || APP.isPastDeadline() || settled;
-      if (!busy) {
-        btn.textContent = receipt
-          ? (settled ? 'Already submitted' : 'Submit the updated ranking')
-          : 'Submit my ranking';
-      }
-    }
     var title = el('confirm-list-title');
     if (title) { title.textContent = receipt ? 'What you submitted' : 'Your ranking'; }
   }
 
   /* ---- submitting ------------------------------------------------------ */
 
-  /* Exactly the row Code.gs will write (SPEC §3.1). Kept here so this view can
-     still submit if JsCore's helper is unavailable. */
+  /* Exactly the row Code.gs will write (SPEC §3.1), plus the private note,
+     which is NOT part of that row — Code.gs puts it in its own tab. Kept here
+     so this view can still submit if JsCore's helper is unavailable. */
   function payload() {
     if (typeof APP.submissionPayload === 'function') { return APP.submissionPayload(); }
     var p = APP.state.person || {};
@@ -517,6 +946,7 @@
       name: p.name,
       candidacy: p.candidacy,
       choices: picks(),
+      accommodation: noteValue(),
       authMethod: p.authMethod,
       clientVersion: APP.clientVersion
     };
@@ -546,11 +976,28 @@
     APP.go(SELECT);
   }
 
+  /* What to say about the note, from what the server reported. A server that
+     says nothing about it (an older deployment, a stand-in) falls back to what
+     was actually sent, so the receipt is never more confident than the facts. */
+  function noteStateFrom(res, sent) {
+    if (res && res.noteError) {
+      return { kind: 'failed', detail: String(res.noteError), truncated: false };
+    }
+    var truncated = !!(res && res.noteTruncated);
+    if (res && res.noteWithdrawn) { return { kind: 'withdrawn', truncated: false }; }
+    var recorded = (res && res.noteRecorded !== undefined) ? !!res.noteRecorded : !!sent;
+    if (recorded) { return { kind: 'recorded', truncated: truncated }; }
+    return { kind: 'none', truncated: false };
+  }
+
   function onAccepted(res) {
+    var sent = noteValue();
     receipt = {
       submissionId: res.submissionId || '',
       timestampIso: res.timestampIso || '',
-      choices: picks()
+      choices: picks(),
+      note: sent,
+      noteState: noteStateFrom(res, sent)
     };
     render();
     var card = el('confirm-receipt');
@@ -613,6 +1060,24 @@
 
     var submit = el('confirm-submit');
     if (submit) { submit.addEventListener('click', submitNow); }
+
+    var box = noteBox();
+    if (box) {
+      box.addEventListener('input', onNoteInput);
+      /* IME: the value mid-composition is a guess, not text. Leave it alone
+         until the word is committed, then run the normal path once. */
+      box.addEventListener('compositionstart', function () { noteComposing = true; });
+      box.addEventListener('compositionend', function () {
+        noteComposing = false;
+        onNoteInput();
+      });
+      /* Leaving the box is the moment the hint is welcome rather than nagging. */
+      box.addEventListener('blur', function () {
+        if (noteIdleTimer) { global.clearTimeout(noteIdleTimer); noteIdleTimer = null; }
+        if (noteValue()) { noteHintArmed = true; }
+        renderNoteMeta();
+      });
+    }
   }
 
   /* A submission made earlier (another device, an earlier session) is a real
@@ -622,10 +1087,17 @@
     var b = APP.state.bootstrap || {};
     var prior = b.priorSubmission;
     if (!prior || !isArr(prior.choices) || !prior.choices.length) { return; }
+    /* The note that came back with it counts as part of what was submitted.
+       Without it the page would open telling somebody their note had changed
+       when all they did was arrive. */
+    var priorNote = (b.priorAccommodation && b.priorAccommodation.note) || '';
     receipt = {
       submissionId: '',
       timestampIso: prior.timestampIso || '',
-      choices: prior.choices.slice()
+      choices: prior.choices.slice(),
+      note: priorNote,
+      noteState: priorNote ? { kind: 'recorded', truncated: false }
+                           : { kind: 'none', truncated: false }
     };
   }
 
@@ -645,6 +1117,18 @@
 
   APP.listen('picks:changed', function () { if (APP.state.view === CONFIRM) { render(); } });
   APP.listen('person:set', function () { if (APP.state.view === CONFIRM) { render(); } });
+
+  /* JsCore has just replaced the note — restored this person's own from the
+     server, or emptied it because the identity changed. The box is no longer
+     "half-typed by the student", so it is safe to overwrite. */
+  APP.listen('accommodation:restored', function () {
+    noteTouched = false;
+    noteHintArmed = false;
+    noteCutAt = 0;
+    var box = noteBox();
+    if (box) { box.value = noteValue(); }
+    if (APP.state.view === CONFIRM) { render(); } else { renderNoteMeta(); }
+  });
   APP.listen('zones:changed', function () { if (APP.state.view === CONFIRM) { render(); } });
   APP.listen('deadline:passed', function () { if (APP.state.view === CONFIRM) { render(); } });
 

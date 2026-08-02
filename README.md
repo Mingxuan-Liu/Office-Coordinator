@@ -237,6 +237,20 @@ git add data/responses_2026.csv && git commit -m "Raw responses, 2026 cycle"
 python -m deskmatch solve --config config/ --responses data/responses_2026.csv --out out/
 ```
 
+If anybody left a private note on the confirm page, export the `Accommodations`
+tab too and pass it in:
+
+```bash
+python -m deskmatch solve --config config/ --responses data/responses_2026.csv --accommodations data/accommodations_2026.csv --out out/ --full
+```
+
+The notes are read only by you. They go into `out/results_coordinator.pdf` and
+`out/accommodations_coordinator.txt` (mode 0600) and into nothing that gets
+published — passing the flag leaves every public file byte-identical, because a
+note is advice to you, never an input to the algorithm. **Do not commit the
+accommodations export**; it is the one file in this process that is genuinely
+confidential.
+
 **If it succeeds**, you get:
 
 | file | give it to |
@@ -245,6 +259,7 @@ python -m deskmatch solve --config config/ --responses data/responses_2026.csv -
 | `out/results.json` | everyone — the canonical, hash-verified result |
 | `out/assignments.csv` | everyone |
 | `out/responses_anonymized.csv` | everyone — lets them re-run it themselves |
+| `out/accommodations_coordinator.txt` | **you only** — never share, never commit |
 
 Add `--full` to also get `out/results_coordinator.pdf`, which contains everyone's
 individual rankings. **That one is for you only.**

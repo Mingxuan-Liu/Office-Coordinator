@@ -339,6 +339,9 @@ deskmatch/
   validate.py     # all schema validation; collects errors, never raises raw
   config.py       # load + validate config dir -> Config
   responses.py    # load CSV/JSON -> Responses; dedup; hashing
+  accommodations.py # §7.3 private notes: load, leak guard, coordinator dump.
+                  #   Imported by cli/report ONLY. Nothing in the solve path
+                  #   may import it -- that is what keeps I2 true by construction.
   eligibility.py  # rule-table evaluation -> allowed zone set per person
   scoring.py      # curve -> exact integer points; jitter epsilon bound
   problem.py      # Config + Responses -> Problem (matrix, masks, index maps)
@@ -566,6 +569,7 @@ currently fail.
 | `assignments.csv` | everyone | name, email, desk, rank received |
 | `responses_anonymized.csv` | everyone | for public re-running; see §7.2 |
 | `diagnostics.json` | coordinator | only on infeasible runs |
+| `accommodations_coordinator.txt` | **coordinator only** | only with `--accommodations`; mode 0600 |
 | `round2_*.{json,csv}` | coordinator | only on infeasible runs |
 
 ### 7.1 Provenance block (in `results.json` and on the last page of both PDFs)
@@ -600,6 +604,69 @@ currently fail.
 
 ---
 
+### 7.3 Private notes (accommodations)
+
+The confirm page has an optional free-text box: a private note to the
+coordinator, for the cases a ranked list cannot express — accessibility, health,
+caring responsibilities, needing distance from a named colleague.
+
+Collected into a **separate sheet tab**, never the response row:
+
+| column | notes |
+|---|---|
+| `note_id` | unique per row |
+| `timestamp` | ISO-8601 with offset |
+| `email` | joins to the roster |
+| `name` | as submitted |
+| `note` | the free text |
+| `client_version` | frontend build id |
+
+Append-only. Latest row per email wins, by timestamp then file position —
+the same rule as responses, so the two cannot drift. A later **empty** note
+withdraws an earlier one. A note from someone not on the roster is a warning,
+not an error: a note is not a claim on a desk.
+
+**Two rules, both enforced in code:**
+
+1. **They never reach a published file.** Not `responses.csv`, not
+   `responses_anonymized.csv`, not `results.json`, not `results_public.pdf`.
+   Pseudonymising the author does not help — "I need distance from Ada"
+   identifies people in the body text. They go to `results_coordinator.pdf`
+   (behind `--full`) and `accommodations_coordinator.txt` (mode 0600), and
+   nowhere else. `accommodations.assert_absent_from()` re-reads the written
+   bytes and raises `PrivacyError` rather than trusting that this held.
+
+2. **They are never an input to the solve.** Invariant I2 says the assignment is
+   a pure function of `(responses, config, seed)`; a note is advice to a human.
+   Supplying `--accommodations` must leave every public artefact byte-identical,
+   which is asserted by test. If the coordinator wants to act on a note they
+   change an *input* — mark a desk unavailable in `rooms.json`, say — which is
+   visible in git.
+
+**How the solver side is wired.** `deskmatch solve --accommodations FILE.csv`,
+optional. `accommodations.load()` parses it; the *count* goes in the run summary
+("3 private notes recorded"), the *content* goes to the coordinator report
+(behind the same `full=True` gate as the preference matrix) and to
+`out/accommodations_coordinator.txt`. Nothing else in the package may import
+`deskmatch.accommodations`: `problem`, `solve`, `scoring` and `provenance` do
+not, so a note cannot become an input even by accident.
+
+Row-level faults in the notes file are warnings, never errors — a bad timestamp
+or an unknown author must not stop the department's assignment. Only a file the
+notes cannot be read out of at all (a missing required column, bad UTF-8) raises
+`AccommodationsError`, exit code 4, carrying every problem at once.
+
+**The guard.** Two mechanisms, both over bytes already written:
+`report.audit_public_pdf` check **G** searches the public PDF's text layer for
+any five-word run from any note (overlapping shingles of normalised words, so
+line wrapping, hyphenation and page breaks cannot hide one), and
+`accommodations.assert_absent_from` does the same over `results.json`,
+`assignments.csv` and `responses_anonymized.csv`. Both raise `PrivacyError`.
+Superseded and withdrawn notes are searched for too. The guard errs towards the
+false alarm; that is the correct direction for this one.
+
+---
+
 ## 8. Integrity model
 
 What this system does and does not defend against, stated plainly because the
@@ -619,6 +686,11 @@ before running. This is deliberate — it is *visible in git*, which is the actu
 control. The runbook requires committing the raw export before solving. If you
 want more than that, have a second person hold a copy of the export and compare
 hashes; the report prints the hash for exactly this purpose.
+
+**Not defended, and deliberately outside the algorithm:** the private notes
+(§7.3). They are read by a human and acted on by editing tracked inputs. They
+cannot nudge, weight or constrain the solve, so no amount of writing in that box
+moves anyone's desk on its own.
 
 **Not defended:** the login fallback. Self-select is a convenience, not a security
 boundary, per explicit instruction. `auth_method` is recorded so it is at least

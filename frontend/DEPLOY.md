@@ -220,6 +220,32 @@ Merge the claims into the roster anyway, before you close the form. After
 merging, `keeps_desk` in `roster.csv` is what holds the desk, which is the
 version the solver reads and the version that is visible in git.
 
+## Step 5c — The private note box
+
+Nothing to switch on; it is always there. The confirm page ends with an optional
+free-text box — a private note to you — for the things a ranked list cannot say:
+accessibility, health, caring responsibilities, or needing distance from a
+particular person in order to work.
+
+Notes go to their own tab, never into the response row.
+
+| property | value |
+|---|---|
+| `ACCOMMODATIONS_SHEET_NAME` | `Accommodations` (optional; this is the default) |
+
+Columns: `note_id, timestamp, email, name, note, client_version`. Append-only,
+created the first time somebody writes one, latest row per person wins, and a
+later empty note means they deleted theirs.
+
+**Treat this tab as confidential.** It will contain health, caring
+responsibilities and conflict between people who share an office, written on the
+understanding that only you would read it. Do not paste it into Slack, do not
+commit it, and export it separately from the responses. The solver keeps it out
+of every published file, but it cannot help you with a copy you made yourself.
+
+At solve time, pass it with `--accommodations`; see the main
+[runbook](../README.md#the-runbook) step 7.
+
 ## Step 6 — Deploy
 
 **Deploy → New deployment → ⚙ → Web app**, then:

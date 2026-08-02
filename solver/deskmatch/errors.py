@@ -65,6 +65,45 @@ class ResponseError(DeskMatchError):
         return head + "\n".join(f"  [{i + 1}] {p.render()}" for i, p in enumerate(self.problems))
 
 
+class AccommodationsError(DeskMatchError):
+    """The private-notes export does not satisfy docs/SPEC.md §7.3.
+
+    Raised only for a file that cannot be interpreted at all — a missing
+    required column, an unreadable file, a header with no rows. Anything
+    row-level is a warning instead: a note is not a claim on a desk, and
+    refusing to run the department's assignment over one odd row would be the
+    wrong trade. See `deskmatch.accommodations`.
+    """
+
+    exit_code = 4
+
+    def __init__(self, problems: list[Problem]):
+        self.problems = list(problems)
+        super().__init__(self.render())
+
+    def render(self) -> str:
+        n = len(self.problems)
+        head = f"{n} problem{'s' if n != 1 else ''} in the accommodations file:\n"
+        return head + "\n".join(f"  [{i + 1}] {p.render()}" for i, p in enumerate(self.problems))
+
+
+class PrivacyError(DeskMatchError):
+    """A public artefact contains data that must never have reached it.
+
+    Deliberately an error and not a warning. A report that leaks is not a
+    slightly-worse report; it is the one failure mode of this system that cannot
+    be undone once the file has been circulated.
+
+    Lives here rather than in `report.py` because two different modules enforce
+    the same rule against two different kinds of leak — attributed preference
+    data in the PDF (`report.assert_public_safe`) and private-note text in any
+    published file (`accommodations.assert_absent_from`) — and one rule should
+    not have two exception types.
+    """
+
+    exit_code = 1
+
+
 class InfeasibleError(DeskMatchError):
     """No assignment exists in which everyone gets a top-K desk.
 

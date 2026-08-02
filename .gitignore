@@ -17,3 +17,8 @@ examples/*/out/
 
 # Local preview build artefact (tools/build_local_preview.py)
 frontend/_preview.html
+
+# Private notes export. Confidential: health, caring responsibilities,
+# conflict between colleagues. Never commit this.
+data/accommodations*.csv
+accommodations*.csv

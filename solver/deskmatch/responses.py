@@ -31,7 +31,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from . import types
 from .errors import Problem as Complaint  # errors.Problem is a *validation complaint*;
@@ -889,24 +889,41 @@ def _count_by_email(submissions: Iterable[types.Submission]) -> dict[str, int]:
     return counts
 
 
-def _resolve_latest(
-    submissions: Sequence[types.Submission],
-    utc_by_id: Mapping[str, dt.datetime],
-) -> dict[types.PersonId, types.Submission]:
+def resolve_latest_by_email(
+    records: Sequence[Any],
+    when: Mapping[Any, dt.datetime],
+    key_of: Callable[[Any], Any],
+) -> dict[str, Any]:
     """SPEC §3.2: latest row per email wins, ordered by timestamp, ties broken by
     later file position.
 
     The returned dict is built in sorted-email order so that anything iterating it
     (a report, a JSON dump) is deterministic without having to remember to sort.
+
+    Duck-typed on purpose. SPEC §3.2 says "row semantics are §3.2's, unchanged"
+    about the pre-lock claim log too, and §7.3 says it again about the private
+    notes; three files that agree on a rule should share the *implementation* of
+    it, not three copies that drift. A record needs `.email` and `.file_row`;
+    `key_of(record)` produces the key it is registered under in `when`.
     """
-    best: dict[str, types.Submission] = {}
+    best: dict[str, Any] = {}
     best_key: dict[str, tuple[dt.datetime, int]] = {}
-    for submission in submissions:
-        key = (utc_by_id[submission.submission_id], submission.file_row)
-        if submission.email not in best_key or key > best_key[submission.email]:
-            best[submission.email] = submission
-            best_key[submission.email] = key
+    for record in records:
+        key = (when[key_of(record)], record.file_row)
+        if record.email not in best_key or key > best_key[record.email]:
+            best[record.email] = record
+            best_key[record.email] = key
     return {email: best[email] for email in sorted(best)}
+
+
+def _resolve_latest(
+    submissions: Sequence[types.Submission],
+    utc_by_id: Mapping[str, dt.datetime],
+) -> dict[types.PersonId, types.Submission]:
+    """`resolve_latest_by_email` keyed by submission_id. See SPEC §3.2."""
+    return resolve_latest_by_email(
+        submissions, utc_by_id, lambda submission: submission.submission_id
+    )
 
 
 def _collect_extras(

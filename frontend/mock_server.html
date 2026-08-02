@@ -1266,6 +1266,63 @@
 
   var STORE_KEY = 'deskmatch.mock.submissions';
 
+  /* The private notes stand-in for the "Accommodations" tab Code.gs writes.
+     A SEPARATE store, deliberately: the whole point of the feature is that a
+     note is not part of the response row, so the mock must not be able to
+     leak one into a submission record either. Nothing else in this file reads
+     it — no eligibility rule, no pool, no ranking. */
+  var NOTE_STORE_KEY = 'deskmatch.mock.accommodations';
+  var ACCOMMODATION_MAX_CHARS = 1500;      /* mirrors Code.gs */
+
+  function readNotes() {
+    try {
+      var raw = global.localStorage && global.localStorage.getItem(NOTE_STORE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) { return []; }
+  }
+  function writeNotes(list) {
+    try {
+      if (global.localStorage) { global.localStorage.setItem(NOTE_STORE_KEY, JSON.stringify(list)); }
+    } catch (e) { /* private mode */ }
+  }
+  function latestNoteFor(email) {
+    var mine = readNotes().filter(function (n) { return lower(n.email) === lower(email); });
+    if (!mine.length) { return null; }
+    mine.sort(function (a, b) { return Date.parse(a.timestampIso) - Date.parse(b.timestampIso); });
+    return mine[mine.length - 1];
+  }
+  /* Same shape as Code.gs normaliseNote_(): trim, cap, never reject. */
+  function normaliseNote(value) {
+    if (value === undefined || value === null) { return { text: '', truncated: false }; }
+    var text = String(value).replace(/\r\n?/g, '\n').replace(/^\s+|\s+$/g, '');
+    if (text.length <= ACCOMMODATION_MAX_CHARS) { return { text: text, truncated: false }; }
+    return {
+      text: text.slice(0, ACCOMMODATION_MAX_CHARS).replace(/\s+$/, ''),
+      truncated: true
+    };
+  }
+  /* Append-only with the response sheet's semantics: latest row per email
+     wins, and an empty note from somebody who has one on file withdraws it. */
+  function recordNote(email, name, text, clientVersion, timestampIso) {
+    var withdrawing = false;
+    if (!text) {
+      var prior = latestNoteFor(email);
+      if (!prior || !prior.note) { return { recorded: false, withdrawn: false }; }
+      withdrawing = true;
+    }
+    var rows = readNotes();
+    rows.push({
+      noteId: freshId(),
+      timestampIso: timestampIso,
+      email: lower(email),
+      name: name,
+      note: text,
+      clientVersion: clientVersion
+    });
+    writeNotes(rows);
+    return { recorded: !withdrawing, withdrawn: withdrawing };
+  }
+
   function readSubmissions() {
     try {
       var raw = global.localStorage && global.localStorage.getItem(STORE_KEY);
@@ -1310,10 +1367,12 @@
 
     var person = resolvePerson();
     var prior = null;
+    var priorNote = null;
     var claimsNow = activeClaims();
     var myClaim = null;
 
     if (person) {
+      priorNote = latestNoteFor(person.email);
       for (var ci = 0; ci < claimsNow.length; ci++) {
         if (claimsNow[ci].email === person.email) { myClaim = claimsNow[ci]; break; }
       }
@@ -1370,6 +1429,13 @@
         choices: prior.choices.slice(),
         timestampIso: prior.timestampIso
       } : null,
+      /* Only ever this person's own, as in Code.gs: a note goes back to the
+         one identity that wrote it, and to nobody else. */
+      priorAccommodation: priorNote ? {
+        note: priorNote.note,
+        timestampIso: priorNote.timestampIso
+      } : null,
+      accommodationMaxChars: ACCOMMODATION_MAX_CHARS,
       concentration: CONCENTRATION,
       identity: {
         sessionEmail: person && params.mockPerson !== 'none' ? person.email : '',
@@ -1477,6 +1543,12 @@
 
     if (errors.length) { return { ok: false, errors: errors }; }
 
+    /* The note is read but never judged: it cannot be invalid and cannot stop
+       a ranking being saved, so it is deliberately not in `errors` above. */
+    var note = normaliseNote(payload.accommodation);
+
+    /* The response record. Unchanged by this feature, and it must stay that
+       way: `accommodation` is NOT a key here, it is a row in another store. */
     var record = {
       submissionId: freshId(),
       timestampIso: new Date().toISOString(),
@@ -1491,7 +1563,18 @@
     all.push(record);
     writeSubmissions(all);
 
-    return { ok: true, submissionId: record.submissionId, timestampIso: record.timestampIso };
+    var noteWrite = recordNote(record.email, record.name, note.text,
+                               record.clientVersion, record.timestampIso);
+
+    return {
+      ok: true,
+      submissionId: record.submissionId,
+      timestampIso: record.timestampIso,
+      noteRecorded: noteWrite.recorded,
+      noteWithdrawn: noteWrite.withdrawn,
+      noteTruncated: note.truncated,
+      noteError: ''
+    };
   }
 
   /* Same shape and the same refusals as Code.gs claimDesk(). The mock has no
@@ -1579,12 +1662,16 @@
         pool: POOL_PEOPLE.length, locked: LOCKED, deadline: DEADLINE_ISO,
         prelock: { enabled: PRELOCK_ENABLED, deadline: PRELOCK_DEADLINE_ISO },
         claims: activeClaims(),
-        submissions: readSubmissions()
+        submissions: readSubmissions(),
+        /* The private tab, as the coordinator would see it. Dev only — in the
+           real deployment this is a separate sheet nobody else can open. */
+        accommodations: readNotes()
       };
     },
     __reset: function () {
       writeSubmissions([]);
       writeClaimRows([]);
+      writeNotes([]);
       global.location.reload();
     }
   };

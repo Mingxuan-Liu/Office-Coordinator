@@ -978,6 +978,17 @@ body[data-booted] .boot { display: none; }
 .input[aria-invalid="true"], .select[aria-invalid="true"] { border-color: var(--danger); }
 .input[disabled], .select[disabled] { background: var(--surface-2); color: var(--ink-3); }
 
+.textarea {
+  /* Tall enough that a few sentences do not have to be written through a slot,
+     and resizable because some people need more room. Height is in em, so it
+     follows the reader's text size instead of pinning a pixel count. */
+  min-height: 7.5em;
+  line-height: var(--lh-base);
+  resize: vertical;
+}
+.textarea:hover { border-color: var(--ink-3); }
+.textarea[disabled] { background: var(--surface-2); color: var(--ink-3); }
+
 .select {
   appearance: none;
   -webkit-appearance: none;

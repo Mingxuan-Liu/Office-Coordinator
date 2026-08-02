@@ -19,6 +19,11 @@
   var MOCK_DEFAULT_LATENCY = 220;
   var DEADLINE_TICK_MS = 30000;
 
+  /* Fallback cap for the private note on the confirm page, used only when the
+     server did not say (bootstrap.accommodationMaxChars). Code.gs owns the real
+     number; this exists so the box still behaves against a bare APP contract. */
+  var ACCOMMODATION_MAX_FALLBACK = 1500;
+
   /* Non-canonical view names other agents might reasonably use. The canonical
      names are whatever the DOM declares via [data-view-name]. */
   var VIEW_ALIASES = {
@@ -190,6 +195,12 @@
     bootstrap: null,
     person: null,
     picks: [],
+    /* The private note to the coordinator (confirm page). Deliberately NOT
+       persisted to localStorage the way picks are: it can say "I need to be
+       away from X" or name a health problem, and half the department reads
+       this form on a shared machine in the office. It lives for the session
+       and comes back from the server only for a Google-identified person. */
+    accommodation: '',
     view: 'login'
   };
 
@@ -1127,6 +1138,7 @@
 
     if (!input) {
       state.person = null;
+      loadAccommodationFor('');           /* nobody is signed in: empty the box */
       renderWhoChip();
       emit('person:set', null);
       return null;
@@ -1140,6 +1152,7 @@
     if (!previous || previous.email !== person.email) {
       migrateAnonPicks(person.email);
       loadPicksFor(person.email, { quiet: !!opts.quiet });
+      loadAccommodationFor(person.email);
     }
     persistPerson();
     reconcilePicks({ quiet: opts.quiet === true });
@@ -1544,9 +1557,63 @@
     };
   }
 
-  /* Exactly the row Code.gs writes (SPEC §3.1). No `year`: the form does not
-     ask for it, candidacy alone decides eligibility, and sending a value the
-     student never confirmed would be recording a guess as a statement. */
+  /* ----------------------------------------------------------------------
+     The private note to the coordinator
+
+     Carried in the submit payload as `accommodation`, written by Code.gs to
+     its own confidential tab, and never part of the response row. It is not an
+     input to the solve and must never become one (SPEC I2): the assignment is
+     a pure function of (responses, config, seed), and a note is advice to a
+     human. Nothing in APP.validate() looks at it — an empty note is the normal
+     case, and a form must not argue with somebody in a difficult situation.
+     ---------------------------------------------------------------------- */
+
+  function accommodationMax() {
+    var b = state.bootstrap || {};
+    var n = parseInt(b.accommodationMaxChars, 10);
+    return (!isNaN(n) && n > 0) ? n : ACCOMMODATION_MAX_FALLBACK;
+  }
+
+  function accommodation() { return state.accommodation; }
+
+  /* Stores the note, capped at the server's limit. Returns what was actually
+     stored, so a caller who pasted more than the cap can see that it was cut. */
+  function setAccommodation(text) {
+    var next = String(text == null ? '' : text).replace(/\r\n?/g, '\n');
+    var max = accommodationMax();
+    if (next.length > max) { next = next.slice(0, max); }
+    if (next !== state.accommodation) {
+      state.accommodation = next;
+      /* Length only. No listener ever gets told what it says. */
+      emit('accommodation:changed', { length: next.length, max: max });
+    }
+    return next;
+  }
+
+  /* Seeds the box from whatever the server has on file for THIS person, and
+     empties it for anybody else. Re-ranking must not silently drop a note the
+     coordinator has already been told about; equally, one person's private
+     note must never ride along on another person's submission, so switching
+     identity clears it. The server only ever sends back a note to the person
+     Google identified as its author. */
+  function loadAccommodationFor(email) {
+    var b = state.bootstrap || {};
+    var prior = b.priorAccommodation;
+    var mine = !!prior && !!b.person && !!email && lower(b.person.email) === lower(email);
+    state.accommodation = '';
+    setAccommodation(mine && prior.note ? prior.note : '');
+    emit('accommodation:restored', {
+      length: state.accommodation.length,
+      restored: !!state.accommodation,
+      timestampIso: (mine && prior.timestampIso) || ''
+    });
+  }
+
+  /* Exactly the row Code.gs writes (SPEC §3.1), plus `accommodation`, which is
+     not part of that row — Code.gs puts it in a separate tab. No `year`: the
+     form does not ask for it, candidacy alone decides eligibility, and sending
+     a value the student never confirmed would be recording a guess as a
+     statement. */
   function submissionPayload() {
     var p = state.person || {};
     return {
@@ -1554,6 +1621,7 @@
       name: p.name,
       candidacy: p.candidacy,
       choices: state.picks.slice(),
+      accommodation: state.accommodation,
       authMethod: p.authMethod,
       clientVersion: APP.clientVersion
     };
@@ -1914,6 +1982,11 @@
     clearPicks: clearPicks,
     isPicked: isPicked,
     rankOf: rankOf,
+
+    /* --- the private note to the coordinator (never an input to the solve) --- */
+    accommodation: accommodation,
+    setAccommodation: setAccommodation,
+    accommodationMax: accommodationMax,
 
     /* --- validation / submit --- */
     validate: validate,

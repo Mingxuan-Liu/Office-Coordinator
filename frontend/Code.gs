@@ -42,6 +42,10 @@
  *                           applies as the outer bound.
  *   KEEPERS_SHEET_NAME      optional. Tab the pre-lock claims are appended to.
  *                           Defaults to "Keepers".
+ *   ACCOMMODATIONS_SHEET_NAME
+ *                           optional. Tab the private notes to the coordinator
+ *                           are appended to. Defaults to "Accommodations".
+ *                           That tab is CONFIDENTIAL — see section 6b.
  * ======================================================================== */
 
 var APP_NAME = 'deskmatch';
@@ -54,8 +58,10 @@ var PROP_ALLOW_PROXY = 'ALLOW_PROXY_SUBMIT';
 var PROP_PRELOCK_ENABLED = 'PRELOCK_ENABLED';
 var PROP_PRELOCK_DEADLINE_ISO = 'PRELOCK_DEADLINE_ISO';
 var PROP_KEEPERS_SHEET_NAME = 'KEEPERS_SHEET_NAME';
+var PROP_ACCOMMODATIONS_SHEET_NAME = 'ACCOMMODATIONS_SHEET_NAME';
 
 var DEFAULT_KEEPERS_SHEET = 'Keepers';
+var DEFAULT_ACCOMMODATIONS_SHEET = 'Accommodations';
 
 /* The fixed part of the response header (SPEC §3.1). The choice_N columns are
  * generated from K and spliced in between these two halves.
@@ -70,6 +76,18 @@ var HEADER_TAIL = ['client_version', 'auth_method'];
  * email wins. tools/merge_keepers.py folds this into config/roster.csv. */
 var KEEPERS_HEADER = ['claim_id', 'timestamp', 'email', 'name', 'desk_id',
                       'keeping', 'client_version'];
+
+/* The private-note log (section 6b). A SEPARATE tab, deliberately: these notes
+ * are confidential and the response sheet is the file that gets exported,
+ * hashed, anonymised and published. Nothing here is ever written to a response
+ * row, and the solver never reads this tab. */
+var ACCOMMODATIONS_HEADER = ['note_id', 'timestamp', 'email', 'name', 'note',
+                             'client_version'];
+
+/* How much a student may write in one note. Not a dimension of the problem —
+ * it is a UI/storage limit — but it is written down once, here, and the client
+ * is told what it is by getBootstrap() rather than repeating the number. */
+var ACCOMMODATION_MAX_CHARS = 1500;
 
 var AUTH_GOOGLE = 'google';
 var AUTH_SELF_SELECT = 'self_select';
@@ -159,6 +177,8 @@ function getBootstrap() {
       lockedDesks: [],
       allowedZonesFor: {},
       priorSubmission: null,
+      priorAccommodation: null,
+      accommodationMaxChars: ACCOMMODATION_MAX_CHARS,
       concentration: {},
       prelock: { enabled: false, deadlineIso: null, deadlinePassed: false },
       claims: [],
@@ -234,6 +254,26 @@ function getBootstrap() {
     warnings.push('Previous submissions could not be read: ' + errText_(err2));
   }
 
+  // ---- the private note from their last submission ----------------------
+  // Sent back ONLY to a person Google has identified as themselves: `person`
+  // is non-null only when the session email matched a roster row, so a
+  // self-selected visitor is never handed anybody's note — not even their own.
+  // Without this the box would look empty on a re-visit and re-ranking would
+  // silently drop a note the coordinator had already been told about.
+  var priorAccommodation = null;
+  if (person) {
+    try {
+      var mineNote = latestAccommodationFor_(person.email);
+      if (mineNote) {
+        priorAccommodation = { note: mineNote.note, timestampIso: mineNote.timestampIso };
+      }
+    } catch (err4) {
+      warnings.push('Your private note to the coordinator could not be read, so the box on ' +
+        'the last page may look empty even though a note is on file. Anything you write ' +
+        'there now will replace it: ' + errText_(err4));
+    }
+  }
+
   // ---- pre-lock claims --------------------------------------------------
   // Only read while the step is switched on. When the coordinator turns it off
   // the step is not in use this year, and nothing else about the form changes
@@ -287,6 +327,8 @@ function getBootstrap() {
     lockedDesks: lockedDesks_(roster),
     allowedZonesFor: allowedZonesFor,
     priorSubmission: priorSubmission,
+    priorAccommodation: priorAccommodation,        // this person's own, or null
+    accommodationMaxChars: ACCOMMODATION_MAX_CHARS,
     concentration: concentration,
     prelock: {
       enabled: prelock.enabled,
@@ -546,14 +588,23 @@ function resolveAllowZones_(allowZones, known, where) {
  * updated or deleted: re-submitting appends again and the solver keeps the
  * latest row per email (SPEC §3.2), so the history stays auditable.
  *
+ * `payload.accommodation` — the optional private note — is NOT part of that
+ * row. It goes to its own tab (section 6b) and cannot fail the submission:
+ * it is never validated, never rejected, and if the note write fails the
+ * ranking is still saved and `noteError` says so. The response row is exactly
+ * the SPEC §3.1 row it has always been.
+ *
  * Note on candidacy: SPEC §3.3 says the submission overrides the roster, and it
  * is recorded that way. For *eligibility* we take the intersection of
  * roster-derived and claim-derived zones, so nobody can unlock a zone by
  * retyping their candidacy, and so the form can never accept a pick the solver
  * would later rule ineligible under either reading.
  *
- * @param {Object} payload {email, name, candidacy, choices[], authMethod, clientVersion}.
- * @return {Object} {ok:true, submissionId, timestampIso} | {ok:false, errors:[strings]}.
+ * @param {Object} payload {email, name, candidacy, choices[], authMethod,
+ *                          clientVersion, accommodation}.
+ * @return {Object} {ok:true, submissionId, timestampIso, noteRecorded,
+ *                   noteWithdrawn, noteTruncated, noteError} |
+ *                  {ok:false, errors:[strings]}.
  */
 function submitRanking(payload) {
   var errors = [];
@@ -733,6 +784,13 @@ function submitRanking(payload) {
 
   if (errors.length) return fail_(errors);
 
+  // ---- the private note -------------------------------------------------
+  // Read, never judged. A note cannot be wrong, cannot be too short and cannot
+  // stop a ranking being saved, so nothing here appends to `errors`. Over-long
+  // input is cut to the cap rather than refused (the browser stops at the cap
+  // already; anything longer is not a person typing).
+  var note = normaliseNote_(payload.accommodation);
+
   // ---- write ------------------------------------------------------------
   var lock = LockService.getScriptLock();
   try {
@@ -772,7 +830,27 @@ function submitRanking(payload) {
     sheet.getRange(sheet.getLastRow(), tsCol).setNumberFormat('@').setValue(timestampIso);
     SpreadsheetApp.flush();
 
-    return { ok: true, submissionId: submissionId, timestampIso: timestampIso };
+    // The ranking is now saved. The note is written second and inside its own
+    // try, still under the same lock, so that a problem with the private tab
+    // (missing permission, header edited by hand) reports itself as "your note
+    // did not save" instead of throwing away a ranking that is already on disk.
+    var noteWrite = { recorded: false, withdrawn: false, error: '' };
+    try {
+      noteWrite = recordAccommodation_(email, String(payload.name || '').trim() || person.name,
+        note.text, String(payload.clientVersion || '').trim() || clientVersion_(), timestampIso);
+    } catch (errNote) {
+      noteWrite = { recorded: false, withdrawn: false, error: errText_(errNote) };
+    }
+
+    return {
+      ok: true,
+      submissionId: submissionId,
+      timestampIso: timestampIso,
+      noteRecorded: !!noteWrite.recorded,
+      noteWithdrawn: !!noteWrite.withdrawn,
+      noteTruncated: note.truncated,
+      noteError: noteWrite.error || ''
+    };
   } catch (errWrite) {
     return fail_(['Your ranking could not be saved: ' + errText_(errWrite) +
       ' Nothing was recorded — please try again, then tell the coordinator if it keeps failing.']);
@@ -1263,6 +1341,229 @@ function claimDesk(payload) {
   } finally {
     lock.releaseLock();
   }
+}
+
+/* ===========================================================================
+ * 6b. Private notes to the coordinator — CONFIDENTIAL
+ *
+ * The last page of the form has an optional box for the one thing a ranked
+ * list cannot say: *where* a person needs to sit, and why. Accessibility, a
+ * health need, needing distance from a particular person in order to work.
+ *
+ * Three rules, all of them load-bearing.
+ *
+ *   1. It is not an input to the solve. SPEC I2 says the assignment is a pure
+ *      function of (responses, config, seed) with no override path, and that is
+ *      the whole integrity argument. A note is advice to a human being. If the
+ *      coordinator decides to act on one they change an INPUT — mark a desk
+ *      unavailable in rooms.json, say — which is visible in git. Do not add a
+ *      weight, a nudge or a constraint here, and do not teach the solver to
+ *      read this tab.
+ *
+ *   2. It never reaches anything published. These notes name other people
+ *      ("I need to be away from X") and disclose health and caring situations,
+ *      so pseudonymising the author does not make them safe. They are written
+ *      to their own tab and to nothing else: not the response row, therefore
+ *      not responses.csv, not responses_anonymized.csv, not results.json and
+ *      not the public PDF. Getting one into a published artefact is a
+ *      correctness bug, not a tidiness issue.
+ *
+ *   3. It cannot cost anybody their submission. Nothing in this section
+ *      validates, and nothing in it can make submitRanking() fail.
+ *
+ * The log is append-only with the same semantics as the response sheet and the
+ * Keepers tab (SPEC §3.2): one row per submission that carried a note, latest
+ * row per email wins. Clearing the box on a later submission appends a row with
+ * an EMPTY note, which is how a note is withdrawn — exactly as releasing a desk
+ * appends keeping=no rather than deleting the claim. A submission with no note
+ * from somebody who never wrote one appends nothing at all, so the tab stays
+ * short enough to read.
+ *
+ * The row's timestamp is the submission's timestamp, so a note lines up with
+ * the response row it arrived with without either file naming the other.
+ * ======================================================================== */
+
+/** Tab the private notes live in. */
+function accommodationsSheetName_() {
+  return String(prop_(PROP_ACCOMMODATIONS_SHEET_NAME) || '').trim() ||
+    DEFAULT_ACCOMMODATIONS_SHEET;
+}
+
+/**
+ * The Accommodations tab. Returns null when it does not exist and `create` is
+ * falsy — the normal state until somebody writes the first note. Reading must
+ * never create it: an empty confidential tab appearing in the spreadsheet the
+ * day the form opens invites the question "what is in there".
+ */
+function accommodationsSheet_(create) {
+  var ss = spreadsheet_();
+  var name = accommodationsSheetName_();
+  var sheet = ss.getSheetByName(name);
+  if (!sheet && create) sheet = ss.insertSheet(name);
+  return sheet || null;
+}
+
+/** Writes the header on first use; refuses to append to a mismatched tab. */
+function ensureAccommodationsHeader_(sheet) {
+  var lastCol = sheet.getLastColumn();
+  var lastRow = sheet.getLastRow();
+  var have = (lastRow >= 1 && lastCol >= 1)
+    ? sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function (v) { return String(v).trim(); })
+    : [];
+
+  if (have.filter(function (v) { return v !== ''; }).length === 0) {
+    sheet.getRange(1, 1, 1, ACCOMMODATIONS_HEADER.length)
+      .setValues([ACCOMMODATIONS_HEADER]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    // Plain text, whole column, for both of these: the timestamp so the offset
+    // survives export (SPEC §3.1), and the note so that a line beginning "=" or
+    // "+" is a sentence rather than a formula Sheets tries to evaluate.
+    var tsColNew = ACCOMMODATIONS_HEADER.indexOf('timestamp') + 1;
+    var noteColNew = ACCOMMODATIONS_HEADER.indexOf('note') + 1;
+    sheet.getRange(1, tsColNew, sheet.getMaxRows(), 1).setNumberFormat('@');
+    sheet.getRange(1, noteColNew, sheet.getMaxRows(), 1).setNumberFormat('@').setWrap(true);
+    return ACCOMMODATIONS_HEADER;
+  }
+
+  for (var i = 0; i < ACCOMMODATIONS_HEADER.length; i++) {
+    if (have[i] !== ACCOMMODATIONS_HEADER[i]) {
+      throw new Error('The "' + accommodationsSheetName_() + '" tab does not have the ' +
+        'expected header. Column ' + (i + 1) + ' is "' + (have[i] === undefined ? '' : have[i]) +
+        '" but should be "' + ACCOMMODATIONS_HEADER[i] + '". Expected header: ' +
+        ACCOMMODATIONS_HEADER.join(', ') + '. Rename or clear that tab rather than editing it.');
+    }
+  }
+  return have;
+}
+
+/**
+ * Trims and caps one note. Never throws, never rejects.
+ *
+ * @param {*} value Whatever the client sent.
+ * @return {Object} {text, truncated}.
+ */
+function normaliseNote_(value) {
+  if (value === undefined || value === null) return { text: '', truncated: false };
+  var text = String(value).replace(/\r\n?/g, '\n').replace(/^\s+|\s+$/g, '');
+  if (text.length <= ACCOMMODATION_MAX_CHARS) return { text: text, truncated: false };
+  return {
+    text: text.slice(0, ACCOMMODATION_MAX_CHARS).replace(/\s+$/, ''),
+    truncated: true
+  };
+}
+
+/**
+ * Every note row, plus the latest per email. Same resolution as
+ * readResponses_ / readKeepers_ (SPEC §3.2).
+ *
+ * @return {Object} {all:[...], latest:{email: row}}.
+ */
+function readAccommodations_() {
+  var empty = { all: [], latest: {} };
+  var sheet = accommodationsSheet_(false);
+  if (!sheet) return empty;
+
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return empty;
+
+  var values = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+  var header = values[0].map(function (v) { return String(v).trim(); });
+  var col = {};
+  for (var c = 0; c < header.length; c++) if (header[c]) col[header[c]] = c;
+
+  var all = [];
+  for (var r = 1; r < values.length; r++) {
+    var rowVals = values[r];
+    var email = normEmail_(cell_(rowVals, col.email));
+    if (!email) continue;                                // blank / spacer row
+    all.push({
+      noteId: cell_(rowVals, col.note_id),
+      timestampIso: isoCell_(rowVals[col.timestamp]),
+      email: email,
+      name: cell_(rowVals, col.name),
+      // Not trimmed to nothing and not cell_()'d: a note keeps its own line
+      // breaks. Only the outer whitespace goes.
+      note: col.note === undefined ? ''
+        : String(rowVals[col.note] === undefined || rowVals[col.note] === null
+          ? '' : rowVals[col.note]).replace(/^\s+|\s+$/g, ''),
+      clientVersion: cell_(rowVals, col.client_version),
+      fileRow: r - 1
+    });
+  }
+
+  var latest = {};
+  for (var i = 0; i < all.length; i++) {
+    var row = all[i];
+    var prev = latest[row.email];
+    if (!prev || !laterThan_(prev, row)) latest[row.email] = row;
+  }
+  return { all: all, latest: latest };
+}
+
+/**
+ * The note this person's most recent submission carried, or null when they
+ * have never written one. A row whose note is empty is a withdrawal and is
+ * returned as such (note: '') — that is still the latest thing they said.
+ */
+function latestAccommodationFor_(email) {
+  var row = readAccommodations_().latest[normEmail_(email)];
+  return row || null;
+}
+
+/**
+ * Appends one note row. Called from inside submitRanking()'s lock, after the
+ * response row is safely written.
+ *
+ * An empty note from somebody with no note on file writes nothing: most people
+ * leave the box alone and the tab should not fill up with blanks. An empty note
+ * from somebody who DOES have one on file writes a blank row, which withdraws
+ * it — otherwise clearing the box would silently leave the old note standing as
+ * the latest word.
+ *
+ * @return {Object} {recorded, withdrawn, error, noteId?}.
+ */
+function recordAccommodation_(email, name, text, clientVersion, timestampIso) {
+  var withdrawing = false;
+  if (!text) {
+    var prior = latestAccommodationFor_(email);
+    if (!prior || !prior.note) return { recorded: false, withdrawn: false, error: '' };
+    withdrawing = true;
+  }
+
+  var sheet = accommodationsSheet_(true);
+  ensureAccommodationsHeader_(sheet);
+
+  var noteId = Utilities.getUuid();
+  var row = ACCOMMODATIONS_HEADER.map(function (colName) {
+    switch (colName) {
+      case 'note_id': return noteId;
+      case 'timestamp': return timestampIso;
+      case 'email': return email;
+      case 'name': return name;
+      case 'note': return text;
+      case 'client_version': return clientVersion;
+      default: return '';
+    }
+  });
+
+  sheet.appendRow(row);
+
+  // Re-set both cells as plain text. appendRow() will read "=" or "+" at the
+  // start of a note as a formula, and will re-format the timestamp as a date.
+  var written = sheet.getLastRow();
+  var tsCol = ACCOMMODATIONS_HEADER.indexOf('timestamp') + 1;
+  var noteCol = ACCOMMODATIONS_HEADER.indexOf('note') + 1;
+  sheet.getRange(written, tsCol).setNumberFormat('@').setValue(timestampIso);
+  sheet.getRange(written, noteCol).setNumberFormat('@').setValue(text);
+  SpreadsheetApp.flush();
+
+  return {
+    recorded: !withdrawing,
+    withdrawn: withdrawing,
+    error: '',
+    noteId: noteId
+  };
 }
 
 /* ===========================================================================
