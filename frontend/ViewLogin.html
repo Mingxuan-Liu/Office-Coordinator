@@ -177,11 +177,7 @@
 
   <!-- ---------------------------------------------------------------- 2 -->
   <div class="card" id="login-details" hidden>
-    <div class="card__head">
-      <h2>Check your details</h2>
-      <span class="spacer"></span>
-      <span class="badge badge--warn" id="login-corrected-badge" hidden>Corrected</span>
-    </div>
+    <div class="card__head"><h2>Check your details</h2></div>
     <div class="card__body stack">
       <p class="small muted">
         The roster is often out of date. Whatever you put here is what the solver
@@ -212,11 +208,6 @@
         <p class="caps muted" style="margin-bottom: var(--s-2);">You may choose from</p>
         <div class="row zones" id="login-zones" aria-live="polite"></div>
         <p class="small muted" id="login-zones-note" style="margin-top: var(--s-2);"></p>
-      </div>
-
-      <div class="row" id="login-restore-row" hidden>
-        <span class="small muted" id="login-restore-text"></span>
-        <button type="button" class="btn btn--ghost btn--sm" id="login-restore">Restore roster values</button>
       </div>
     </div>
   </div>
@@ -514,9 +505,11 @@
     paint();
 
     /* getBootstrap() already ran the rule table over this person's roster row.
-       While nothing has been corrected, that answer is the server's answer —
-       re-asking would be a round trip for the same result. */
-    if (sel.allowedZones && sel.allowedZones.length && !rosterDiff()) {
+       While the candidacy in hand still says what that row says, the bootstrap
+       answer is the server's answer — re-asking would be a round trip for the
+       same result. A restored session can arrive here already corrected, so
+       compare rather than assume. */
+    if (sel.allowedZones && sel.allowedZones.length && candidacyAsRostered()) {
       renderZones(sel.allowedZones, { reason: person.reason });
     } else {
       requestEligibility(0);
@@ -528,16 +521,15 @@
     sel.candidacy = readCandidacy();
   }
 
-  function rosterDiff() {
-    if (!sel) { return null; }
+  /* True when the candidacy in hand is still the roster's. Not shown to anyone:
+     its only job is to decide whether the bootstrap's zone answer can stand or
+     the server has to be asked again. Nobody without a roster row can have
+     corrected anything, so they count as unchanged too. */
+  function candidacyAsRostered() {
+    if (!sel) { return false; }
     var row = entryFor(sel.email);
-    if (!row) { return null; }
-    var changed = [];
-    if (lower(row.candidacy) !== lower(sel.candidacy)) {
-      changed.push(esc(trim(row.candidacy) || '(blank)') + ' → ' +
-                   esc(trim(sel.candidacy) || '(blank)'));
-    }
-    return changed.length ? changed : null;
+    if (!row) { return true; }
+    return lower(row.candidacy) === lower(sel.candidacy);
   }
 
   function requestEligibility(delay) {
@@ -630,21 +622,7 @@
       }
       note.innerHTML = lines.map(esc).join('<br>');
     }
-    paintCorrection();
     paintActions();
-  }
-
-  function paintCorrection() {
-    var diff = rosterDiff();
-    var badge = el('login-corrected-badge');
-    var row = el('login-restore-row');
-    var text = el('login-restore-text');
-    if (badge) { badge.hidden = !diff; }
-    if (row) { row.hidden = !diff; }
-    if (text && diff) {
-      text.innerHTML = 'Different from the roster (' + diff.join('; ') +
-                       '). Your version is the one that counts.';
-    }
   }
 
   function fieldError(id, message) {
@@ -726,7 +704,6 @@
 
     /* prior submission */
     paintPrior(blocked);
-    paintCorrection();
     paintActions();
   }
 
@@ -805,7 +782,6 @@
           setOtherField(false, '');
         }
         readForm();
-        paintCorrection();
         paintActions();
         requestEligibility(0);
       });
@@ -815,22 +791,8 @@
     if (other) {
       other.addEventListener('input', function () {
         readForm();
-        paintCorrection();
         paintActions();
         requestEligibility();
-      });
-    }
-
-    var restore = el('login-restore');
-    if (restore) {
-      restore.addEventListener('click', function () {
-        var row = sel && entryFor(sel.email);
-        if (!row) { return; }
-        fillCandidacy(row.candidacy);
-        readForm();
-        paintCorrection();
-        paintActions();
-        requestEligibility(0);
       });
     }
 

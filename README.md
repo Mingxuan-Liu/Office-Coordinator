@@ -110,28 +110,35 @@ python -m deskmatch validate --config config/
 
 Fix anything it complains about before continuing.
 
-### 2. Verify the floor plan — *skip in most years*
+### 2. Verify the desk map — *skip in most years*
 
 Only needed if desks moved, a room was added, or you are running this for the
-first time and want to confirm the geometry.
+first time.
 
-Open `tools/calibrate/index.html` in a browser (just double-click it — no server
-needed). Load `config/floorplans/main_office.png`, click **Import** and choose
-`config/rooms.json`, then switch to **Preview**. Every desk should sit on the
-right rectangle. Correct any that don't, then **Export** back over
-`config/rooms.json` and commit.
+`config/rooms.json` is a **schematic**, not a tracing of the architect's plan.
+No floor-plan image is drawn anywhere, so the rectangles *are* the map and their
+spacing has to carry the layout on its own:
 
-Do **not** try to auto-detect desks. The tool has a "suggest rectangles" helper,
-but suggestions must be accepted one at a time — a mis-detected desk that nobody
-notices is how someone gets assigned to a desk that does not exist.
+| gap | means |
+|---|---|
+| narrow | two columns facing each other across a divider |
+| wide | a walking aisle |
+| widest | the wall between the two sides of the main office |
+| against the edge | that column faces a wall |
+
+So in the main office, desks 1–2 and 15–16 face walls, 17–18 and 27–28 face
+walls, and everything in between faces another desk.
+
+Open `tools/calibrate/index.html` in a browser (double-click it — no server
+needed), **Import** `config/rooms.json`, and switch to **Preview**. Check the
+groupings match the room. Correct anything wrong, **Export** back over
+`config/rooms.json`, and commit.
 
 `config/rooms.json` is the single definition of where desks are. It drives the
 student-facing map, the validator, and the heatmap in the report.
 
-> The shipped `rooms.json` was generated from the 2015-04-29 plan revision:
-> desks 1–16 on the upper-years side, 17–28 on the first/second-year side, and
-> 29–31 along the lower-left wall assigned to the upper-years side. **Confirm
-> that 29–31 assignment is what the department intends** before your first run.
+> The shipped map puts desks 29–31 on the upper-years side. **Confirm that is
+> what the department intends** before your first run.
 
 ### 3. The seed — *nothing to do, but know what it is*
 
@@ -166,8 +173,9 @@ editing a tracked file.
 python tools/sync_config.py --config-dir config/ --out frontend/ConfigData.gs
 ```
 
-This bakes the desks, zones, roster, and floor plan image into the Apps Script
-project so there is one source of truth in git. Then follow
+This bakes the desks, zones and roster into the Apps Script project so there is
+one source of truth in git. (No images: the map is drawn from the desk
+rectangles, which keeps the generated file about 20 KB instead of a megabyte.) Then follow
 [`frontend/DEPLOY.md`](frontend/DEPLOY.md) — step by step, assuming you have
 never used Apps Script.
 

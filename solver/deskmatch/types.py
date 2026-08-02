@@ -78,6 +78,11 @@ class Feature:
     shape_kind: str                       # "rect" | "polygon" | "polyline"
     shape: tuple[float, ...] | tuple[tuple[float, float], ...]
     note: str = ""
+    #: Doors only: the corner the door is hinged on, lower-cased --
+    #: "nw" | "ne" | "sw" | "se" (see validate.DOOR_SWINGS). Empty when the key
+    #: is absent, which the renderers read as the default "sw". Ignored on any
+    #: other kind; the validator warns about that case.
+    swing: str = ""
 
 
 @dataclass(frozen=True)

@@ -402,6 +402,12 @@ def _build_rooms(doc: Mapping[str, Any]) -> Rooms:
                 shape_kind=_shape_kind(f["shape"]),
                 shape=_shape_value(f["shape"]),
                 note=str(f.get("note", "")),
+                # Normalised here so every renderer compares the same thing.
+                # The validator has already rejected anything outside
+                # validate.DOOR_SWINGS, so an unrecognised value can only come
+                # from a caller that skipped validation -- the drawing code
+                # falls back to the default rather than raising.
+                swing=str(f.get("swing", "")).strip().lower(),
             )
             for f in room.get("features", ())
         )

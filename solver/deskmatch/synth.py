@@ -970,7 +970,12 @@ class SynthWorld:
             plans = config_dir / "floorplans"
             plans.mkdir(parents=True, exist_ok=True)
             for room in self.rooms["rooms"]:
-                (plans / Path(room["image"]).name).write_bytes(
+                # A room may legitimately have no image: the department's own
+                # config draws from the desk rectangles alone. Nothing to write.
+                image = room.get("image")
+                if not image:
+                    continue
+                (plans / Path(image).name).write_bytes(
                     render_room_png(self.rooms, room)
                 )
         return config_dir, responses_path
@@ -986,7 +991,7 @@ class SynthWorld:
             Room(
                 id=room["id"],
                 label=room["label"],
-                image=room["image"],
+                image=room.get("image", ""),
                 image_size=(int(room["image_size"][0]), int(room["image_size"][1])),
                 desks=tuple(
                     Desk(

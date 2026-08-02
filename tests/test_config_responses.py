@@ -506,9 +506,19 @@ def test_missing_floorplan_image_warns(case: ConfigCase):
     assert "the web form cannot" in warning
 
 
-def test_absent_image_key_warns(case: ConfigCase):
+def test_absent_image_key_is_silent(case: ConfigCase):
+    """A room with no `image` draws itself from the desk rectangles, on purpose.
+
+    That is the shipped configuration -- the department decided the schematic
+    is the map -- so warning about it on every run would be a warning nobody
+    reads, which is how the one that matters gets missed. The *configured but
+    missing* case still warns; see test_missing_image_file_warns above.
+    """
     case.rooms["rooms"][0].pop("image")
-    find_warning(case.warnings(), ".image:", "no floor-plan 'image' is set")
+    assert not [w for w in case.warnings() if ".image:" in w], (
+        "an intentionally image-less room must not warn: " + repr(case.warnings())
+    )
+    case.load()  # and it must still load
 
 
 def test_absolute_image_path_warns(case: ConfigCase):

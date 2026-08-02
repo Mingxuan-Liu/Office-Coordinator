@@ -76,8 +76,10 @@ is `ConfigError`, never a `KeyError` / `TypeError` traceback.
     {
       "id": "main_office",
       "label": "Main Grad Office (Room 406)",
-      "image": "floorplans/main_office.png",   // relative to config/
+      // "image": "floorplans/main_office.png",  // OPTIONAL, and omitted by
+                                                 // the shipped config — see below
       "image_size": [1212, 706],               // px; required, used to convert coords
+      // "image" is optional and omitted by the shipped config; see below.
       "features": [                    // v2+, optional. Decoration only.
         {
           "id": "huddle_rm",
@@ -117,9 +119,15 @@ Rules enforced by the validator:
   Feature ids must be unique within a room and must not collide with any desk id.
   An unrecognised `kind` is a warning; it still draws as generic structure.
   Features may overlap anything, including each other, without complaint.
+  A `door` may carry `"swing": "nw"|"ne"|"sw"|"se"` — the corner it is hinged
+  on, so the drawing shows which way it opens. Default `"sw"`. `swing` on a
+  non-door warns and is ignored.
 - In `normalized` space all coordinates ∈ [0, 1]. In `pixels` space, ∈ image bounds.
-- `image` path must exist **or** produce a warning (the solver can render on a
-  blank canvas; the frontend cannot).
+- `image` is **optional and unused by the shipped config**. Both rooms omit it:
+  the desk rectangles are the map, and their spacing carries the layout (narrow
+  gap = two columns facing each other, wide gap = an aisle, widest = a wall).
+  An absent `image` is silent, because it is the intended state. An `image` that
+  IS configured but whose file is missing still warns — that one is an accident.
 - Overlapping desk shapes produce a warning naming both desks.
 
 Error message shape (required):

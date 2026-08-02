@@ -1,36 +1,29 @@
 # Floor plan images
 
-Drop the floor plan image files referenced by `config/rooms.json` here.
+**Nothing in the running system reads this directory any more.**
 
-Currently expected:
+`config/rooms.json` is a schematic: the desk rectangles are the map, and their
+spacing encodes the layout (narrow gap = two columns facing each other, wide gap
+= an aisle, widest = the wall between the two sides). Neither the web form nor
+the report loads a bitmap, so there is no image to keep in sync and no
+missing-image warning to ignore.
 
-| file | referenced by | status |
-|---|---|---|
-| `main_office.png` | `rooms.json` → `rooms[0].image` | **MISSING — you need to add this** |
+`main_office.png` is kept here as **reference only** — it is the architect's plan
+the schematic was derived from, and it is the thing to check the schematic
+against if the room is ever rearranged. Delete it if you would rather not carry
+the megabyte; nothing will break.
 
-## What to add
+## If you want the bitmap back
 
-The 2D floor plan of the main graduate office (the plan marked `REV. 4.29.15`
-with desks numbered 1–31). Save it as `main_office.png`.
+Add an `image` key to a room in `rooms.json`:
 
-The desk coordinates already in `rooms.json` were derived from that image at
-**1212 × 706** and are stored in *normalized* (0–1) space, so any resolution
-will work as long as the **aspect ratio and framing match** — i.e. use the same
-crop, just scaled. If you use a differently-cropped image, re-run the
-calibration tool (`tools/calibrate/index.html`) to regenerate the coordinates.
-
-## What happens if it is missing
-
-- `deskmatch validate` emits a warning naming this file.
-- The solver and the report still run; the floor-plan heatmap falls back to
-  drawing the desk outlines on a blank canvas with a visible note.
-- **The web form is the real problem**: `tools/sync_config.py` will warn and
-  emit a null image, and students would be asked to rank desks with no plan to
-  look at. Add the image before deploying the form.
-
-After adding it, re-run:
-
-```bash
-python -m deskmatch validate --config config/
-python tools/sync_config.py --config-dir config/ --out frontend/ConfigData.gs
+```json
+"image": "floorplans/main_office.png",
 ```
+
+The validator, `tools/sync_config.py` and the report all handle it again from
+that point — a configured-but-missing file warns, an absent key is silent.
+
+**But note:** the desk coordinates are now schematic and will *not* line up with
+the architect's drawing. Re-deriving image-aligned coordinates means re-doing
+them in `tools/calibrate/index.html` against that image.

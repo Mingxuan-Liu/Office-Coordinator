@@ -14,13 +14,29 @@ What it emits (all of it read from the config, none of it written down here):
     var ELIGIBILITY_JSON    eligibility.json, verbatim
     var SCORING_JSON        scoring.json, verbatim  (K = len of the primary curve)
     var ROSTER              roster.csv as a list of objects, every column kept
-    var FLOORPLAN_DATA_URI  room id -> "data:image/png;base64,..." | null
-    var CONFIG_FINGERPRINT  sha256 prefix over every input, images included
+    var FLOORPLAN_DATA_URI  room id -> "data:image/png;base64,..." | null,
+                            for the rooms that declare an `image` — normally
+                            none, so normally ``{}``
+    var CONFIG_FINGERPRINT  sha256 prefix over every input that ends up in here
 
-Missing floor-plan images are a warning, not a failure: the coordinator often
-sets up the rooms before dropping the PNG in, and a form with no picture is
-better than no form. The affected room gets ``null`` and a loud message on
-stderr.
+Floor-plan images
+-----------------
+rooms.json is a schematic: the desk rectangles are the map and their spacing
+carries the layout, so **no room declares an `image` and nothing is embedded**.
+That matters because the images used to be base64'd into this file — one PNG
+took the generated output to ~1.1 MB, all of it shipped in the bootstrap
+payload to every phone that opened the form.
+
+A room with no `image` key is therefore silent in every respect: no entry in
+FLOORPLAN_DATA_URI, no bytes, no warning. It is the intended configuration, not
+a gap. Only a room that *declares* an image is looked for on disk, and only
+then can it warn:
+
+* declared and readable -> embedded as a data URI, plus a warning saying how
+  much weight that just added, because the shipped system does not need one;
+* declared and missing/unreadable -> ``null`` and a loud message on stderr.
+  That one is an accident: the coordinator asked for a picture and did not get
+  it. Still not fatal — a form with no picture beats no form.
 
 Determinism: the output contains no timestamp and no path from the developer's
 machine, and key order follows the source files (json.load, csv.DictReader and
@@ -53,6 +69,8 @@ from typing import NoReturn
 CONFIG_FILES = ("rooms.json", "eligibility.json", "scoring.json", "roster.csv")
 
 FINGERPRINT_CHARS = 16          # prefix of the sha256 hex digest
+#: Past this, an embedded image is not merely heavy, it is a deployment
+#: problem: Apps Script serves ConfigData.gs in one bootstrap payload.
 LARGE_IMAGE_WARN_BYTES = 1_500_000
 
 # Integers/decimals with no leading zeros and no sign padding. Anything else
@@ -155,10 +173,11 @@ def load_roster(path: Path) -> list[dict]:
 
 
 def encode_image(config_dir: Path, rel_path: str) -> tuple[str | None, bytes | None]:
-    """Read one floor plan and return (data URI, raw bytes).
+    """Read one declared floor plan and return (data URI, raw bytes).
 
-    A missing file yields (None, None) plus a loud warning — see the module
-    docstring for why that is not fatal.
+    Only ever called for a room that actually declares an `image`; a missing
+    file yields (None, None) and the caller warns. See the module docstring for
+    why that is not fatal, and why no-image-declared never reaches this.
     """
     if not rel_path:
         return None, None
@@ -215,8 +234,9 @@ def render(
  *
  * The source of truth is {config_dir_name}/ in the git repository:
  *     {", ".join(CONFIG_FILES)}
- * plus the floor-plan images referenced by rooms.json, which are inlined
- * below as data URIs so the web app needs no external requests.
+ * No floor-plan bitmap is inlined unless a room asks for one with an "image"
+ * key. rooms.json is a schematic -- the desk rectangles are the map -- so the
+ * shipped config declares none and this file carries no image bytes.
  *
  * To change a desk, a zone, a rule, the scoring curve or the roster: edit the
  * file in {config_dir_name}/, re-run the command above, and push both the config
@@ -238,8 +258,9 @@ def render(
         "var ELIGIBILITY_JSON = " + js_literal(eligibility) + ";\n\n",
         "var SCORING_JSON = " + js_literal(scoring) + ";\n\n",
         "var ROSTER = " + js_literal(roster) + ";\n\n",
-        "// Room id -> data URI for that room's floor plan, or null if the image\n"
-        "// file was missing when this was generated.\n",
+        "// Room id -> data URI, or null if the declared image file was missing.\n"
+        "// Only rooms with an \"image\" key in rooms.json appear, so {} is the normal\n"
+        "// result: the desk rectangles are the map. Absent and null read alike.\n",
         "var FLOORPLAN_DATA_URI = " + js_literal(floorplans) + ";\n\n",
         "var CONFIG_FINGERPRINT = " + json.dumps(fingerprint) + ";\n",
     ]
@@ -266,38 +287,60 @@ def build(config_dir: Path) -> tuple[str, dict]:
         die('rooms.json must be an object with a "rooms" list.')
 
     # ---- floor plans ------------------------------------------------------
+    # A room without an `image` key contributes nothing here: no map entry, no
+    # bytes and no warning. That is the shipped configuration -- rooms.json is
+    # a schematic and neither the form nor the report draws a bitmap -- so
+    # complaining about it would be an error message for the intended state.
+    # Only a *declared* image is looked for, and only a declared one can be
+    # missing.
     floorplans: dict[str, str | None] = {}
     image_digests: list[tuple[str, str]] = []
+    declared: list[str] = []
     missing: list[str] = []
-    embedded = 0
+    embedded_bytes = 0
     for index, room in enumerate(rooms["rooms"]):
         if not isinstance(room, dict) or "id" not in room:
             die(f'rooms.json: rooms[{index}] has no "id".')
         room_id = str(room["id"])
         rel = str(room.get("image") or "")
+        if not rel:
+            continue
+        declared.append(room_id)
         uri, data = encode_image(config_dir, rel)
         floorplans[room_id] = uri
         if data is None:
             missing.append(room_id)
             image_digests.append((room_id, "MISSING"))
             warn(
-                f'room "{room_id}": floor-plan image {rel or "(none declared)"} was not '
-                f"found under {config_dir}. The room will render on a blank canvas. "
-                f"Drop the PNG in and re-run this script before the form opens."
+                f'room "{room_id}": rooms.json declares floor-plan image {rel}, but it '
+                f"was not found under {config_dir}. The room will render from its desk "
+                f"coordinates alone. Drop the file in and re-run this script, or remove "
+                f'the "image" key if the schematic is the map.'
             )
         else:
-            embedded += 1
+            embedded_bytes += len(data)
             image_digests.append((room_id, hashlib.sha256(data).hexdigest()))
+            # Embedding is opt-in now, and worth saying out loud when someone
+            # opts in: this is the line item that used to make the generated
+            # file ~1.1 MB.
+            warn(
+                f'room "{room_id}": embedding {rel} ({len(data) / 1_000_000:.2f} MB) as '
+                f"a data URI. Base64 inflates that by a third and it all ships in one "
+                f'bootstrap payload. The shipped config needs no image at all; drop the '
+                f'"image" key to go back to the schematic.'
+            )
             if len(data) > LARGE_IMAGE_WARN_BYTES:
                 warn(
-                    f'room "{room_id}": {rel} is {len(data) / 1_000_000:.1f} MB. Base64 '
-                    f"inflates that by a third and it all ships in one bootstrap payload; "
-                    f"consider downscaling the PNG before the form opens."
+                    f'room "{room_id}": {rel} is {len(data) / 1_000_000:.1f} MB, which is '
+                    f"large enough to be felt on a phone; downscale it before the form "
+                    f"opens."
                 )
 
     # ---- fingerprint ------------------------------------------------------
-    # Hash the raw bytes of each config file plus each image, in a fixed order,
-    # so a changed floor plan changes the fingerprint too.
+    # Hash the raw bytes of each config file plus each *declared* image, in a
+    # fixed order, so a changed floor plan changes the fingerprint too. Rooms
+    # that declare no image contribute nothing: the fingerprint covers what
+    # actually went into this file, and nothing about them did.
     hasher = hashlib.sha256()
     for name in CONFIG_FILES:
         hasher.update(name.encode("utf-8"))
@@ -345,7 +388,9 @@ def build(config_dir: Path) -> tuple[str, dict]:
         "roster_columns": sorted({key for row in roster for key in row}),
         "rules": n_rules,
         "k": k,
-        "images_embedded": embedded,
+        "images_declared": declared,
+        "images_embedded": len(declared) - len(missing),
+        "images_embedded_bytes": embedded_bytes,
         "images_missing": missing,
         "fingerprint": fingerprint,
         "bytes": len(text.encode("utf-8")),
@@ -412,13 +457,18 @@ def main(argv: list[str] | None = None) -> int:
         "  rules={rules}  K={k}".format(**summary)
     )
     print("  roster columns: " + ", ".join(summary["roster_columns"]))
-    print(
-        "  floor plans: {} embedded, {} missing{}".format(
-            summary["images_embedded"],
-            len(summary["images_missing"]),
-            (" (" + ", ".join(summary["images_missing"]) + ")") if summary["images_missing"] else "",
+    if summary["images_declared"]:
+        print(
+            "  floor plans: {} embedded ({:,} image bytes), {} missing{}".format(
+                summary["images_embedded"],
+                summary["images_embedded_bytes"],
+                len(summary["images_missing"]),
+                (" (" + ", ".join(summary["images_missing"]) + ")")
+                if summary["images_missing"] else "",
+            )
         )
-    )
+    else:
+        print("  floor plans: none declared; no image bytes embedded")
     print("  CONFIG_FINGERPRINT = " + summary["fingerprint"])
     return 0
 

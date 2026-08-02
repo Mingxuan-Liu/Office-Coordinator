@@ -59,6 +59,10 @@ KNOWN_FEATURE_KINDS: tuple[str, ...] = (
     "outline", "wall", "door", "window", "partition", "furniture", "room", "divider",
 )
 
+#: Hinge corner for a `door` feature, so the plan can show which way it opens.
+#: "sw" (bottom-left) is the renderers' default when `swing` is absent.
+DOOR_SWINGS: tuple[str, ...] = ("nw", "ne", "sw", "se")
+
 COORD_SPACES: tuple[str, ...] = ("normalized", "pixels")
 
 #: Required roster columns (SPEC §2.3). Any *other* column is legal and is
@@ -900,12 +904,12 @@ def _validate_image_path(
 ) -> None:
     where = f"{room_where}.image"
     if "image" not in room:
-        ctx.warn(
-            where,
-            "no floor-plan 'image' is set; the solver will render on a blank canvas"
-            " and the web form cannot show a plan at all.",
-            'Add "image": "floorplans/<file>.png", relative to the config directory.',
-        )
+        # Silence, deliberately. A room with no `image` is drawing itself from
+        # the desk rectangles on purpose -- that is the shipped configuration --
+        # and a warning on every single run for an intended state is a warning
+        # nobody reads, which then hides the one that matters. A *configured*
+        # image that is missing is still reported below, because that one is an
+        # accident.
         return
     image = room["image"]
     if not _is_str(image) or not image.strip():
@@ -994,7 +998,29 @@ def _validate_features(
                 else f"'id' is {_a_typename(fid)} ({_fmt(fid)}); expected a non-empty string.",
             )
 
-        _check_unknown_keys(ctx, where, feature, ("id", "kind", "label", "shape", "note"))
+        _check_unknown_keys(
+            ctx, where, feature, ("id", "kind", "label", "shape", "note", "swing")
+        )
+
+        # `swing` names the hinge corner of a door, so the drawing can show which
+        # way it actually opens. Only meaningful on doors.
+        if "swing" in feature:
+            swing = feature["swing"]
+            if not _is_str(swing) or swing.strip().lower() not in DOOR_SWINGS:
+                ctx.error(
+                    where,
+                    f"'swing' is {_fmt(swing)}; expected one of "
+                    f"{', '.join(repr(v) for v in DOOR_SWINGS)}.",
+                    "It names the corner the door is hinged on: 'sw' is the "
+                    "default (bottom-left). Reversing a door usually means "
+                    "swapping sw<->se or nw<->ne.",
+                )
+            elif str(feature.get("kind", "")).strip().lower() != "door":
+                ctx.warn(
+                    where,
+                    f"'swing' is set but 'kind' is "
+                    f"{_fmt(feature.get('kind'))}, not 'door', so it is ignored.",
+                )
 
         kind = feature.get("kind")
         if kind is None:

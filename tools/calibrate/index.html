@@ -1231,7 +1231,14 @@ function buildExport(d, space, opts){
   out.rooms = d.rooms.map(function(r){
     var W = r.imageSize[0], H = r.imageSize[1];
     var fx = space === 'pixels' ? W : 1, fy = space === 'pixels' ? H : 1;
-    var ro = { id:r.id, label:r.label, image:r.image, image_size:[W, H] };
+    /* Omit `image` entirely when there is none. Emitting "" is not the same as
+       leaving the key out: the loader rejects an empty string outright, so a
+       coordinator who merely opened this tool and re-exported would produce a
+       config that refuses to load. A room with no image draws from its desk
+       rectangles, which is the shipped configuration. */
+    var ro = { id:r.id, label:r.label };
+    if (r.image) { ro.image = r.image; }
+    ro.image_size = [W, H];
     r.extraKeys.forEach(function(k){ ro[k] = clone(r.extra[k]); });
     var feats = r.features || [];
     if (r.hasFeatures || feats.length) {
@@ -1334,8 +1341,7 @@ function validate(d){
       errors.push({ msg:'rooms.json: ' + at + ': image_size must be two positive numbers.', roomIdx:ri });
     }
     if (!r.image || !r.image.length) {
-      warnings.push({ msg:'rooms.json: ' + at + ': no "image" path set. The solver can render on a blank ' +
-                          'canvas but the frontend cannot.', roomIdx:ri });
+      /* Intentionally silent: a room with no image is the normal case now. */
     }
     if (!r.desks.length) {
       warnings.push({ msg:'rooms.json: ' + at + ': has no desks.', roomIdx:ri });

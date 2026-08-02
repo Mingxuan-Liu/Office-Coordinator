@@ -1162,13 +1162,6 @@ body[data-booted] .boot { display: none; }
   touch-action: pan-x pan-y;
 }
 .map-stage__inner { position: relative; margin: 0 auto; }
-.map-img {
-  display: block;
-  width: 100%;
-  height: auto;
-  user-select: none;
-  -webkit-user-drag: none;
-}
 .map-svg {
   position: absolute;
   inset: 0;
@@ -1191,13 +1184,6 @@ body[data-booted] .boot { display: none; }
    unrecognised kind still draws as plain structure. */
 .feature-layer,
 .feature-layer * { pointer-events: none; }
-
-/* Over a real floor plan drawing the walls are already printed on the image, so
-   the redrawn geometry steps back and stops competing with them. The labels do
-   not fade: naming the room is the part the scan cannot do legibly, and it is
-   why the features are drawn at all. On the blank fallback nothing fades —
-   there the geometry is the only thing giving the desks a room to sit in. */
-.feature-layer.is-over-image .feature > :not(.feature__label) { opacity: 0.5; }
 
 .feature__line {
   fill: none;
@@ -1250,8 +1236,9 @@ body[data-booted] .boot { display: none; }
 .feature--wall .feature__line { stroke-width: 4; stroke-opacity: 0.8; }
 
 /* Lighter than a desk number in both size and weight, with a halo so it stays
-   readable over a printed floor plan. JsMap sets the size per label and skips
-   any label that cannot be placed without covering a desk. */
+   readable where it crosses the graph paper or a line of structure. JsMap sets
+   the size per label and skips any label that cannot be placed without
+   covering a desk. */
 .feature__label {
   font-family: var(--font-sans);
   font-size: 10px;

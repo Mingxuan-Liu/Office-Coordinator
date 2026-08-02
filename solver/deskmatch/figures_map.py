@@ -56,18 +56,33 @@ data in no sense at all:
   caption says what the grey shapes are instead.
 
 They earn their place in the report by making the plan legible: a reader can see
-that desk 27 is under the windows and that the Quiet Grad Room is behind desk
-23. That matters most where there is no floor-plan image to fall back on — the
-senior office has none, and without its features that page would be a scatter of
-rectangles on blank paper rather than a room. Which is why `room` and `outline`
-features are labelled inside their own shape.
+that desk 5 is under the windows and which corner the door is in. That matters
+because there is no floor-plan image to fall back on — without its features the
+senior office page would be a scatter of rectangles on blank paper rather than a
+room. Which is why `room` and `outline` features are labelled inside their own
+shape, and why a `door` is drawn as a leaf and a swing arc rather than a box: a
+grey rectangle in a wall says nothing about which way the door opens, and
+`swing` (the corner it is hinged on, default ``"sw"``) says exactly that.
 
-Missing floor-plan image
-------------------------
-`config/floorplans/*.png` is dropped in by the coordinator and may simply not
-be there. Every image-using path degrades: the desk polygons are drawn on a
-neutral background, a visible note says which file was expected, and the run
-carries on. It never raises and never emits a blank page.
+A room may legitimately have **no** features at all — the main office does. Its
+desk rectangles are the map and their spacing carries the layout, so there is
+nothing structural left to draw and no page furniture is emitted for it.
+
+Floor-plan images: absent by design, broken by accident
+-------------------------------------------------------
+These are two different states and only one of them is a problem.
+
+* **No `image` key in rooms.json.** The intended configuration. The desks are
+  drawn from the coordinates alone, on plain paper, with no placeholder canvas
+  and no note — there is nothing missing, so saying so would be wrong.
+* **An `image` IS configured but cannot be used** (file absent, unreadable,
+  unsupported shape). That is an accident. The desks are drawn on a neutral
+  placeholder canvas, a visible banner names the file that was expected, and the
+  same text is returned in `FigureResult.notes`. It never raises and never emits
+  a blank page.
+
+The declared/actual size mismatch note is likewise only reachable when an image
+was loaded.
 """
 
 from __future__ import annotations
@@ -266,8 +281,11 @@ DEFAULT_CMAP = "magma"
 #: perceptually uniform map is still perceptually uniform.
 _CMAP_CLIP = (0.06, 0.90)
 
-_BG_NEUTRAL = "#f1efec"        # canvas when the floor-plan image is missing
+_BG_NEUTRAL = "#f1efec"        # placeholder canvas when a CONFIGURED image is broken
 _BG_ROOM_EDGE = "#c9c4bd"
+#: The paper itself. Matches `FIGURE_RC["figure.facecolor"]`; it is what sits
+#: behind the desks when no image is configured, which is the normal case.
+_BG_PAPER = "#ffffff"
 _OUT_OF_POOL_FACE = "#dedbd6"  # desks that are not up for grabs
 _OUT_OF_POOL_EDGE = "#9a948c"
 _NO_DATA_FACE = "#e7e4e0"      # in the pool, but nobody submitted anything
@@ -719,12 +737,33 @@ def compute_desk_popularity(
 
 @dataclass(frozen=True)
 class RoomImage:
-    """A room's backdrop, faded to grey, or the reason there isn't one."""
+    """A room's backdrop, faded to grey, or the reason there isn't one.
+
+    `configured` and `note` are what separate "this room has no image, as
+    intended" from "this room's image is broken". Only the second draws a
+    placeholder canvas and a banner; see the module docstring.
+    """
 
     array: np.ndarray | None      # (h, w, 3) float in [0, 1], already faded
     path: str                     # what we looked for, for the note
-    missing: bool
-    note: str = ""
+    missing: bool                 # there is no usable bitmap to draw
+    note: str = ""                # non-empty ONLY when something went wrong
+    configured: bool = False      # rooms.json named an image for this room
+
+    @property
+    def failed(self) -> bool:
+        """An image was asked for and could not be drawn. The only error state."""
+        return self.configured and self.array is None
+
+    @property
+    def backdrop(self) -> str:
+        """What is actually behind the desk patches, for the contrast maths.
+
+        The placeholder canvas when one is drawn, the page itself when it is
+        not. Getting this wrong flips label colours on the pale end of the
+        colormap, which is the whole reason `best_text_color` exists.
+        """
+        return _BG_NEUTRAL if self.failed else _BG_PAPER
 
 
 def _source_dir(config: Any) -> str:
@@ -739,21 +778,23 @@ def _load_room_image(config: Any, room: Room, fade: float) -> RoomImage:
 
     The plan is line art; converting it to grey and washing it out by `fade`
     stops it competing with the colour overlay, which is the actual data.
+
+    A room with no `image` key comes back with `configured=False` and an empty
+    note. That is not a failure and must not be reported as one: the shipped
+    config has no images at all, and a banner on every page saying so would be
+    an error message for the intended state of the system.
     """
     rel = room.image or ""
     path = os.path.join(_source_dir(config), rel) if rel else ""
 
     if not rel:
-        return RoomImage(
-            None, "", True,
-            f"No floor-plan image is configured for {room.id}; desks are drawn "
-            f"from rooms.json coordinates only.",
-        )
+        return RoomImage(None, "", True, "", False)
     if not os.path.isfile(path):
         return RoomImage(
             None, path, True,
             f"Floor-plan image not found: {rel} — desks are drawn from the "
             f"rooms.json coordinates only.",
+            True,
         )
     try:
         raw = np.asarray(mimage.imread(path))
@@ -762,6 +803,7 @@ def _load_room_image(config: Any, room: Room, fade: float) -> RoomImage:
             None, path, True,
             f"Floor-plan image {rel} could not be read ({type(exc).__name__}); "
             f"desks are drawn from the rooms.json coordinates only.",
+            True,
         )
 
     arr = raw.astype(np.float64)
@@ -779,6 +821,7 @@ def _load_room_image(config: Any, room: Room, fade: float) -> RoomImage:
             None, path, True,
             f"Floor-plan image {rel} has an unsupported shape {raw.shape}; desks "
             f"are drawn from the rooms.json coordinates only.",
+            True,
         )
 
     rgb = np.clip(rgb, 0.0, 1.0)
@@ -799,7 +842,7 @@ def _load_room_image(config: Any, room: Room, fade: float) -> RoomImage:
                 f"{cfg_w}×{cfg_h}px; the image has been stretched to the declared "
                 f"size so the desk coordinates still land correctly."
             )
-    return RoomImage(out, path, False, note)
+    return RoomImage(out, path, False, note, True)
 
 
 def _backdrop_at(
@@ -807,11 +850,11 @@ def _backdrop_at(
 ) -> tuple[float, float, float]:
     """Mean colour of the plan under a desk, for the contrast calculation."""
     if image.array is None:
-        return _to_rgb(_BG_NEUTRAL)
+        return _to_rgb(image.backdrop)
     h, w = image.array.shape[0], image.array.shape[1]
     ex_w, ex_h = extent
     if ex_w <= 0 or ex_h <= 0:
-        return _to_rgb(_BG_NEUTRAL)
+        return _to_rgb(image.backdrop)
     x0, y0, x1, y1 = box
     c0 = int(math.floor(x0 / ex_w * w))
     c1 = int(math.ceil(x1 / ex_w * w))
@@ -825,7 +868,7 @@ def _backdrop_at(
         r1 = r0 + 1
     patch = image.array[r0:r1, c0:c1, :]
     if patch.size == 0:
-        return _to_rgb(_BG_NEUTRAL)
+        return _to_rgb(image.backdrop)
     mean = patch.reshape(-1, 3).mean(axis=0)
     return (float(mean[0]), float(mean[1]), float(mean[2]))
 
@@ -839,6 +882,22 @@ _M_R = 0.42
 _CB_GAP = 0.34
 _CB_W = 0.20
 _CB_TEXT = 1.05      # tick labels + the two-line rotated label
+#: The same colorbar laid under the plan instead of beside it. Used when the
+#: room is a wide strip -- see `_new_page`. `_CB_TEXT_BELOW` is the tick row
+#: plus the two-line label, which is set horizontally there and so needs
+#: height rather than width.
+_CB_GAP_BELOW = 0.30
+_CB_H = 0.20
+_CB_TEXT_BELOW = 0.60
+#: How much of the content width the horizontal bar occupies. A colorbar as
+#: wide as a 4:1 room is a stripe, not a scale.
+_CB_BELOW_FRACTION = 0.52
+_CB_BELOW_MIN_W = 2.60
+#: Moving the bar underneath costs a band of page height, so it has to buy the
+#: plan at least this much more height to be worth doing. Without the test, a
+#: room whose panel is already capped at `_MAX_CELL_H` would pay the band and
+#: get nothing back.
+_CB_BELOW_MIN_GAIN = 1.05
 _T_PAD = 0.20
 _TITLE_H = 0.30
 _SUB_H = 0.24
@@ -913,6 +972,45 @@ class _Page:
     cbar_ax: Axes | None
     legend_anchor: tuple[float, float]
     axes_width_in: list[float]
+    #: "vertical" (beside the plan) or "horizontal" (beneath it). The caller
+    #: hands it straight to `_draw_colorbar`, which has to tick the matching
+    #: axis and put the end labels at the matching ends.
+    cbar_orientation: str = "vertical"
+
+
+def _content_block(
+    aspects: Sequence[float],
+    *,
+    rows: int,
+    cols: int,
+    content_w: float,
+    title_band: float,
+) -> tuple[list[float], float, float]:
+    """Row heights, cell width and total content height for a grid of rooms.
+
+    Split out of `_new_page` because the page has to be able to *cost* a layout
+    before committing to it: the colorbar can go beside the plan or beneath it,
+    and which one is right depends on how tall the plan turns out to be.
+    """
+    n = max(1, len(aspects))
+    cell_w = max((content_w - (cols - 1) * _CELL_GAP_X) / cols, 0.6)
+    # Each row is only as tall as the tallest room in *that* row. Sharing one
+    # height across the whole grid means a wide room stacked under a portrait
+    # one sits in an acre of blank paper.
+    row_h: list[float] = []
+    for r in range(rows):
+        in_row = [aspects[i] for i in range(r * cols, min((r + 1) * cols, n))]
+        if not in_row:
+            in_row = [1.0]
+        row_h.append(
+            min(_MAX_CELL_H, max((cell_w / a) if a > 0 else cell_w for a in in_row))
+        )
+    content_h = sum(row_h) + rows * title_band + (rows - 1) * _CELL_GAP_Y
+    return row_h, cell_w, content_h
+
+
+def _vertical_bar_height(content_h: float) -> float:
+    return min(content_h * 0.62, 3.2)
 
 
 def _new_page(
@@ -926,29 +1024,44 @@ def _new_page(
     footer_lines: Sequence[str],
     needs_cbar: bool,
     legend_rows: int,
+    cbar_label_run_in: float = 0.0,
     reuse: Figure | None = None,
 ) -> _Page:
     n = max(1, len(aspects))
     rows, cols = _grid_shape(n)
-
-    cbar_block = (_CB_GAP + _CB_W + _CB_TEXT) if needs_cbar else 0.0
-    content_w = width - _M_L - _M_R - cbar_block
-    content_w = max(content_w, 1.0)
-    cell_w = (content_w - (cols - 1) * _CELL_GAP_X) / cols
-    cell_w = max(cell_w, 0.6)
     title_band = _ROOM_TITLE_H if room_titles else 0.0
-    # Each row is only as tall as the tallest room in *that* row. Sharing one
-    # height across the whole grid means a wide room stacked under a portrait
-    # one sits in an acre of blank paper.
-    row_h: list[float] = []
-    for r in range(rows):
-        in_row = [aspects[i] for i in range(r * cols, min((r + 1) * cols, n))]
-        if not in_row:
-            in_row = [1.0]
-        row_h.append(
-            min(_MAX_CELL_H, max((cell_w / a) if a > 0 else cell_w for a in in_row))
+    printable_w = max(width - _M_L - _M_R, 1.0)
+
+    # --- where does the colorbar go? --------------------------------------
+    # Beside the plan by default. But a vertical bar carries its label rotated
+    # through 90°, so the label needs as many inches of *bar* as it is long --
+    # and a room like the main office (1334x318, better than 4:1) leaves a
+    # content block barely two inches tall. The label then overruns the figure
+    # and lands on the subtitle. When that would happen, lay the bar under the
+    # plan instead: the label sets horizontally, where there is room for it,
+    # and the plan gets back the ~1.6in the right-hand block was holding.
+    #
+    # `cbar_label_run_in` is measured from the label the caller will actually
+    # draw, so nothing here assumes how long that text is.
+    content_w = max(printable_w - (_CB_GAP + _CB_W + _CB_TEXT), 1.0) if needs_cbar \
+        else printable_w
+    row_h, cell_w, content_h = _content_block(
+        aspects, rows=rows, cols=cols, content_w=content_w, title_band=title_band
+    )
+    cbar_below = False
+    if needs_cbar and _vertical_bar_height(content_h) < cbar_label_run_in:
+        wide_row_h, wide_cell_w, wide_content_h = _content_block(
+            aspects, rows=rows, cols=cols, content_w=printable_w,
+            title_band=title_band,
         )
-    content_h = sum(row_h) + rows * title_band + (rows - 1) * _CELL_GAP_Y
+        # A panel already pinned at `_MAX_CELL_H` gains nothing from the extra
+        # width, so it keeps the side bar and lets the rotated label run a
+        # little long -- cheaper than an inch of empty band.
+        if wide_content_h >= content_h * _CB_BELOW_MIN_GAIN:
+            cbar_below = True
+            content_w = printable_w
+            row_h, cell_w, content_h = wide_row_h, wide_cell_w, wide_content_h
+    cbar_band = (_CB_GAP_BELOW + _CB_H + _CB_TEXT_BELOW) if cbar_below else 0.0
 
     below = (
         _B_PAD
@@ -964,7 +1077,7 @@ def _new_page(
     if sub_lines:
         above += _SUB_H + (len(sub_lines) - 1) * _SUB_LINE_H
     above += _GAP_AFTER_TITLE if (title or sub_lines) else 0.0
-    height = below + content_h + above
+    height = below + cbar_band + content_h + above
 
     if reuse is not None:
         fig = reuse
@@ -981,8 +1094,8 @@ def _new_page(
     def fy(v: float) -> float:
         return v / height
 
-    content_bottom = below
-    content_top = below + content_h
+    content_bottom = below + cbar_band
+    content_top = content_bottom + content_h
 
     axes: list[Axes] = []
     axes_width_in: list[float] = []
@@ -1015,8 +1128,13 @@ def _new_page(
             )
 
     cbar_ax: Axes | None = None
-    if needs_cbar:
-        bar_h = min(content_h * 0.62, 3.2)
+    if needs_cbar and cbar_below:
+        bar_w = min(content_w, max(_CB_BELOW_MIN_W, content_w * _CB_BELOW_FRACTION))
+        bar_x = _M_L + (content_w - bar_w) / 2.0
+        bar_y = below + _CB_TEXT_BELOW
+        cbar_ax = fig.add_axes((fx(bar_x), fy(bar_y), fx(bar_w), fy(_CB_H)))
+    elif needs_cbar:
+        bar_h = _vertical_bar_height(content_h)
         bar_y = content_bottom + (content_h - bar_h) / 2.0
         bar_x = _M_L + content_w + _CB_GAP
         cbar_ax = fig.add_axes((fx(bar_x), fy(bar_y), fx(_CB_W), fy(bar_h)))
@@ -1046,7 +1164,10 @@ def _new_page(
         y += _GAP_BEFORE_CAPTION
     legend_anchor = (fx(_M_L), fy(y))
 
-    return _Page(fig, axes, cbar_ax, legend_anchor, axes_width_in)
+    return _Page(
+        fig, axes, cbar_ax, legend_anchor, axes_width_in,
+        "horizontal" if cbar_below else "vertical",
+    )
 
 
 # ==========================================================================
@@ -1200,6 +1321,9 @@ _FEATURE_STYLES: Mapping[str, _FeatureStyle] = {
         edge=_FEAT_LINE, lw=0.9, face=_FEAT_FILL_BAND, alpha=0.90,
         face_alpha=0.62, stroke_lw=0.7, centre_line="add",
     ),
+    # A closed door shape is drawn as a leaf and a swing arc, not as a box --
+    # see `_door_swing`. `face`/`ls` here only apply to the degenerate case of a
+    # door given as an open polyline, which has no corner to hinge on.
     "door": _FeatureStyle(
         edge=_FEAT_LINE, lw=0.9, face=_FEAT_FILL_SOFT, alpha=0.90,
         face_alpha=0.50, ls=(0, (2.4, 1.6)), stroke_lw=0.9,
@@ -1222,6 +1346,42 @@ _FEATURE_STYLES: Mapping[str, _FeatureStyle] = {
     ),
 }
 
+#: How the caption names each kind, so it can list what is actually drawn
+#: rather than what a room *might* contain. Ordered as in `_FEATURE_STYLES`;
+#: the caption keeps that order, which is stable and therefore deterministic.
+_FEATURE_NOUNS: Mapping[str, str] = {
+    "outline": "the room outline",
+    "wall": "walls",
+    "window": "windows",
+    "door": "doors",
+    "partition": "partitions",
+    "furniture": "furniture",
+    "room": "side-rooms",
+    "divider": "zone dividers",
+}
+
+
+def _feature_phrase(rooms: Sequence[Room]) -> str:
+    """"the room outline, windows and doors" — what is on this page, in order.
+
+    Falls back to the bare word "structure" for a kind with no noun, which is
+    the same thing an unrecognised kind is drawn as.
+    """
+    present: list[str] = []
+    for kind in _FEATURE_NOUNS:
+        if any(f.kind == kind for room in rooms for f in room.features):
+            present.append(_FEATURE_NOUNS[kind])
+    if any(
+        f.kind not in _FEATURE_NOUNS for room in rooms for f in room.features
+    ):
+        present.append("other structure")
+    if not present:
+        return "structure"
+    if len(present) == 1:
+        return present[0]
+    return ", ".join(present[:-1]) + " and " + present[-1]
+
+
 #: An unrecognised `kind` still draws -- as generic structure, dotted so it is
 #: visibly "something the renderer did not recognise" rather than silently
 #: impersonating furniture. `validate.KNOWN_FEATURE_KINDS` already warns about
@@ -1234,6 +1394,65 @@ _FEATURE_STYLE_GENERIC = _FeatureStyle(
 #: A box this much longer than it is wide is really a line: a hanging partition
 #: or a painted zone boundary, not an area you could stand in.
 _THIN_RATIO = 0.34
+
+#: Which corner of a door's box the leaf is hinged on, as (x_sign, y_sign)
+#: offsets into the bounding box in *drawing* coordinates -- x grows right and
+#: y grows DOWN, because the axes are set up image-style (`set_ylim(h, 0)`).
+#: So "s" is y1 (the bottom of the box on the page) and "n" is y0.
+#:
+#: The values are the direction the arc sweeps *away* from the hinge: the leaf
+#: runs vertically into the box, the arc lands on the horizontal jamb.
+#: Deliberately the same table, corner for corner, as `DOOR_SWINGS` in
+#: frontend/JsMap.html. Keeping the two in step is what makes the report and
+#: the form agree about which way a door opens; change one and change both.
+_DOOR_HINGES: Mapping[str, tuple[int, int]] = {
+    "sw": (+1, -1),   # hinge bottom-left, leaf up, arc to the right
+    "se": (-1, -1),   # hinge bottom-right, leaf up, arc to the left
+    "nw": (+1, +1),   # hinge top-left, leaf down, arc to the right
+    "ne": (-1, +1),   # hinge top-right, leaf down, arc to the left
+}
+
+#: The default when `swing` is absent, matching validate.DOOR_SWINGS' documented
+#: default and what both renderers used before `swing` existed.
+_DOOR_SWING_DEFAULT = "sw"
+
+#: Segments in the quarter-circle. Fixed, so the vertex list -- and therefore
+#: the output bytes -- cannot drift (invariant I3).
+_DOOR_ARC_SEGMENTS = 24
+
+
+def _door_swing(
+    pts: Sequence[Point], swing: str
+) -> tuple[tuple[Point, Point], list[Point]] | None:
+    """A door's leaf and swing arc, or None if the shape cannot carry one.
+
+    Returns ``((hinge, leaf_tip), arc_points)``. The leaf runs from the hinge
+    corner straight across the box; the arc sweeps a quarter circle of the same
+    radius from the leaf tip round to the jamb, which is how a door is drawn on
+    a plan and the only thing on the map that says which way it opens.
+
+    Radius is ``min(width, height)`` so the whole swing stays inside the box the
+    coordinator drew, whatever its proportions.
+    """
+    if len(pts) < 3:
+        return None
+    x0, y0, x1, y1 = _bbox(pts)
+    w, h = x1 - x0, y1 - y0
+    radius = min(w, h)
+    if radius <= 0.0:
+        return None
+
+    key = (swing or "").strip().lower()
+    sx, sy = _DOOR_HINGES.get(key, _DOOR_HINGES[_DOOR_SWING_DEFAULT])
+    hx = x0 if sx > 0 else x1          # "w" hinges on the left edge, "e" on the right
+    hy = y1 if sy < 0 else y0          # "s" hinges on the bottom edge, "n" on the top
+
+    tip = (hx, hy + sy * radius)
+    arc: list[Point] = []
+    for i in range(_DOOR_ARC_SEGMENTS + 1):
+        t = (math.pi / 2.0) * (i / _DOOR_ARC_SEGMENTS)
+        arc.append((hx + sx * radius * math.sin(t), hy + sy * radius * math.cos(t)))
+    return (((hx, hy), tip), arc)
 
 
 def _thin_axis(pts: Sequence[Point]) -> tuple[Point, Point] | None:
@@ -1349,6 +1568,36 @@ def _draw_feature_label(
     )
 
 
+def _draw_door(
+    ax: Axes,
+    style: _FeatureStyle,
+    swing: tuple[tuple[Point, Point], list[Point]],
+) -> None:
+    """Leaf plus swing arc, in the door style. Two strokes, no fill.
+
+    The leaf is the heavier of the two because it is the door; the arc is a
+    hairline because it is the space the door needs, not a thing in the room.
+    Neither is filled: a shaded quarter-disc would read as furniture.
+    """
+    (hinge, tip), arc = swing
+    ax.add_line(
+        Line2D(
+            [p[0] for p in arc], [p[1] for p in arc],
+            color=style.edge, linewidth=style.stroke_lw * 0.7,
+            linestyle="solid", alpha=style.alpha * 0.75,
+            solid_capstyle="butt", zorder=_Z_FEATURE_LINE,
+        )
+    )
+    ax.add_line(
+        Line2D(
+            [hinge[0], tip[0]], [hinge[1], tip[1]],
+            color=style.edge, linewidth=style.lw,
+            linestyle="solid", alpha=style.alpha,
+            solid_capstyle="butt", zorder=_Z_FEATURE_LINE,
+        )
+    )
+
+
 def _draw_features(
     ax: Axes,
     *,
@@ -1377,6 +1626,17 @@ def _draw_features(
             style = _FEATURE_STYLE_GENERIC
             if feature.kind not in unknown:
                 unknown.append(feature.kind)
+
+        # A door is the one kind whose box is not the thing to draw. The box
+        # says where the opening is; the leaf and the arc say which way it
+        # opens, which is the part a reader can actually use -- and it is why
+        # `swing` exists in rooms.json. Falls through to the generic path if the
+        # shape has no interior to hinge in (an open polyline).
+        if feature.kind == "door" and closed:
+            swing = _door_swing(pts, feature.swing)
+            if swing is not None:
+                _draw_door(ax, style, swing)
+                continue
 
         # Only an area can be collapsed to (or annotated with) a centre line.
         # An open polyline already *is* one; drawing its axis on top of it
@@ -1470,6 +1730,13 @@ def _draw_room(
     ax.set_axis_off()
 
     # --- backdrop -------------------------------------------------------
+    # Three states, and only the middle one is a problem worth a banner:
+    #   image loaded          -> draw it
+    #   image configured but
+    #     unusable            -> placeholder canvas + a note saying which file
+    #   no image configured   -> nothing. Plain paper, no grey canvas, no note.
+    # The last is the shipped configuration: rooms.json is a schematic and the
+    # desk spacing is the map, so there is nothing missing to announce.
     if image.array is not None:
         ax.imshow(
             image.array,
@@ -1477,7 +1744,7 @@ def _draw_room(
             zorder=0,
             interpolation="antialiased",
         )
-    else:
+    elif image.failed:
         ax.add_patch(
             Rectangle(
                 (0.0, 0.0), width_px, height_px,
@@ -1900,6 +2167,18 @@ def desk_popularity_heatmap(
         the room outline, named side-rooms. On by default. They are decoration:
         grey, underneath every desk, and excluded from the metric, the colour
         scale and the legend.
+    width
+        Figure width in inches. The **height is chosen to fit**, never given:
+        the plan is drawn at its true aspect ratio and the page grows around
+        it, so a caller placing this on fixed paper should size by width and
+        re-home (see `report._fit_map_figure`).
+
+        The colorbar moves to suit the room's shape. A long, narrow room —
+        the main office is better than 4:1 — leaves too little height for a
+        vertical bar to carry its rotated label, so the bar goes underneath
+        the plan instead and the plan takes the full printable width. Nothing
+        about that decision is hard-coded to a particular room: it is measured
+        from the room's own aspect ratio and the real label text.
 
     Never raises on a missing floor-plan image; see the module docstring.
     """
@@ -1980,6 +2259,10 @@ def desk_popularity_heatmap(
     # comes from the config, so five rooms next year reads correctly too.
     rooms_phrase = "both rooms" if n_rooms_cfg == 2 else f"all {n_rooms_cfg} rooms"
     has_features = show_features and any(r.features for r in wanted)
+    # Name the structure that is actually on the page. Listing "walls, doors,
+    # windows, rooms" under a plan whose only structure is an outline, a window
+    # and a door sends the reader hunting for walls that are not there.
+    feature_phrase = _feature_phrase(wanted) if has_features else ""
 
     if title is None:
         if len(wanted) == 1:
@@ -2043,8 +2326,8 @@ def desk_popularity_heatmap(
         # sentence is the only thing that names them.
         if has_features:
             caption += (
-                " Grey shapes are structure — walls, doors, windows, rooms — drawn "
-                "for orientation only; they are not desks and are not shaded."
+                f" Grey shapes are structure — {feature_phrase} — drawn "
+                f"for orientation only, never shaded."
             )
         if norm is not None and n_rooms_cfg > 1:
             caption += (
@@ -2054,14 +2337,13 @@ def desk_popularity_heatmap(
             )
     if footer is None:
         coord = rooms_cfg.coord_space
-        img_bits = []
-        for room in wanted:
-            img = room.image or "(none)"
-            img_bits.append(f"{room.id}: {img}")
-        footer = (
-            f"geometry from config/rooms.json ({coord} coordinates)  ·  "
-            + "  ·  ".join(img_bits)
-        )
+        # Only rooms that actually name an image are worth a provenance line.
+        # "main_office: (none)" was reporting the normal case as if it were a
+        # finding; the geometry line already says where the drawing came from.
+        img_bits = [f"{room.id}: {room.image}" for room in wanted if room.image]
+        footer = f"geometry from config/rooms.json ({coord} coordinates)"
+        if img_bits:
+            footer += "  ·  " + "  ·  ".join(img_bits)
 
     caption_lines = _wrap(caption, width - _M_L - _M_R, 8.5)
     footer_lines = _wrap(footer, width - _M_L - _M_R, 7.0)
@@ -2114,6 +2396,7 @@ def desk_popularity_heatmap(
             footer_lines=footer_lines,
             needs_cbar=norm is not None,
             legend_rows=1,
+            cbar_label_run_in=_cbar_label_run(stats),
             reuse=target if isinstance(target, Figure) else None,
         )
 
@@ -2163,7 +2446,10 @@ def desk_popularity_heatmap(
             )
 
         if page.cbar_ax is not None and norm is not None:
-            _draw_colorbar(page.fig, page.cbar_ax, cmap_obj, norm, stats)
+            _draw_colorbar(
+                page.fig, page.cbar_ax, cmap_obj, norm, stats,
+                page.cbar_orientation,
+            )
 
         figures.append(page.fig)
         slugs.append(group[0].id if group else "empty")
@@ -2172,30 +2458,74 @@ def desk_popularity_heatmap(
     return FigureResult(tuple(figures), paths, stats, tuple(notes))
 
 
+#: Point size of the colorbar's axis label. Named because the layout has to
+#: measure the label before the bar exists (see `_cbar_label_run`).
+_CB_LABEL_FS = 8.5
+
+
+def _cbar_label(stats: PopularityStats) -> str:
+    """The colorbar's axis label. Two lines, both derived from the stats."""
+    return (
+        f"mean rank across all {stats.n_people} students\n"
+        f"(1 = everyone's first choice, "
+        f"{stats.unranked_rank} = nobody ranked it)"
+    )
+
+
+def _cbar_label_run(stats: PopularityStats) -> float:
+    """Inches the label occupies *along* the bar when it is set vertically.
+
+    A rotated label is as long as its longest line, and the bar it labels has
+    to be at least that tall or the text runs off both ends of it. Measured
+    from the real string, at the size it is really drawn, so a bigger cohort
+    (a longer "all N students") is accounted for rather than assumed away.
+    """
+    longest = max((len(line) for line in _cbar_label(stats).split("\n")), default=0)
+    return longest * 0.52 * _CB_LABEL_FS / 72.0
+
+
 def _draw_colorbar(
     fig: Figure,
     cax: Axes,
     cmap: mcolors.Colormap,
     norm: mcolors.Normalize,
     stats: PopularityStats,
+    orientation: str = "vertical",
 ) -> None:
+    horizontal = orientation == "horizontal"
     sm = ScalarMappable(norm=norm, cmap=cmap)
-    cbar = fig.colorbar(sm, cax=cax, orientation="vertical")
-    # Rank 1 at the top: "top of the list" should be at the top of the bar.
-    cbar.ax.invert_yaxis()
+    cbar = fig.colorbar(sm, cax=cax, orientation=orientation)
+    if horizontal:
+        # Low mean rank -- the most wanted -- reads to the left, which is where
+        # a left-to-right reader starts. No inversion: vmin is already there.
+        axis = cbar.ax.xaxis
+    else:
+        # Rank 1 at the top: "top of the list" should be at the top of the bar.
+        cbar.ax.invert_yaxis()
+        axis = cbar.ax.yaxis
     cbar.outline.set_linewidth(0.6)
     cbar.outline.set_edgecolor("#4a4a4a")
-    cbar.ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=6, steps=[1, 2, 2.5, 5, 10]))
-    cbar.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.1f"))
+    axis.set_major_locator(mticker.MaxNLocator(nbins=6, steps=[1, 2, 2.5, 5, 10]))
+    axis.set_major_formatter(mticker.FormatStrFormatter("%.1f"))
     cbar.ax.tick_params(labelsize=8.5, width=0.6, length=3.0, pad=2.0)
     cbar.set_label(
-        f"mean rank across all {stats.n_people} students\n"
-        f"(1 = everyone's first choice, "
-        f"{stats.unranked_rank} = nobody ranked it)",
-        fontsize=8.5,
+        _cbar_label(stats),
+        fontsize=_CB_LABEL_FS,
         labelpad=4,
         linespacing=1.4,
     )
+    if horizontal:
+        # The ends of a horizontal bar are its left and right, so the two
+        # captions move with it rather than staying above and below.
+        cax.text(
+            -0.015, 0.5, "more wanted", transform=cax.transAxes,
+            ha="right", va="center", fontsize=8.0, color=_MUTED, style="italic",
+        )
+        cax.text(
+            1.015, 0.5, "less wanted", transform=cax.transAxes,
+            ha="left", va="center", fontsize=8.0, color=_MUTED, style="italic",
+        )
+        return
     cax.text(
         0.5, 1.02, "more wanted", transform=cax.transAxes,
         ha="center", va="bottom", fontsize=8.0, color=_MUTED, style="italic",

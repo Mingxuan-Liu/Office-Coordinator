@@ -62,9 +62,13 @@ last two against the bytes that were actually written:
    It is optional — it is not in ``requirements.lock`` — and the primary audit
    is self-contained: stdlib ``zlib`` and ``re`` only.
 
-Missing floor-plan image
-------------------------
-``config/floorplans/*.png`` may simply not be there yet. ``figures_map``
+Floor-plan images
+-----------------
+There normally are none: ``rooms.json`` is a schematic, no room declares an
+``image``, and the map pages draw the desk rectangles on plain paper. That is
+the intended state and it produces no note.
+
+If a room *does* declare an image and the file is not there, ``figures_map``
 degrades to drawing the desk polygons on a neutral background with a visible
 note, and this module surfaces that note in ``ReportResult.notes``. No page is
 ever blank and no run ever fails for a missing image.

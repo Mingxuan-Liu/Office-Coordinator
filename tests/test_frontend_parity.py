@@ -306,3 +306,102 @@ def test_the_mock_server_matches_that_rule(tmp_path):
         "does not, so the preview would show a desk as free that the server "
         "would refuse"
     )
+
+
+@requires_js
+def test_calibration_tool_round_trips_the_real_config(tmp_path):
+    """Import config/rooms.json into the calibration tool and export it back:
+    the bytes must be unchanged.
+
+    The tool is the coordinator's only way to check the map by eye, so merely
+    *opening* it must never alter the config. Two ways that has already gone
+    wrong and would go wrong silently:
+
+      * it re-emitted `"image": ""` for rooms that had no image, and the loader
+        rejects an empty string outright -- so a look-but-don't-touch visit
+        produced a config that would not load;
+      * a new feature key (`swing`) could be dropped, quietly reverting a door
+        the coordinator had deliberately reversed.
+
+    Byte-equality catches both, and it also means a git diff after opening the
+    tool shows only what was actually changed.
+    """
+    harness = tmp_path / "roundtrip.js"
+    harness.write_text(
+        _CALIBRATE_HARNESS % {
+            "script": json.dumps(str(tmp_path / "calib.js")),
+            "rooms": json.dumps(str(CONFIG_DIR / "rooms.json")),
+        },
+        encoding="utf-8",
+    )
+    import re as _re
+
+    html = (REPO / "tools" / "calibrate" / "index.html").read_text(encoding="utf-8")
+    (tmp_path / "calib.js").write_text(
+        "\n".join(_re.findall(r"<script[^>]*>(.*?)</script>", html, _re.S)),
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [_jsc(), str(harness)], capture_output=True, text=True, timeout=180, cwd=tmp_path
+    )
+    assert proc.returncode == 0, f"harness failed:\n{proc.stdout}\n{proc.stderr}"
+    out = proc.stdout.strip()
+    assert "ROUNDTRIP OK" in out, (
+        "the calibration tool changed config/rooms.json just by importing and "
+        f"re-exporting it:\n{out}"
+    )
+
+
+_CALIBRATE_HARNESS = r"""
+var _n = function () {};
+function mkEl() {
+  return { style:{setProperty:_n,removeProperty:_n},
+    classList:{add:_n,remove:_n,toggle:_n,contains:function(){return false}},
+    dataset:{}, children:[], value:'', textContent:'', innerHTML:'', checked:false, files:[],
+    appendChild:function(c){return c}, removeChild:_n, insertBefore:_n,
+    addEventListener:_n, removeEventListener:_n, setAttribute:_n,
+    getAttribute:function(){return null}, removeAttribute:_n,
+    querySelector:function(){return mkEl()}, querySelectorAll:function(){return[]},
+    getContext:function(){return new Proxy({},{get:function(){return _n}})},
+    getBoundingClientRect:function(){return{left:0,top:0,width:800,height:600}},
+    focus:_n, blur:_n, click:_n, closest:function(){return null}, remove:_n,
+    scrollIntoView:_n, replaceChildren:_n, cloneNode:function(){return mkEl()} };
+}
+var document = { getElementById:function(){return mkEl()}, createElement:function(){return mkEl()},
+  createElementNS:function(){return mkEl()}, querySelector:function(){return mkEl()},
+  querySelectorAll:function(){return[]}, addEventListener:_n, removeEventListener:_n,
+  body:mkEl(), documentElement:mkEl(), readyState:'loading',
+  createTextNode:function(){return mkEl()} };
+var window = { addEventListener:_n, removeEventListener:_n, localStorage:null,
+  devicePixelRatio:1, innerWidth:1200, innerHeight:800,
+  matchMedia:function(){return{matches:false,addEventListener:_n}},
+  requestAnimationFrame:_n, setTimeout:_n, clearTimeout:_n, location:{href:'file:///x'} };
+var navigator = { userAgent:'jsc' }, localStorage = null;
+var requestAnimationFrame = _n, cancelAnimationFrame = _n;
+var setTimeout = function(){return 0}, clearTimeout = _n;
+var setInterval = function(){return 0}, clearInterval = _n;
+var Image = function(){return mkEl()};
+var FileReader = function(){return {readAsDataURL:_n, addEventListener:_n}};
+var URL = { createObjectURL:function(){return 'blob:x'}, revokeObjectURL:_n };
+var Blob = function(){return {}};
+var alert = _n, confirm = function(){return true}, prompt = function(){return ''};
+
+try { (0, eval)(readFile(%(script)s)); } catch (e) { print('BOOT ' + e.message); }
+if (!window.CAL) { print('NO CAL HOOK'); }
+else {
+  var raw = readFile(%(rooms)s);
+  var res = window.CAL.importRooms(JSON.parse(raw));
+  var out = JSON.stringify(window.CAL.buildExport(res.doc, 'normalized', {decimals:4}), null, 2) + "\n";
+  if (out === raw) { print('ROUNDTRIP OK'); }
+  else {
+    var a = raw.split('\n'), b = out.split('\n'), shown = 0;
+    for (var i = 0; i < Math.max(a.length, b.length) && shown < 6; i++) {
+      if (a[i] !== b[i]) {
+        print('line ' + (i+1) + '\n  was: ' + a[i] + '\n  now: ' + b[i]);
+        shown++;
+      }
+    }
+  }
+}
+"""

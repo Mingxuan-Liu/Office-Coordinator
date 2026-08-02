@@ -42,6 +42,9 @@
 
   /* Rendering constants. Not problem dimensions. */
   var MIN_TAP_PX     = 44;     /* smallest comfortable finger target */
+  var MIN_LABEL_PX   = 11;     /* smallest desk number worth calling legible */
+  var MIN_STAGE_PX   = 128;    /* never shrink the plan viewport below this */
+  var ZOOM_DEADBAND  = 1.15;   /* below this an opening zoom is not worth it */
   var MAX_ZOOM       = 10;
   var ZOOM_STEP      = 1.6;
   var DBLTAP_MS      = 320;
@@ -134,7 +137,7 @@
   var lastTap = { t: 0, x: 0, y: 0 };
   var pinch = null;
   var wired = false;
-  var view = { zoom: 1, fitW: 0, autoZoomDone: false };
+  var view = { zoom: 1, fitW: 0, maxH: 0, autoZoomDone: false };
 
   /* --- mode ------------------------------------------------------------- */
 
@@ -342,6 +345,7 @@
         kind: String(f.kind == null ? '' : f.kind).toLowerCase().replace(/\s+/g, ''),
         label: f.label == null ? '' : String(f.label),
         note: f.note == null ? '' : String(f.note),
+        swing: String(f.swing == null ? '' : f.swing).toLowerCase().replace(/\s+/g, ''),
         s: s
       });
       grow(s.bbox);
@@ -377,33 +381,15 @@
   }
 
   /* ----------------------------------------------------------------------
-     Floor plan image
-     ---------------------------------------------------------------------- */
-
-  function imageSrcFor(room) {
-    var b = APP.state.bootstrap || {};
-    var fp = (b.floorplans && typeof b.floorplans === 'object') ? b.floorplans : {};
-    var direct = fp[room.id];
-    if (typeof direct === 'string' && direct) { return direct; }
-
-    var candidates = [room.imageDataUri, room.image_data_uri, room.imageData, room.image];
-    for (var i = 0; i < candidates.length; i++) {
-      var c = candidates[i];
-      if (typeof c === 'string' && /^(data:|https?:|\/\/)/.test(c)) { return c; }
-    }
-
-    /* Local preview convenience: rooms.json image paths are relative to
-       config/, and the dev server serves frontend/. Harmless under Apps
-       Script, where this branch never runs. */
-    if (doc.documentElement.getAttribute('data-preview') === 'local' &&
-        typeof room.image === 'string' && room.image) {
-      return '../config/' + room.image.replace(/^\.?\//, '');
-    }
-    return '';
-  }
-
-  /* ----------------------------------------------------------------------
      SVG construction
+
+     There is no floor-plan bitmap anywhere in this renderer, and no code path
+     that looks for one. The plan IS the geometry in rooms.json: `image_size`
+     survives as the coordinate space those numbers are fractions of, and
+     nothing else. A room drawing itself from its own desk rectangles is the
+     intended, shipped state, so it is drawn without comment — no image
+     element, no load or error handling, and no banner announcing a file that
+     was never supposed to exist.
      ---------------------------------------------------------------------- */
 
   function buildDefs(g) {
@@ -435,7 +421,7 @@
     }));
     defs.appendChild(dots);
 
-    /* Graph paper for the no-image fallback. */
+    /* Graph paper: the ground the plan is drawn on. */
     var gp = Math.max(8, g.vb.w / 26);
     var grid = mk('pattern', {
       id: 'dm-pat-grid', width: gp, height: gp, patternUnits: 'userSpaceOnUse'
@@ -555,19 +541,55 @@
     return mk('line', { class: cls, x1: seg[0], y1: seg[1], x2: seg[2], y2: seg[3] });
   }
 
-  /* Leaf plus quarter-circle swing, hinged on the lower-left of the opening.
-     A hint, not a survey: rooms.json records where the door is, not which way
-     it actually swings. */
-  function doorSwing(b) {
+  /* Which corner of the opening the door is hinged on, as the unit steps from
+     that corner into the box: `dx` is which way the arc runs, `dy` is which
+     way the leaf stands. "sw" — bottom-left — is the default, and is what a
+     door with no `swing` in rooms.json has always drawn as.
+
+     A closed set, unlike `kind`: a swing this build does not recognise is a
+     typo for one of four things, and guessing at it would silently draw the
+     door opening the wrong way, which is worse than drawing the default. */
+  var DOOR_SWINGS = {
+    sw: { corner: [0, 1], dx:  1, dy: -1 },
+    se: { corner: [1, 1], dx: -1, dy: -1 },
+    nw: { corner: [0, 0], dx:  1, dy:  1 },
+    ne: { corner: [1, 0], dx: -1, dy:  1 }
+  };
+  var DOOR_SWING_DEFAULT = 'sw';
+
+  /* Leaf plus quarter-circle swing. A hint, not a survey: rooms.json records
+     which corner the door is hinged on, not the angle it happens to be left
+     open at.
+
+     The arc is mirrored with the hinge rather than merely restarted somewhere
+     else — the leaf stands on one edge of the corner, the arc sweeps a true
+     quarter circle from its tip round to the other edge, and the sweep flag
+     flips with the handedness of the corner. Both diagonals therefore read as
+     mirror images, which is exactly what reversing a door means. */
+  function doorSwing(b, swing) {
     var g = mk('g', { class: 'feature__door' });
     var r = Math.min(b.w, b.h);
     if (!(r > 0)) { return g; }
-    var hx = b.x, hy = b.y + b.h;
+
+    var key = Object.prototype.hasOwnProperty.call(DOOR_SWINGS, swing)
+      ? swing : DOOR_SWING_DEFAULT;
+    var sw = DOOR_SWINGS[key];
+    g.setAttribute('data-swing', key);
+
+    var hx = b.x + sw.corner[0] * b.w;      /* the hinge */
+    var hy = b.y + sw.corner[1] * b.h;
+    var tipX = hx, tipY = hy + sw.dy * r;   /* open end of the leaf */
+    var endX = hx + sw.dx * r, endY = hy;   /* where the swing closes to */
+
+    /* Clockwise on screen for one diagonal, anticlockwise for the other. */
+    var sweep = (sw.dx * sw.dy < 0) ? 1 : 0;
+
     g.appendChild(mk('path', {
       class: 'feature__line feature__line--hair',
-      d: 'M ' + hx + ' ' + (hy - r) + ' A ' + r + ' ' + r + ' 0 0 1 ' + (hx + r) + ' ' + hy
+      d: 'M ' + tipX + ' ' + tipY + ' A ' + r + ' ' + r + ' 0 0 ' + sweep +
+         ' ' + endX + ' ' + endY
     }));
-    g.appendChild(segNode([hx, hy, hx, hy - r], 'feature__leaf'));
+    g.appendChild(segNode([hx, hy, tipX, tipY], 'feature__leaf'));
     return g;
   }
 
@@ -593,7 +615,7 @@
         });
         return;
       case 'door':
-        node.appendChild(doorSwing(s.bbox));
+        node.appendChild(doorSwing(s.bbox, f.swing));
         return;
       case 'partition':
         node.appendChild(geomNode(s, 'feature__bar'));
@@ -739,20 +761,18 @@
     return layer;
   }
 
-  /* Steps the redrawn geometry back over a real floor plan drawing, which
-     already has its own walls printed on it. Takes the layer rather than
-     reading the module one, because the image callbacks that call this are
-     asynchronous and the room may have been switched underneath them. */
-  function setFeaturesOverImage(layer, on) {
-    if (layer) { layer.classList.toggle('is-over-image', !!on); }
-  }
-
-  function anyRoomHasFeatures() {
-    var list = roomsList();
-    for (var i = 0; i < list.length; i++) {
-      if (isArr(list[i].features) && list[i].features.length) { return true; }
+  /* Whether the room on screen right now actually has structure drawn on it.
+     Asked of the ACTIVE room, not of the deployment: the main office has an
+     empty `features` array on purpose, and a legend entry explaining a grey
+     that appears nowhere on the plan in front of you is a puzzle, not a key.
+     Reads the converted features, so a feature whose shape rooms.json could
+     not express — and which therefore drew nothing — does not count either. */
+  function activeRoomHasFeatures() {
+    if (geom && String(geom.roomId) === String(activeRoomId)) {
+      return geom.features.length > 0;
     }
-    return false;
+    var room = roomById(activeRoomId);
+    return !!(room && isArr(room.features) && room.features.length);
   }
 
   /* --- geometric hit testing -------------------------------------------
@@ -834,8 +854,6 @@
   function buildRoom(roomId) {
     var svg = $('map-svg');
     var ratioBox = $('map-ratio');
-    var img = $('map-img');
-    var note = $('map-note');
     if (!svg || !ratioBox) { return; }
 
     featureRecs = [];
@@ -856,8 +874,9 @@
     deskNodes = {};
     deskOrder = [];
 
-    /* Aspect-locked box. The image and the overlay share it, so they cannot
-       drift apart at any width and no resize maths is needed for alignment. */
+    /* Aspect-locked box, straight from image_size: the plan keeps the shape of
+       the room it describes at every width, and no resize maths is needed to
+       keep the drawing square with its own coordinate space. */
     ratioBox.style.paddingBottom = (geom.ratio * 100) + '%';
 
     while (svg.firstChild) { svg.removeChild(svg.firstChild); }
@@ -870,7 +889,10 @@
 
     svg.appendChild(buildDefs(geom));
 
-    /* Background, shown only when there is no plan image. */
+    /* The sheet the plan is drawn on: graph paper inside a dashed edge, so the
+       extent of the drawing is visible even where the room has no structure
+       of its own on it. Dashed on purpose — it is the edge of the sheet, not
+       a wall. */
     var bg = mk('g', { class: 'map-bglayer' });
     bg.appendChild(mk('rect', {
       x: geom.vb.x, y: geom.vb.y, width: geom.vb.w, height: geom.vb.h,
@@ -888,9 +910,10 @@
     }));
     svg.appendChild(bg);
 
-    /* Structure, beneath the desks and above the plan image. */
+    /* Structure, beneath the desks. Empty for a room whose config lists no
+       features, which is a legitimate and unremarkable state: buildFeatures
+       returns an empty layer and nothing below it changes. */
     featureLayer = buildFeatures(geom);
-    var features = featureLayer;          /* captured for the image callbacks */
     svg.appendChild(featureLayer);
 
     /* Desks. */
@@ -905,41 +928,10 @@
     });
     svg.appendChild(layer);
 
-    /* Image. The desks are drawn either way: a missing plan degrades to shapes
-       on a blank grid plus a warning, it never blanks the view out. */
-    var src = imageSrcFor(room);
+    /* Notes are per-room, so the previous room's do not follow you here. The
+       only thing worth a banner is a desk the config failed to place: that one
+       is a real fault, and it costs somebody a desk they cannot rank. */
     clearNotes();
-    if (img) {
-      img.onload = null;
-      img.onerror = null;
-      if (src) {
-        img.onload = function () {
-          img.hidden = false;
-          svgShow(bg, false);
-          setFeaturesOverImage(features, true);
-        };
-        img.onerror = function () {
-          img.hidden = true;
-          svgShow(bg, true);
-          setFeaturesOverImage(features, false);
-          addNote('The floor plan drawing for ' + (room.label || room.id) +
-                  ' could not be loaded, so the desks are shown as shapes on a blank ' +
-                  'plan. Desk positions and everything else on this page still work.');
-        };
-        img.alt = 'Floor plan of ' + (room.label || room.id);
-        img.src = src;
-      } else {
-        img.removeAttribute('src');
-        img.hidden = true;
-        svgShow(bg, true);
-        setFeaturesOverImage(features, false);
-        addNote('No floor plan drawing is available for ' + (room.label || room.id) +
-                ' in this deployment, so the desks are shown as shapes on a blank plan. ' +
-                'Desk numbers, positions and zones are still correct. ' +
-                'The coordinator can add the image and re-run tools/sync_config.py.');
-      }
-    }
-
     if (geom.badShapes.length) {
       addNote('These desks have no usable shape in rooms.json and are not drawn: ' +
               geom.badShapes.join(', ') + '. Tell the coordinator — you cannot rank ' +
@@ -1196,7 +1188,7 @@
     /* One muted line for all of the structure, deliberately outside the desk
        states: none of it is a state a desk can be in, and none of it can be
        picked. Listing every kind would be a legend of things you cannot do. */
-    if (anyRoomHasFeatures()) {
+    if (activeRoomHasFeatures()) {
       html += '<div class="map-legend__group"><p class="map-legend__title">The room itself</p>' +
         '<span class="map-legend__item map-legend__item--muted">' + featureSampleSvg() +
         '<span class="map-legend__note">Grey &mdash; walls, doors, windows and fixed ' +
@@ -1269,6 +1261,9 @@
     hideTip();
     buildRoom(roomId);
     renderRoomTabs();
+    /* The structure entry describes the room you are looking at, so it has to
+       be redrawn with it: one of these rooms has features and one does not. */
+    renderLegend();
     measure(true);
   }
 
@@ -1328,7 +1323,30 @@
   function applyWidth() {
     var inner = $('map-stage-inner');
     if (!inner || !view.fitW) { return; }
-    inner.style.width = Math.max(1, Math.round(view.fitW * view.zoom)) + 'px';
+    var w = Math.max(1, Math.round(view.fitW * view.zoom));
+    inner.style.width = w + 'px';
+    fitStageHeight(w);
+  }
+
+  /* A long narrow room fitted to the width of a phone is a thin ribbon adrift
+     in a tall grey box: the main office is roughly 4:1, so at 375px the plan
+     is 81px of drawing inside 406px of stage. So the viewport takes the height
+     the plan actually needs, and keeps the stylesheet's height only when the
+     plan is at least that tall — which is every room shaped like a room, and
+     this one too as soon as it is zoomed.
+
+     The stylesheet's height is re-read in measure() with this override
+     cleared, so the number below is never computed from a height this function
+     itself set: no feedback, and the ResizeObserver settles after one pass. */
+  function fitStageHeight(innerW) {
+    var stage = $('map-stage');
+    if (!stage || !geom || !view.maxH) { return; }
+    /* An overlay scrollbar measures 0; a classic one has to be paid for, or a
+       plan sized exactly to the stage would gain a vertical scrollbar too. */
+    var bar = Math.max(0, stage.offsetHeight - stage.clientHeight);
+    var want = Math.ceil(innerW * geom.ratio + bar);
+    if (want >= view.maxH) { stage.style.height = ''; return; }
+    stage.style.height = Math.max(MIN_STAGE_PX, want) + 'px';
   }
 
   function updateZoomUi() {
@@ -1340,31 +1358,86 @@
     if (fit) { fit.disabled = view.zoom <= 1.001; }
   }
 
+  /* The smallest desk number in this room, in screen pixels at the given
+     scale. Read off the sizes the renderer actually gave the labels rather
+     than recomputed from the config, so the two cannot disagree. */
+  function smallestLabelPx(pxPerUnit) {
+    var min = Infinity;
+    for (var i = 0; i < deskOrder.length; i++) {
+      var rec = deskNodes[deskOrder[i]];
+      if (rec && rec.fs > 0 && rec.fs < min) { min = rec.fs; }
+    }
+    return isFinite(min) ? min * pxPerUnit : 0;
+  }
+
+  /* The zoom the plan opens at.
+
+     Zoom 1 means "the whole room fits across the stage", which is the right
+     opening move for a room shaped roughly like the screen and the wrong one
+     for a 4:1 corridor: fitted to a 375px phone, the main office comes out
+     with 16px desks and six-pixel desk numbers, so the map is an illustration
+     of a room rather than a thing you can use. A plan whose numbers cannot be
+     read is not a plan, whatever is pointing at it, so legibility is checked
+     for every pointer; the finger-sized target on top of it is only asked for
+     when there is a finger. Both bounds come from the geometry that was
+     actually drawn — no room shape, desk count or aspect is assumed. */
   function autoZoom() {
-    if (!geom || !coarsePointer()) { return 1; }
+    if (!geom || !view.fitW) { return 1; }
     var pxPerUnit = view.fitW / geom.vb.w;
-    var px = geom.minMinor * pxPerUnit;
-    if (!(px > 0)) { return 1; }
-    return clamp(1, MIN_TAP_PX / px, MAX_ZOOM);
+    if (!(pxPerUnit > 0)) { return 1; }
+
+    var need = 1;
+    var label = smallestLabelPx(pxPerUnit);
+    if (label > 0) { need = Math.max(need, MIN_LABEL_PX / label); }
+    if (coarsePointer()) {
+      var tap = geom.minMinor * pxPerUnit;
+      if (tap > 0) { need = Math.max(need, MIN_TAP_PX / tap); }
+    }
+    /* Seeing the whole room at once is worth something too, and it is what
+       zoom 1 buys. A few percent of zoom trades all of that for a fraction of
+       a pixel of type, so it is not taken: only a shortfall big enough to
+       matter is worth opening the plan cropped for. */
+    return need < ZOOM_DEADBAND ? 1 : clamp(1, need, MAX_ZOOM);
   }
 
   function measure(resetZoom) {
     var stage = $('map-stage');
     if (!stage || !geom) { return; }
+    /* Back to the stylesheet's own height before measuring: everything below
+       has to be derived from the height the CSS asks for, never from the one
+       fitStageHeight last wrote, or the two would chase each other. */
+    stage.style.height = '';
     var cw = stage.clientWidth;
     var ch = stage.clientHeight;
     if (!cw) { return; }                     /* view still hidden */
     var fitW = Math.min(cw, geom.ratio > 0 ? ch / geom.ratio : cw);
     if (!(fitW > 0)) { fitW = cw; }
     view.fitW = fitW;
+    view.maxH = ch;
     if (resetZoom) { view.zoom = 1; view.autoZoomDone = false; }
     applyWidth();
     if (!view.autoZoomDone) {
       view.autoZoomDone = true;
       var z = autoZoom();
-      if (z > 1.001) { setZoom(z); return; }
+      if (z > 1.001) {
+        setZoom(z);
+        /* Opening zoomed in means most of a long room is off to one side, and
+           the middle of a corridor is nobody's answer to "where do I start?".
+           Open on the desk this person can actually act on — the same one the
+           keyboard starts at, and the one they are keeping on the pre-lock
+           step. */
+        var start = openOnDesk();
+        if (start) { centerOnDesk(start, false); }
+        return;
+      }
     }
     updateZoomUi();
+  }
+
+  /* The desk the plan should be looking at when it opens. */
+  function openOnDesk() {
+    if (isSingle() && single.id && deskNodes[single.id]) { return single.id; }
+    return focusDeskId;
   }
 
   function setZoom(z, ax, ay) {

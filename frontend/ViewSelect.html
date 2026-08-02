@@ -125,10 +125,11 @@
 }
 
 /* --- the aspect-locked stage -------------------------------------------
-   The ratio box is a percentage-padding frame, so the image and the SVG
-   overlay share one box that is exactly image_size wide-to-tall at every
-   viewport size. Nothing has to be recomputed on resize for the overlay to
-   stay registered with the image; JS only sets the *width* (for zoom).
+   The ratio box is a percentage-padding frame, so the plan is exactly
+   image_size wide-to-tall at every viewport size and nothing has to be
+   recomputed on resize to keep it that way; JS only sets the *width* (for
+   zoom), and the height of the stage itself for a room much wider than it is
+   tall, which would otherwise sit as a ribbon in an empty box.
    ------------------------------------------------------------------------ */
 
 .map-stage {
@@ -139,14 +140,12 @@
    unreachable, which `align-items: center` would. */
 .map-stage__inner { width: 100%; flex: 0 0 auto; margin: auto; }
 .map-ratio { position: relative; height: 0; }   /* padding-bottom set by JS */
-.map-ratio > .map-img,
 .map-ratio > .map-svg {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
 }
-.map-ratio > .map-img { object-fit: fill; }
 .map-svg { overflow: hidden; }
 .map-svg.is-grabbing { cursor: grabbing; }
 
@@ -383,9 +382,10 @@
         <div class="map-stage" id="map-stage">
           <div class="map-stage__inner" id="map-stage-inner">
             <div class="map-ratio" id="map-ratio">
-              <!-- src set by JsMap from bootstrap.floorplans[roomId]; stays
-                   hidden when there is no image and the SVG carries the plan. -->
-              <img class="map-img" id="map-img" alt="" hidden draggable="false">
+              <!-- The SVG is the whole plan. There is no floor-plan bitmap in
+                   this application: rooms.json carries the geometry and JsMap
+                   draws it, so there is no image element here to load, hide or
+                   apologise for. -->
               <svg class="map-svg" id="map-svg" xmlns="http://www.w3.org/2000/svg"
                    role="group" aria-describedby="map-hint"></svg>
             </div>

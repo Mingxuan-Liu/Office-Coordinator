@@ -5,30 +5,37 @@
     "bottom; the FIRST matching rule wins. The last rule must be a catch-all",
     "({\"when\": {}}) so nobody can fall through with undefined eligibility.",
     "",
+    "Both cohorts are restricted, and neither can cross into the other's area:",
+    "  pre-candidates  -> the first/second-year side only",
+    "  everyone else   -> the upper-years side and the senior office",
+    "Note the catch-all no longer says \"*\". Listing the zones explicitly is",
+    "what keeps candidates out of the first/second-year side. If a new zone is",
+    "added to rooms.json it will NOT become available to anyone until it is",
+    "named here, which is the safer default.",
+    "",
     "Predicate forms for `when` (all keys ANDed):",
     "  scalar    {\"candidacy\": \"precandidate\"}        equality, case-insensitive",
     "  list      {\"year\": [1, 2]}                      membership",
     "  range     {\"year\": {\"min\": 1, \"max\": 2}}     inclusive; min/max optional",
     "  negation  {\"candidacy\": {\"not\": \"candidate\"}} inverts any of the above",
     "",
-    "Attribute names must be columns in roster.csv. `allow_zones` is \"*\" or a",
-    "list of zone ids defined in rooms.json.",
-    "",
-    "To add a rule (e.g. a new overflow room for 3rd years), insert it ABOVE the",
-    "catch-all. Do not edit Python for this."
+    "Attribute names must be columns in roster.csv. The form only asks for",
+    "candidacy, so a rule keyed on anything else reads the roster's value, which",
+    "may be stale. To add a rule, insert it ABOVE the catch-all. Do not edit",
+    "Python for this."
   ],
   "rules": [
     {
       "id": "precandidates_sit_together",
       "when": { "candidacy": "precandidate" },
       "allow_zones": ["precandidate_side"],
-      "reason": "Pre-candidates (years 1-2) are seated together so they can work through coursework and quals as a cohort."
+      "reason": "Pre-candidates are seated together on the first and second years side, so they can work through coursework and quals as a cohort."
     },
     {
-      "id": "everyone_else_anywhere",
+      "id": "candidates_upper_years_and_senior",
       "when": {},
-      "allow_zones": "*",
-      "reason": "Post-candidacy students may sit anywhere in the department."
+      "allow_zones": ["candidate_side", "senior_office"],
+      "reason": "Post-candidacy students choose from the upper years side of the main office or the senior office. The first and second years side is kept for the pre-candidate cohort."
     }
   ]
 }

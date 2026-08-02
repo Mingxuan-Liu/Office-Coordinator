@@ -1,216 +1,53 @@
 {
   "schema_version": 2,
   "_comment": [
-    "Geometry read off the floor plan images and hard-coded on purpose. It",
-    "changes about once a decade, so a wrong rectangle is caught once by a",
-    "human looking at the map rather than every year by a detector.",
-    "VERIFY BEFORE DEPLOYING: open tools/calibrate/index.html, load the room",
-    "image, Import this file, and switch to Preview.",
+    "SCHEMATIC, not a tracing. The floor-plan images are not drawn anywhere,",
+    "so these rectangles are the map and their spacing has to carry the",
+    "layout on its own:",
+    "    narrow gap = two columns facing each other across a divider",
+    "    wide gap   = a walking aisle",
+    "    margin     = that column faces a wall",
+    "Main office upper-years side: 1-2 and 15-16 face walls; the columns",
+    "between them face each other in pairs. First/second-year side: 17-18",
+    "and 27-28 face walls, the rest pair up.",
     "",
-    "Coordinates are NORMALIZED (0-1) fractions of image_size, so they",
-    "survive rescaling the image.",
+    "Coordinates are NORMALIZED (0-1). Rooms have no 'image': the form and",
+    "the report both draw from these numbers alone, which is why there is no",
+    "missing-image warning to ignore.",
     "",
-    "`desks` are selectable. `features` are decoration: walls, doors, rooms,",
-    "windows, partitions and furniture, drawn grey and never clickable. They",
-    "exist so a student can tell which desk is by the window and which is",
-    "next to the telecom closet.",
+    "`desks` are selectable. `features` are decoration and never clickable.",
+    "The main office has none on purpose -- the tabs already say which room",
+    "you are in, and the spacing says the rest.",
     "",
-    "Main office zones follow the divider drawn on the plan: desks 1-16",
-    "upper-years side, 17-28 first/second-year side, 29-31 upper-years side.",
-    "CONFIRM the 29-31 assignment before the first run."
+    "VERIFY BEFORE DEPLOYING: tools/calibrate/index.html, Import, Preview."
   ],
   "coord_space": "normalized",
   "zones": {
     "candidate_side": {
       "label": "Upper years side",
       "color": "#3d6fa8",
-      "description": "Post-candidacy students. Left of the divider in the main office."
+      "description": "Post-candidacy students, in the main office."
     },
     "precandidate_side": {
       "label": "First and second years side",
       "color": "#b0602f",
-      "description": "Pre-candidates, seated together for coursework."
+      "description": "Pre-candidates only, seated together for coursework."
     },
     "senior_office": {
       "label": "Senior office",
       "color": "#4a8b6f",
-      "description": "Separate room. Open to candidates only, not to pre-candidates."
+      "description": "Separate room. Post-candidacy students only."
     }
   },
   "rooms": [
     {
       "id": "main_office",
       "label": "Main Graduate Office (Room 406)",
-      "image": "floorplans/main_office.png",
       "image_size": [
-        1232,
-        720
+        1334,
+        318
       ],
-      "features": [
-        {
-          "id": "main_outline",
-          "kind": "outline",
-          "label": "Main Graduate Office",
-          "shape": {
-            "rect": [
-              0.0633,
-              0.1986,
-              0.8336,
-              0.4431
-            ]
-          }
-        },
-        {
-          "id": "main_north_wall",
-          "kind": "wall",
-          "label": "",
-          "shape": {
-            "polyline": [
-              [
-                0.0633,
-                0.1986
-              ],
-              [
-                0.8969,
-                0.1986
-              ]
-            ]
-          }
-        },
-        {
-          "id": "windows_west",
-          "kind": "window",
-          "label": "Windows",
-          "shape": {
-            "rect": [
-              0.2175,
-              0.2042,
-              0.1575,
-              0.0208
-            ]
-          },
-          "note": "Window / radiator run along the north wall."
-        },
-        {
-          "id": "windows_east",
-          "kind": "window",
-          "label": "Windows",
-          "shape": {
-            "rect": [
-              0.539,
-              0.2042,
-              0.3393,
-              0.0208
-            ]
-          },
-          "note": "Window / radiator run along the north wall."
-        },
-        {
-          "id": "zone_divider",
-          "kind": "divider",
-          "label": "Zone boundary",
-          "shape": {
-            "rect": [
-              0.5235,
-              0.1986,
-              0.0122,
-              0.4125
-            ]
-          },
-          "note": "Marks the split between the upper-years side and the first/second-year side. Not a physical wall."
-        },
-        {
-          "id": "huddle_rm",
-          "kind": "room",
-          "label": "Huddle Room",
-          "shape": {
-            "rect": [
-              0.4773,
-              0.6069,
-              0.1721,
-              0.2708
-            ]
-          }
-        },
-        {
-          "id": "quiet_grad_rm",
-          "kind": "room",
-          "label": "Quiet Grad Room (408)",
-          "shape": {
-            "rect": [
-              0.6494,
-              0.6069,
-              0.2029,
-              0.2708
-            ]
-          }
-        },
-        {
-          "id": "telecom",
-          "kind": "room",
-          "label": "Telecom / Elec",
-          "shape": {
-            "rect": [
-              0.7565,
-              0.7722,
-              0.0974,
-              0.1056
-            ]
-          }
-        },
-        {
-          "id": "dept_storage",
-          "kind": "room",
-          "label": "Dept Storage",
-          "shape": {
-            "rect": [
-              0.0244,
-              0.7944,
-              0.0893,
-              0.1083
-            ]
-          }
-        },
-        {
-          "id": "kitchenette",
-          "kind": "furniture",
-          "label": "Kitchenette / lounge",
-          "shape": {
-            "rect": [
-              0.1364,
-              0.625,
-              0.1518,
-              0.1875
-            ]
-          }
-        },
-        {
-          "id": "round_table",
-          "kind": "furniture",
-          "label": "Meeting table",
-          "shape": {
-            "rect": [
-              0.3182,
-              0.7569,
-              0.0698,
-              0.1069
-            ]
-          }
-        },
-        {
-          "id": "door_south",
-          "kind": "door",
-          "label": "Door",
-          "shape": {
-            "rect": [
-              0.1258,
-              0.8306,
-              0.0487,
-              0.0861
-            ]
-          }
-        }
-      ],
+      "features": [],
       "desks": [
         {
           "id": "D01",
@@ -218,10 +55,10 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.0479,
-              0.2472,
-              0.0536,
-              0.1208
+              0.018,
+              0.1069,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -231,10 +68,10 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.0479,
-              0.3681,
-              0.0536,
-              0.1181
+              0.018,
+              0.3585,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -244,10 +81,10 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.1055,
-              0.2472,
-              0.0536,
-              0.1208
+              0.0945,
+              0.1069,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -257,10 +94,10 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.1055,
-              0.3681,
-              0.0536,
-              0.1181
+              0.0945,
+              0.3585,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -270,10 +107,10 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.1656,
-              0.2472,
-              0.0536,
-              0.1208
+              0.1484,
+              0.1069,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -283,10 +120,10 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.1656,
-              0.3681,
-              0.0536,
-              0.1181
+              0.1484,
+              0.3585,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -296,10 +133,10 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.2313,
-              0.2472,
-              0.0536,
-              0.1208
+              0.2249,
+              0.1069,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -309,10 +146,10 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.2313,
-              0.3681,
-              0.0536,
-              0.1181
+              0.2249,
+              0.3585,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -322,10 +159,10 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.2857,
-              0.2472,
-              0.0536,
-              0.1208
+              0.2789,
+              0.1069,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -335,10 +172,10 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.2857,
-              0.3681,
-              0.0536,
-              0.1181
+              0.2789,
+              0.3585,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -348,10 +185,10 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.3425,
-              0.2472,
-              0.0536,
-              0.1208
+              0.3553,
+              0.1069,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -361,10 +198,10 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.3425,
-              0.3681,
-              0.0536,
-              0.1181
+              0.3553,
+              0.3585,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -374,10 +211,10 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.4091,
-              0.2472,
-              0.0536,
-              0.1208
+              0.4093,
+              0.1069,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -387,10 +224,10 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.4091,
-              0.3681,
-              0.0536,
-              0.1181
+              0.4093,
+              0.3585,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -400,10 +237,10 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.4643,
-              0.2472,
-              0.0536,
-              0.1208
+              0.4858,
+              0.1069,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -413,10 +250,10 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.4643,
-              0.3681,
-              0.0536,
-              0.1181
+              0.4858,
+              0.3585,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -426,10 +263,10 @@
           "zone": "precandidate_side",
           "shape": {
             "rect": [
-              0.5268,
-              0.2472,
-              0.0536,
-              0.1208
+              0.5982,
+              0.1069,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -439,10 +276,10 @@
           "zone": "precandidate_side",
           "shape": {
             "rect": [
-              0.5268,
-              0.3681,
-              0.0536,
-              0.1181
+              0.5982,
+              0.3585,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -452,10 +289,10 @@
           "zone": "precandidate_side",
           "shape": {
             "rect": [
-              0.5877,
-              0.2472,
-              0.0536,
-              0.1208
+              0.6747,
+              0.1069,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -465,10 +302,10 @@
           "zone": "precandidate_side",
           "shape": {
             "rect": [
-              0.5877,
-              0.3681,
-              0.0536,
-              0.1181
+              0.6747,
+              0.3585,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -478,10 +315,10 @@
           "zone": "precandidate_side",
           "shape": {
             "rect": [
-              0.6469,
-              0.2472,
-              0.0536,
-              0.1208
+              0.7286,
+              0.1069,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -491,10 +328,10 @@
           "zone": "precandidate_side",
           "shape": {
             "rect": [
-              0.6469,
-              0.3681,
-              0.0536,
-              0.1181
+              0.7286,
+              0.3585,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -504,10 +341,10 @@
           "zone": "precandidate_side",
           "shape": {
             "rect": [
-              0.7078,
-              0.2472,
-              0.0536,
-              0.1208
+              0.8051,
+              0.1069,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -517,10 +354,10 @@
           "zone": "precandidate_side",
           "shape": {
             "rect": [
-              0.7078,
-              0.3681,
-              0.0536,
-              0.1181
+              0.8051,
+              0.3585,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -530,10 +367,10 @@
           "zone": "precandidate_side",
           "shape": {
             "rect": [
-              0.7727,
-              0.2472,
-              0.0536,
-              0.1208
+              0.8591,
+              0.1069,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -543,10 +380,10 @@
           "zone": "precandidate_side",
           "shape": {
             "rect": [
-              0.7727,
-              0.3681,
-              0.0536,
-              0.1181
+              0.8591,
+              0.3585,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -556,10 +393,10 @@
           "zone": "precandidate_side",
           "shape": {
             "rect": [
-              0.8279,
-              0.2472,
-              0.0536,
-              0.1208
+              0.9355,
+              0.1069,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -569,10 +406,10 @@
           "zone": "precandidate_side",
           "shape": {
             "rect": [
-              0.8279,
-              0.3681,
-              0.0536,
-              0.1181
+              0.9355,
+              0.3585,
+              0.0465,
+              0.2327
             ]
           }
         },
@@ -582,13 +419,13 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.0552,
-              0.5528,
-              0.0463,
-              0.075
+              0.018,
+              0.7358,
+              0.057,
+              0.1887
             ]
           },
-          "notes": "Lower-left wall, outside the two main rows."
+          "notes": "Lower-left wall, below the two main rows."
         },
         {
           "id": "D30",
@@ -596,13 +433,13 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.1339,
-              0.5528,
-              0.0487,
-              0.075
+              0.09,
+              0.7358,
+              0.057,
+              0.1887
             ]
           },
-          "notes": "Lower-left wall, outside the two main rows."
+          "notes": "Lower-left wall, below the two main rows."
         },
         {
           "id": "D31",
@@ -610,20 +447,19 @@
           "zone": "candidate_side",
           "shape": {
             "rect": [
-              0.2175,
-              0.5528,
-              0.0463,
-              0.075
+              0.1619,
+              0.7358,
+              0.057,
+              0.1887
             ]
           },
-          "notes": "Lower-left wall, outside the two main rows."
+          "notes": "Lower-left wall, below the two main rows."
         }
       ]
     },
     {
       "id": "senior_office",
       "label": "Senior Office",
-      "image": "floorplans/senior_office.png",
       "image_size": [
         531,
         400
@@ -643,37 +479,15 @@
           }
         },
         {
-          "id": "haunted_room",
-          "kind": "room",
-          "label": "Haunted room",
-          "shape": {
-            "polygon": [
-              [
-                0.0226,
-                0.07
-              ],
-              [
-                0.2637,
-                0.07
-              ],
-              [
-                0.2637,
-                0.45
-              ]
-            ]
-          },
-          "note": "Not part of the desk pool."
-        },
-        {
-          "id": "haunted_door",
-          "kind": "door",
-          "label": "Door",
+          "id": "senior_windows",
+          "kind": "window",
+          "label": "Windows",
           "shape": {
             "rect": [
-              0.1657,
-              0.195,
-              0.0979,
-              0.135
+              0.725,
+              0.08,
+              0.2505,
+              0.035
             ]
           }
         },
@@ -688,74 +502,9 @@
               0.113,
               0.135
             ]
-          }
-        },
-        {
-          "id": "senior_windows",
-          "kind": "window",
-          "label": "Windows",
-          "shape": {
-            "rect": [
-              0.725,
-              0.08,
-              0.2505,
-              0.035
-            ]
-          }
-        },
-        {
-          "id": "desk_run_left",
-          "kind": "furniture",
-          "label": "",
-          "shape": {
-            "rect": [
-              0.4934,
-              0.17,
-              0.0716,
-              0.455
-            ]
-          }
-        },
-        {
-          "id": "desk_run_right",
-          "kind": "furniture",
-          "label": "",
-          "shape": {
-            "rect": [
-              0.5687,
-              0.17,
-              0.0716,
-              0.455
-            ]
-          }
-        },
-        {
-          "id": "partition_v",
-          "kind": "partition",
-          "label": "",
-          "shape": {
-            "rect": [
-              0.5461,
-              0.0825,
-              0.0226,
-              0.545
-            ]
           },
-          "note": "Hanging partition."
-        },
-        {
-          "id": "partition_h",
-          "kind": "partition",
-          "label": "",
-          "shape": {
-            "rect": [
-              0.452,
-              0.3875,
-              0.1977,
-              0.025
-            ]
-          },
-          "note": "Hanging partition."
+          "note": "Hinged on the south-east corner, so it opens the opposite way to the renderer's default. Change 'swing' to sw/nw/ne to move the hinge.",
+          "swing": "se"
         }
       ],
       "desks": [
