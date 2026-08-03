@@ -29,11 +29,27 @@ class RosterConflict:
     roster_value: object
     submitted_value: object
 
+    #: Fields the submission actually overrides. Everything else is reported and
+    #: then ignored, and the message has to say which of the two happened --
+    #: "the student says 6, the roster says 5" reads very differently depending
+    #: on whether it changed the answer. See `_effective_person`.
+    APPLIED_FIELDS = frozenset({"candidacy"})
+
+    @property
+    def applied(self) -> bool:
+        return self.field in self.APPLIED_FIELDS
+
     def render(self) -> str:
+        outcome = (
+            "Using the submitted value"
+            if self.applied
+            else f"Using the roster value -- {self.field} is recorded, "
+                 f"never used for eligibility"
+        )
         return (
             f"{self.email}: submitted {self.field}={self.submitted_value!r} but the "
-            f"roster says {self.roster_value!r}. Using the submitted value; update "
-            f"config/roster.csv and re-run if the roster is the correct one."
+            f"roster says {self.roster_value!r}. {outcome}; update "
+            f"config/roster.csv and re-run if the roster is the wrong one."
         )
 
 
@@ -75,20 +91,33 @@ class BuildReport:
 
 
 def _effective_person(person: Person, submission) -> tuple[Person, list[RosterConflict]]:
-    """Apply SPEC §3.3: the submission wins on year/candidacy, and we record it.
+    """Apply SPEC §3.3: the submission wins on **candidacy**, and we record it.
 
     The roster is stale by design -- the coordinator said they will not know the
     real roster until the week they run this -- so a student correcting their own
-    year on the form is the more trustworthy signal. But it changes which zones
-    they may sit in, so it can never be silent.
+    candidacy on the form is the more trustworthy signal. But it changes which
+    zones they may sit in, so it can never be silent.
+
+    `year` is collected again (SPEC §3.1) and is treated differently on purpose.
+    A disagreement is *reported* and then dropped: the roster's year is the one
+    that stays on the Person, and therefore the one `eligibility.matching_rule`
+    puts in front of the rule table. The form's own help text tells the student
+    that their year is recorded and decides nothing, and the predicate grammar
+    accepts `{"year": [1, 2]}` (SPEC §2.2) -- so if the submitted year were
+    applied here, the day a coordinator wrote a year rule, a number typed into a
+    box that promises to be inert would start moving people between zones. That
+    is exactly the silent failure the candidacy/year split exists to prevent.
+
+    A missing or unparseable year loads as 0 (`responses.OPTIONAL_COLUMNS`).
+    Zero means "not answered", not "year zero", so it is not a conflict either:
+    an export from the cycle that did not collect the column must not produce one
+    bogus "roster said 4, submission said 0" per person.
     """
     conflicts: list[RosterConflict] = []
-    year = person.year
     candidacy = person.candidacy
 
-    if submission.year is not None and submission.year != person.year:
+    if submission.year and submission.year != person.year:
         conflicts.append(RosterConflict(person.email, "year", person.year, submission.year))
-        year = submission.year
 
     sub_c = (submission.candidacy or "").strip()
     if sub_c and sub_c.casefold() != (person.candidacy or "").strip().casefold():
@@ -98,9 +127,9 @@ def _effective_person(person: Person, submission) -> tuple[Person, list[RosterCo
         candidacy = sub_c
 
     attrs = dict(person.attributes)
-    attrs["year"] = year
+    attrs["year"] = person.year          # the roster's, always
     attrs["candidacy"] = candidacy
-    return replace(person, year=year, candidacy=candidacy, attributes=attrs), conflicts
+    return replace(person, candidacy=candidacy, attributes=attrs), conflicts
 
 
 def build_problem(

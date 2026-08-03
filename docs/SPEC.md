@@ -253,8 +253,8 @@ Component B must run from this CSV alone with **no Google dependency**.
 | `timestamp` | ISO-8601 with UTC offset | e.g. `2026-09-15T14:03:22-04:00` |
 | `email` | string | lower-cased on ingest; joins to roster |
 | `name` | string | as submitted; roster value wins on conflict |
-| `candidacy` | string | as confirmed by the student; overrides roster. The **only** attribute the form collects, and therefore the only one that can override the roster |
-| `year` | int | **OPTIONAL, and no longer written.** The form does not ask — candidacy alone decides zones. Read if an older file has it, recorded, never used for eligibility. An unparseable value is a warning. |
+| `candidacy` | string | as confirmed by the student; overrides roster. The only attribute that can override the roster, because it is the only one eligibility is allowed to be decided from |
+| `year` | int | **OPTIONAL. Collected and recorded; never an input to eligibility.** The form asks for it and writes it, for the coordinator's records. It does **not** override the roster and it does **not** reach the attributes the rule table is evaluated against — see §3.3. Blank, absent, or unparseable is legal and is a warning at most; the column may be missing entirely in a file from an older cycle. |
 | `choice_1` … `choice_K` | desk id | exactly K columns, contiguous from 1 |
 | `client_version` | string | frontend build id, for debugging |
 | `auth_method` | string | `google` \| `self_select` — audit only, never affects the solve |
@@ -275,10 +275,23 @@ If it disagrees with K from `scoring.json`, that is a `ResponseError`.
 The roster is stale by design (the coordinator says so). Resolution:
 
 - `candidacy`: **submission wins**, and the conflict is recorded in
-  `results.json:roster_conflicts` and printed as a warning. (`year` is no longer
-  collected by the form; when an older file carries it, it is recorded but never
-  affects eligibility, so it cannot produce a meaningful conflict.) The coordinator sees
+  `results.json:roster_conflicts` and printed as a warning. The coordinator sees
   every one of them and can fix the roster and re-run.
+- `year`: **roster wins.** A disagreement is recorded in
+  `results.json:roster_conflicts` exactly like a candidacy one, and then has no
+  further effect: the submitted year is not applied to the person, and does not
+  reach the attribute map `eligibility.matching_rule` evaluates. This is not an
+  accident of the current rule table — the predicate grammar (§2.2) accepts
+  `{"year": [1, 2]}`, so if the submitted year were applied, the day a
+  coordinator wrote a year rule, a field the form describes to the student as
+  recorded-only would start deciding where people sit. `problem._effective_person`
+  is the single place this is enforced, and `Code.gs:CONFIRMED_FIELDS` is its
+  counterpart on the collection side.
+
+  A year of 0 means "not answered" — the loader records a missing, blank or
+  unparseable year as 0 (§3.1) — and is never a conflict. An export from the
+  cycle that did not collect the column must not report one bogus conflict per
+  person.
 - Membership: an email not in the roster is an **error**, not a warning. Someone
   outside the department must not be able to enter the pool.
 - A roster member with no submission is a **warning**; they are excluded from the
@@ -299,10 +312,27 @@ them with zero valid choices, that is an error naming the person.
 
 ### 3.5 The pre-lock claim log — optional, Component A only
 
-The frontend has an optional step (Apps Script property `PRELOCK_ENABLED`,
-default `false`) on which a student claims the desk they already occupy and
-keeps it instead of ranking. It writes a second append-only sheet with its own
-CSV shape:
+The frontend can run the cycle in **two phases**, selected by the Apps Script
+property `PRELOCK_ENABLED` (default `false`). They are mutually exclusive:
+
+| `PRELOCK_ENABLED` | phase | open | closed |
+|---|---|---|---|
+| `true` | 1, keeping seats | the pre-lock step: a student claims the desk they already occupy and keeps it instead of ranking | ranking. `submitRanking()` **refuses**, and the client greys Choose and Confirm out |
+| `false` | 2, ranking (default) | ranking | the pre-lock step. `claimDesk()` **refuses** new claims |
+
+Ranking is refused during phase 1 because the roster does not yet reflect the
+claims: `pool_desks` (§3.4) is computed from `keeps_desk`, so a ranking taken
+before the merge is taken against a stale pool. **The merge below therefore
+happens between the phases, not after both**, and `getBootstrap()` reports which
+phase is in force as `phase: 'prelock' | 'ranking'` so the client does not infer
+it.
+
+Claims are enforced in **both** phases: `PRELOCK_ENABLED` says which phase, not
+whether claims exist, so both `getBootstrap()` and `submitRanking()` read the
+log unconditionally. Switching phase must never release a desk somebody was told
+they were keeping.
+
+The log is a second append-only sheet with its own CSV shape:
 
 | column | type | notes |
 |---|---|---|
@@ -322,7 +352,9 @@ The solver never reads this file. It is folded into `config/roster.csv` by
 `tools/merge_keepers.py`, which sets `keeps_desk`/`current_desk` and so feeds the
 existing §3.4 keeper mechanism — there is no second concept of "out of the pool".
 The merge refuses to write anything if two people are keeping the same desk, a
-claimer is not on the roster, or a desk id is unknown.
+claimer is not on the roster, or a desk id is unknown. Run it, commit the roster
+and re-run `tools/sync_config.py` **before** opening phase 2, or `pool_desks`
+still offers desks that have already been kept.
 
 A claim is deliberately **not** checked against `eligibility.json`. The rule
 table governs where a person may be *assigned*; remaining where they already sit

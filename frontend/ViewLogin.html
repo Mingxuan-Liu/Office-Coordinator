@@ -6,10 +6,14 @@
           searchable roster list that is explicitly NOT authentication
           (SPEC §8: "Not defended, by design: the login fallback").
        2. Correction. The roster is stale by design (SPEC §3.3), so candidacy is
-          editable and the submission wins over the roster. Candidacy is the ONLY
-          thing asked for, because it is the only thing that decides where
-          somebody may sit; the year is not collected at all any more, so it is
-          neither shown nor confirmed here.
+          editable and the submission wins over the roster. Year is asked for too,
+          but the two fields do NOT have the same consequence and the copy says so:
+          candidacy decides which desks a person may rank, and year is recorded in
+          the response row for the coordinator and read by nothing that decides
+          anything. Nothing in this file passes the year to the eligibility call,
+          and a blank or unusable year is a note next to the box rather than
+          something that stops a submission — it cannot change the outcome, so it
+          must not block the form.
        3. Consequence. Every edit re-asks the SERVER which zones the person may
           sit in — getEligibleZonesForClaim() runs the same rule-table
           interpreter submitRanking() runs. The eligibility rules live in
@@ -180,19 +184,31 @@
     <div class="card__head"><h2>Check your details</h2></div>
     <div class="card__body stack">
       <p class="small muted">
-        The roster is often out of date. Whatever you put here is what the solver
-        uses, and every difference from the roster is reported to the coordinator
-        so it can be fixed at the source.
+        The roster is often out of date, so correct it here. Your candidacy is the
+        answer the solver acts on; your year is kept with your response for the
+        coordinator&rsquo;s records. Both are reported back, so the roster itself
+        can be fixed at the source.
       </p>
 
-      <div class="field">
-        <label class="field__label" for="login-candidacy">Candidacy</label>
-        <select class="select" id="login-candidacy"></select>
-        <span class="field__help">
-          This is the only thing we ask you to confirm, because it is the only thing
-          that decides which desks you may rank.
-        </span>
-        <span class="field__error" id="login-candidacy-error" hidden></span>
+      <div class="field-row">
+        <div class="field">
+          <label class="field__label" for="login-candidacy">Candidacy</label>
+          <select class="select" id="login-candidacy"></select>
+          <span class="field__help">
+            This one has consequences: it decides which desks you may rank.
+          </span>
+          <span class="field__error" id="login-candidacy-error" hidden></span>
+        </div>
+
+        <div class="field">
+          <label class="field__label" for="login-year">Year</label>
+          <input class="input" id="login-year" type="number" inputmode="numeric"
+                 min="1" step="1" autocomplete="off">
+          <span class="field__help">
+            Recorded for the coordinator only — it does not change which desks you may rank.
+          </span>
+          <span class="field__error" id="login-year-error" hidden></span>
+        </div>
       </div>
 
       <div class="field" id="login-candidacy-other-field" hidden>
@@ -265,7 +281,7 @@
 
   /* ---- local state ----------------------------------------------------- */
 
-  var sel = null;         /* {email,name,candidacy,authMethod} being confirmed */
+  var sel = null;         /* {email,name,year,candidacy,authMethod} being confirmed */
   var roster = [];        /* rosterNames, sorted by name for display only */
   var shown = [];         /* the currently filtered subset */
   var activeIdx = -1;
@@ -399,6 +415,36 @@
     return trim(box.value);
   }
 
+  /* ---- the year (recorded, never consulted) ---------------------------- */
+
+  /* A positive whole number, or null for "no usable answer". The roster column
+     is free text and a number input hands back a string, so parse rather than
+     trust. Nothing downstream of this branches on the result: the year is
+     written to the response row (SPEC §3.1) and read by the coordinator, and
+     candidacy alone decides zones. */
+  function parseYear(value) {
+    var text = trim(value);
+    if (!/^[0-9]+$/.test(text)) { return null; }
+    var n = parseInt(text, 10);
+    return n > 0 ? n : null;
+  }
+
+  function readYear() {
+    return parseYear((el('login-year') || {}).value);
+  }
+
+  /* Says so, and stops there. A year cannot change anybody's desk, so refusing
+     the submission over one would be refusing it over nothing. */
+  function paintYearNote() {
+    var input = el('login-year');
+    if (!input) { return; }
+    var typed = trim(input.value) !== '';
+    fieldError('login-year-error',
+      (typed && readYear() === null)
+        ? 'A year is a whole number of 1 or more. This one will be left blank in the record — it does not affect which desks you may rank, so you can carry on either way.'
+        : '');
+  }
+
   /* ---- the searchable roster list -------------------------------------- */
 
   function matches(entry, tokens) {
@@ -486,6 +532,7 @@
     select({
       email: entry.email,
       name: entry.name,
+      year: entry.year,
       candidacy: entry.candidacy,
       authMethod: 'self_select'
     });
@@ -497,10 +544,14 @@
     sel = {
       email: lower(person.email),
       name: trim(person.name),
+      year: parseYear(person.year),
       candidacy: trim(person.candidacy),
       authMethod: lower(person.authMethod) || 'self_select',
       allowedZones: isArr(person.allowedZones) ? person.allowedZones.slice() : null
     };
+    var yearInput = el('login-year');
+    if (yearInput) { yearInput.value = (sel.year === null) ? '' : sel.year; }
+    fieldError('login-year-error', '');
     fillCandidacy(sel.candidacy);
     paint();
 
@@ -519,6 +570,7 @@
   function readForm() {
     if (!sel) { return; }
     sel.candidacy = readCandidacy();
+    sel.year = readYear();
   }
 
   /* True when the candidacy in hand is still the roster's. Not shown to anyone:
@@ -632,6 +684,9 @@
     node.hidden = !message;
   }
 
+  /* What actually stops a submission. The year is deliberately not here: it is
+     recorded, not acted on, so a blank or unusable one costs the record a value
+     and costs the student nothing. paintYearNote() says so beside the box. */
   function problems() {
     var out = [];
     if (!sel) { out.push('Choose your name first.'); return out; }
@@ -773,6 +828,19 @@
       });
     }
 
+    /* No requestEligibility() on this one, and that is the whole point of the
+       field: the year is not a term in the rule table, so re-asking the server
+       would be asking it the same question and getting the same answer. If you
+       ever find yourself adding it here, check Code.gs CONFIRMED_FIELDS first —
+       the two would have to change together, and neither should. */
+    var year = el('login-year');
+    if (year) {
+      year.addEventListener('input', function () {
+        readForm();
+        paintYearNote();
+      });
+    }
+
     var candidacy = el('login-candidacy');
     if (candidacy) {
       candidacy.addEventListener('change', function () {
@@ -845,11 +913,13 @@
       return false;
     }
     fieldError('login-candidacy-error', '');
+    paintYearNote();                 /* advisory; never part of `bad` */
     APP.clearBanners('error');
 
     APP.setPerson({
       email: sel.email,
       name: sel.name,
+      year: sel.year,
       candidacy: sel.candidacy,
       allowedZones: sel.allowedZones,
       authMethod: sel.authMethod
@@ -872,6 +942,7 @@
         select({
           email: seed.email,
           name: seed.name,
+          year: seed.year,
           candidacy: seed.candidacy,
           authMethod: seed.authMethod || (b.person ? 'google' : 'self_select'),
           allowedZones: seed.allowedZones,

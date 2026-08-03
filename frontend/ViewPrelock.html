@@ -1,10 +1,16 @@
 <!-- ==========================================================================
      ViewPrelock.html — step 3: keep the desk you are already at.
 
-     Optional. The coordinator turns it on with the PRELOCK_ENABLED script
-     property; when it is off, JsCore greys the stepper chip out, the guard
-     below never fires because the guard in JsCore redirects first, and the flow
-     goes straight from the explainer to Choose. Nothing else changes.
+     One half of a two-phase cycle, selected by the PRELOCK_ENABLED script
+     property. When it is off we are in the RANKING phase: JsCore greys this
+     chip out and redirects anyone who aims at it, so nothing below ever runs.
+     When it is on we are in the KEEPING-SEATS phase, this step is the only one
+     open, and Choose and Confirm are greyed out the same way.
+
+     That second fact is why the "No, I want to move" card below does not send
+     anybody to Choose any more. In this phase most of the department has
+     nothing to do, and the worst thing this page could do is hand them a button
+     into a step that is shut.
 
      When it is on, this is the one irreversible-feeling decision in the whole
      form, so it is built to be hard to do by accident and easy to undo:
@@ -225,6 +231,29 @@
     return typeof APP.prelockOpen === 'function' ? APP.prelockOpen() : true;
   }
 
+  /* Whether the OTHER half of the cycle is running. While this view is
+     reachable at all it normally is not — pre-lock and ranking are mutually
+     exclusive phases — but ask rather than assume, so that a deployment which
+     ever ran them together still gets a working button instead of a dead one. */
+  function rankingOpen() {
+    return typeof APP.rankingOpen === 'function' ? APP.rankingOpen() : true;
+  }
+
+  /* What somebody who does NOT want to keep their desk is told, in the phase
+     where that means "nothing, yet". This is most of the department: they open
+     the form, find it is not about them, and need to leave knowing they have
+     not missed anything and when to come back. */
+  function nothingToDoText() {
+    var cfg = typeof APP.prelock === 'function' ? APP.prelock() : {};
+    var closes = (cfg.deadlineIso && claimWindowOpen())
+      ? ' It closes on ' + U.formatWhen(cfg.deadlineIso) +
+        ' (your local time), and ranking opens after that.'
+      : ' Ranking opens once it closes.';
+    return 'Then there is nothing for you to do right now, and nothing to submit. ' +
+      'This stage is only for people keeping the desk they already sit at.' + closes +
+      ' Come back then and the Choose step will be open.';
+  }
+
   /* ---- the consequence list -------------------------------------------
      Generated from the desk, so it names the actual desk rather than "this
      desk", which is the difference between a warning somebody reads and a
@@ -372,6 +401,17 @@
       return;
     }
     if (title) { title.textContent = 'No, I want to move'; }
+
+    /* Ranking is a separate phase and it has not started. The button used to
+       send people to Choose; Choose is shut, so the button would be a dead end
+       — and in this phase most people press it. Say what is happening instead
+       and take the button away rather than leaving one that does nothing. */
+    if (!rankingOpen()) {
+      if (text) { text.textContent = nothingToDoText(); }
+      if (skip) { skip.hidden = true; }
+      return;
+    }
+
     if (text) {
       text.textContent = claimWindowOpen()
         ? 'Go on to rank desks in the usual way. You can come back to this step until ' +
@@ -379,6 +419,19 @@
         : 'Go on to rank desks in the usual way.';
     }
     if (skip) { skip.hidden = false; }
+  }
+
+  /* The lede promises a next step ("say so and carry on") that only exists when
+     ranking is open. In the keeping-seats phase it is not, so do not imply it. */
+  function paintLede() {
+    var node = el('prelock-lede');
+    if (!node) { return; }
+    node.textContent = rankingOpen()
+      ? 'If you are happy at the desk you already sit at, you can keep it and skip the ' +
+        'ranking entirely. If you would rather move, say so and carry on.'
+      : 'This is the stage for keeping the desk you already sit at. If you are happy ' +
+        'where you are, claim it here. If you would rather move, there is nothing for ' +
+        'you to do yet — ranking opens as a separate stage afterwards.';
   }
 
   function paintDeadline() {
@@ -395,6 +448,7 @@
   }
 
   function paint() {
+    paintLede();
     paintDeadline();
     paintChoice();
     paintKept();
@@ -522,6 +576,12 @@
     if (skip) {
       skip.addEventListener('click', function () {
         if (claimed) { return; }
+        /* paintMove() hides this button when ranking is shut; re-check anyway,
+           because a hidden button is a UI fact and this is the behaviour. */
+        if (!rankingOpen()) {
+          APP.info(nothingToDoText(), { id: 'prelock-nothing-to-do', timeout: 12000 });
+          return;
+        }
         APP.go('select');
       });
     }

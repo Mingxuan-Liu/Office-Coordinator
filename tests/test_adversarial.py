@@ -85,6 +85,18 @@ def only_deskmatch_errors(what: str):
         )
 
 
+def _read_response_rows(path) -> tuple[list[str], list[dict[str, str]]]:
+    """A response file as (header, rows-of-dicts).
+
+    Through the csv module, not `str.split(",")`: a real export quotes any name
+    with a comma in it, and hand-splitting silently shreds those rows into
+    "has 4 fields but the header has 13".
+    """
+    with Path(path).open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        return list(reader.fieldnames or []), [dict(row) for row in reader]
+
+
 def rejected_response_file(path, k: int | None):
     """`load_responses` must reject this file. Returns every collected problem.
 
@@ -982,8 +994,9 @@ def test_k_disagreement_is_caught_again_when_the_problem_is_built(
 
 
 @pytest.mark.parametrize("k", SMALL_K)
-# `year` is deliberately absent from this list: it is optional now (candidacy
-# alone decides zones), and test_an_absent_year_column_is_accepted covers it.
+# `year` is deliberately absent from this list: it is collected but optional
+# (candidacy alone decides zones), and test_an_absent_year_column_is_accepted
+# covers a file without it.
 @pytest.mark.parametrize("column", ("submission_id", "timestamp", "email", "candidacy"))
 def test_a_missing_required_column_is_reported_once_against_the_header(
     k, column, response_file
@@ -1049,13 +1062,14 @@ def test_a_blank_desk_id_is_an_error_naming_the_column(k, blank_rank, response_f
 @pytest.mark.parametrize("k", SMALL_K)
 @pytest.mark.parametrize("year", ("third", "3.5", "N/A"))
 def test_a_non_integer_year_is_a_warning_not_an_error(k, year, response_file):
-    """`year` is informational now, so a bad one must not stop the run.
+    """`year` is recorded, not acted on, so a bad one must not stop the run.
 
-    Candidacy alone decides zones and the form no longer asks for a year, so an
-    unparseable value in a legacy export cannot change anyone's assignment.
-    Refusing to seat the whole department over a field that cannot affect the
-    outcome would be the wrong trade -- but silently swallowing it would leave
-    the coordinator with a mystery, so it warns and quotes the value.
+    The form collects a year again, but candidacy alone decides zones, so an
+    unparseable value -- in a legacy export or in a box somebody typed into --
+    cannot change anyone's assignment. Refusing to seat the whole department over
+    a field that cannot affect the outcome would be the wrong trade, but silently
+    swallowing it would leave the coordinator with a mystery, so it warns and
+    quotes the value.
     """
     desks = [f"D{i + 1:02d}" for i in range(k)]
     rows = [
@@ -1078,7 +1092,8 @@ def test_a_non_integer_year_is_a_warning_not_an_error(k, year, response_file):
 
 @pytest.mark.parametrize("k", SMALL_K)
 def test_an_absent_year_column_is_accepted(k, response_file):
-    """The current form does not send `year` at all."""
+    """An export from the cycle that did not collect `year` has no such column,
+    and must still load. The column is optional in both directions."""
     desks = [f"D{i + 1:02d}" for i in range(k)]
     rows = [
         submission_row(
@@ -1104,6 +1119,126 @@ def test_an_absent_year_column_is_accepted(k, response_file):
     loaded = responses_mod.load_responses(path, k)
     assert len(loaded.latest) == 1
     assert loaded.latest["noyear@umich.edu"].year == 0
+
+
+@pytest.mark.parametrize("k", SMALL_K)
+def test_a_submitted_year_cannot_change_anybodys_zones(k, config_case):
+    """The year is collected and recorded. It must decide nothing. Ever.
+
+    Today's `eligibility.json` keys on candidacy alone, which makes this
+    property invisible: any year at all produces the same zones because no rule
+    reads one. That is precisely why it needs a test -- the predicate grammar
+    (SPEC §2.2) accepts `{"year": [1, 2]}`, so the invariant is one rule away
+    from being load-bearing, and the failure it would produce is silent. The
+    form tells the student that their year is recorded and does not change which
+    desks they may rank; if a submitted year reached the rule table, that
+    sentence would become false and people would be moved between zones by a box
+    that promised not to.
+
+    So: install a rule that *does* read `year`, then falsify every submitted
+    year and demand that not one person's allowed zones move. The roster's value
+    is the one that counts (SPEC §3.3), and the disagreement is still reported.
+
+    This is a regression test. Before it existed, `_effective_person` applied the
+    submitted year to the Person, and under this rule table falsifying the
+    responses moved most of the department.
+    """
+    from dataclasses import replace as _replace
+
+    from deskmatch import eligibility as elig_mod
+
+    case = config_case(n_people=8, k=k)
+    # A year-keyed rule, first, so it wins wherever it matches.
+    case.eligibility["rules"].insert(
+        0,
+        {
+            "id": "years_1_2_first_zone_only",
+            "when": {"year": [1, 2]},
+            "allow_zones": [case.zone_ids[0]],
+            "reason": "Test rule: the first two years sit in one zone.",
+        },
+    )
+    config = case.load()
+
+    def zones_of(person):
+        return elig_mod.allowed_zones(config.eligibility, config.rooms, person)
+
+    # Non-vacuity: the rule table really is year-sensitive, so an *applied* year
+    # would show up. Without this the test could pass by doing nothing.
+    moved = [
+        p.email
+        for p in config.roster.people
+        if zones_of(p)
+        != zones_of(
+            _replace(p, year=1, attributes={**dict(p.attributes), "year": 1})
+        )
+    ]
+    assert moved, "the test rule never bites; the assertion below would be vacuous"
+
+    columns, body = _read_response_rows(case.responses_path)
+    assert "year" in columns, "the fixture's response file must carry a year column"
+
+    def zones_from(rows, name: str) -> dict[str, tuple[str, ...]]:
+        path = case.path / name
+        write_text(path, dump_csv_text(columns, rows))
+        built = problem_mod.build_problem(
+            config, responses_mod.load_responses(path, k)
+        )
+        return {
+            email: zones_of(person)
+            for email, person in built.effective_people.items()
+        }
+
+    honest = zones_from(body, "responses_honest.csv")
+
+    for index, claimed in enumerate(("1", "2", "9", "", "not a year")):
+        lied = zones_from(
+            [{**row, "year": claimed} for row in body],
+            f"responses_year_{index}.csv",
+        )
+        assert lied == honest, (
+            f"submitting year={claimed!r} changed somebody's allowed zones. The "
+            f"year is recorded, never an input to eligibility (SPEC §3.1, §3.3); "
+            f"candidacy alone decides where people may sit."
+        )
+
+
+@pytest.mark.parametrize("k", SMALL_K)
+def test_a_year_disagreement_is_reported_but_not_applied(k, config_case):
+    """Reported, so the coordinator can fix roster.csv; not applied, so it
+    cannot move anybody. Both halves matter, and only together."""
+    case = config_case(n_people=6, k=k)
+    config = case.load()
+
+    columns, body = _read_response_rows(case.responses_path)
+    rows = []
+    expected: dict[str, int] = {}
+    for row in body:
+        person = config.roster.by_email(row["email"].strip().lower())
+        expected[person.email] = person.year
+        # Nobody is ten years older than the roster thinks.
+        rows.append({**row, "year": str(person.year + 10)})
+
+    path = case.path / "responses_yearlie.csv"
+    write_text(path, dump_csv_text(columns, rows))
+    built = problem_mod.build_problem(config, responses_mod.load_responses(path, k))
+
+    year_conflicts = [c for c in built.roster_conflicts if c.field == "year"]
+    assert year_conflicts, "a year disagreement must still reach the coordinator"
+    for conflict in year_conflicts:
+        assert conflict.submitted_value == expected[conflict.email] + 10
+        assert conflict.roster_value == expected[conflict.email]
+        assert not conflict.applied, "a year conflict must not be applied"
+        assert "roster value" in conflict.render()
+
+    for email, person in built.effective_people.items():
+        assert person.year == expected[email], (
+            f"{email}: the roster's year must survive a submitted one"
+        )
+        assert person.attributes["year"] == expected[email], (
+            f"{email}: the attributes the rule table sees must carry the "
+            f"roster's year, not the submitted one"
+        )
 
 
 @pytest.mark.parametrize("k", SMALL_K)

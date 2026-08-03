@@ -51,11 +51,17 @@ REQUIRED_COLUMNS: tuple[str, ...] = (
     "candidacy",
 )
 
-#: `year` used to be required. It is now OPTIONAL, because candidacy alone
-#: decides which zones a person may sit in and the form no longer asks for the
-#: year. Files that still carry the column are read (older exports, and the
-#: coordinator may find it handy in the coordinator report), but the value is
-#: recorded and never used for eligibility. A missing year becomes 0.
+#: `year` used to be required. It is OPTIONAL, and stays optional even though the
+#: form collects it again: candidacy alone decides which zones a person may sit
+#: in, so a year this loader cannot read cannot change the answer, and refusing
+#: the whole department's file over one would be the wrong trade. A file from the
+#: cycle that did not collect it has no `year` column at all and must still load.
+#:
+#: The value is recorded (it reaches the coordinator report) and is never used
+#: for eligibility -- `problem._effective_person` is where that is enforced, and
+#: it does not apply a submitted year to the person the rule table sees. A
+#: missing, blank or unparseable year becomes 0, which means "not answered"
+#: rather than "year zero"; nothing may treat it as a real year.
 OPTIONAL_COLUMNS: tuple[str, ...] = ("year",)
 
 #: Columns SPEC §3.1 lists but which are audit-only and "never affect the solve".

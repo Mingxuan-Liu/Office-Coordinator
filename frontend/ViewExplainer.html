@@ -832,10 +832,13 @@
 </div><!-- /.xp-body -->
 
 <div class="xp-cta">
+  <!-- Label and caption are rewritten by JsExplainer for the phase in force:
+       while the keeping-seats phase is running, Choose is shut and this button
+       leads to Pre-lock instead, so it must not promise to choose desks. -->
   <button type="button" class="btn btn--primary btn--lg" data-xp-action="ready">
     I&rsquo;m ready &mdash; choose my desks
   </button>
-  <p class="small muted" style="margin:0;">
+  <p class="small muted" style="margin:0;" data-xp-cta-note>
     You can come back to this page at any time from the progress bar at the top,
     and you can change your ranking until the deadline.
   </p>

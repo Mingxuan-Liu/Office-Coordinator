@@ -92,17 +92,21 @@ Jocelyn Bell,jbell@umich.edu,6,candidate,yes,D07
 ```
 
 - `email` is the key. It must match their UMich email exactly.
-- `candidacy` is the only field that affects seating. `year` is kept as
-  informational metadata; the form no longer asks for it.
+- `candidacy` is the only field that affects seating. `year` is recorded
+  metadata: the form asks for it, writes it to the response row and shows it to
+  you in the coordinator report, and nothing decides anything from it.
 - `keeps_desk` = `yes` means they are staying where they are: **they and their
   desk are both removed from the pool.** `current_desk` is then required.
 - `candidacy` drives which zones they may sit in. The values you use here must
   match the ones in `config/eligibility.json`.
 
-Stale data is fine — students confirm and correct their own candidacy on the
-form, and every correction is reported back to you. The form does not ask about
-`year` at all, so a stale year in this file changes nothing unless one of your
-own eligibility rules reads it.
+Stale data is fine — students confirm and correct their own candidacy and year on
+the form, and every difference is reported back to you. The two are not resolved
+the same way, deliberately: a corrected **candidacy** replaces the roster's and
+changes which desks that person may rank; a corrected **year** is reported and
+then dropped, and this file's value stays in force. So if you ever write an
+eligibility rule that reads `year` (the grammar allows it), it reads *your*
+roster, never a number a student typed — keep this column current if you do that.
 
 ```bash
 python -m deskmatch validate --config config/
@@ -197,13 +201,16 @@ Then go talk to those people. They do not have to change their first choice —
 they only need to rank further down. Doing this before the deadline is far easier
 than after, which is the entire reason the command exists.
 
-### 5b. Merge the desk-keepers — *only if you turned the Pre-lock step on*
+### 5b. Merge the desk-keepers — *only if you ran a pre-lock phase*
 
-The optional Pre-lock step (`PRELOCK_ENABLED`, see
-[`frontend/DEPLOY.md`](frontend/DEPLOY.md#step-5b--decide-about-the-pre-lock-step))
-lets students claim the desk they already sit at and keep it. Those claims land
-in a `Keepers` tab and mean nothing to the solver until they are in the roster.
-Export that tab as CSV, then:
+`PRELOCK_ENABLED` (see
+[`frontend/DEPLOY.md`](frontend/DEPLOY.md#step-5b--the-two-phases)) splits the
+cycle into **two phases that never run at once**: phase 1, where students claim
+the desk they already sit at and Choose is shut, then phase 2, where everyone
+ranks and Pre-lock is shut. This is what happens *between* them.
+
+Those claims land in a `Keepers` tab and mean nothing to the solver until they
+are in the roster. Export that tab as CSV, then:
 
 ```bash
 python tools/merge_keepers.py --roster config/roster.csv --keepers keepers.csv --dry-run
@@ -215,8 +222,12 @@ Always the `--dry-run` first: it prints the exact diff and writes nothing. The
 real run refuses to write at all if two people are keeping the same desk, if a
 claimer is not on the roster, or if a desk id is not in `rooms.json`.
 
-Do this **before** step 7, or the solver will happily assign somebody else's
-desk to a stranger.
+Do this **before you open phase 2**, then re-run `tools/sync_config.py` and
+redeploy before flipping `PRELOCK_ENABLED` to `false`. Skip it and the desk pool
+still shows kept desks as available: students rank desks that are already gone,
+and the solver — which reads the roster, not the `Keepers` tab — hands one to a
+stranger. The form looks correct the whole time, which is what makes this worth
+a line in the runbook.
 
 ### 6. Close the form and export
 
@@ -305,6 +316,7 @@ replaced as long as this holds.
 | `email` | string | lower-cased on ingest; joins to the roster |
 | `name` | string | roster value wins on conflict |
 | `candidacy` | string | as confirmed by the student — **overrides the roster** |
+| `year` | int | as confirmed by the student — **recorded, and never an input to eligibility** |
 | `choice_1` … `choice_K` | desk id | exactly K columns, contiguous from 1 |
 | `client_version` | string | frontend build id, for debugging |
 | `auth_method` | `google` \| `self_select` | audit only; never affects the solve |
@@ -313,10 +325,14 @@ Rules:
 
 - **Re-submission is allowed.** The latest row per email wins, by timestamp, ties
   broken by later file position. Superseded rows stay in the file.
-- There is no `year` column. The form stopped collecting it, because candidacy
-  alone decides which zones a person may sit in. A file from an older cycle that
-  still carries one is read without complaint and the value is recorded, but it
-  never affects eligibility.
+- `year` is collected and written down; it does **not** decide anything. Candidacy
+  alone decides which zones a person may sit in, and a submitted year never
+  reaches the eligibility rule table — even if you write a rule that reads `year`,
+  it reads `roster.csv`. A disagreement with the roster is reported to you and
+  changes nothing.
+- `year` is also **optional**: blank cells are fine, and a file exported from the
+  cycle that did not collect it has no `year` column at all and still loads. An
+  unreadable value is a warning and is recorded as blank.
 - K is discovered by counting `choice_*` columns. It must match the length of the
   scoring curve, or the run stops.
 - An email not on the roster is an **error**, not a warning.
@@ -426,7 +442,7 @@ must not be broken.
 | change the points per rank | `config/scoring.json` |
 | change K | change the length of *every* curve in `config/scoring.json` |
 | change the seed | `config/scoring.json`, and announce it first |
-| let people keep their current desk | set `PRELOCK_ENABLED=true` in Apps Script, then `tools/merge_keepers.py` |
+| let people keep their current desk | `PRELOCK_ENABLED=true` in Apps Script for phase 1, then `tools/merge_keepers.py`, then `PRELOCK_ENABLED=false` for phase 2 |
 
 Nothing in that table requires touching Python. If you find yourself editing
 Python to change a number, that is a bug — fix the config schema instead.

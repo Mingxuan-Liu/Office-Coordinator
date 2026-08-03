@@ -1122,12 +1122,45 @@
       var btn = closest(ev.target, '[data-xp-action]');
       if (!btn) { return; }
       var action = btn.getAttribute('data-xp-action');
-      /* Whatever step is actually in use next — the pre-lock step sits between
-         this view and the ranking, and may be switched off. */
-      if (action === 'ready' || action === 'skip') {
-        APP.go((typeof APP.nextStep === 'function' && APP.nextStep('explainer')) || 'select');
-      }
+      if (action === 'ready' || action === 'skip') { APP.go(ctaTarget()); }
     });
+  }
+
+  /* ======================================================================
+     8b. The call to action
+
+     Whatever step is actually in use next. Pre-lock and ranking are two
+     mutually exclusive PHASES, so exactly one of Pre-lock and Choose is open,
+     and APP.nextStep() already skips whichever is shut. The label has to follow
+     it: a button reading "choose my desks" that lands on a greyed-out Choose is
+     precisely the dead end this page exists to avoid.
+     ====================================================================== */
+
+  function ctaTarget() {
+    var next = (typeof APP.nextStep === 'function') ? APP.nextStep(VIEW) : null;
+    if (next) { return next; }
+    /* No later step is in use. Fall back to whichever half is open. */
+    return (typeof APP.rankingOpen === 'function' && !APP.rankingOpen())
+      ? 'prelock' : 'select';
+  }
+
+  function renderCta() {
+    var btn = q('[data-xp-action="ready"]');
+    var note = q('[data-xp-cta-note]');
+    var keeping = ctaTarget() === 'prelock';
+    if (btn) {
+      btn.textContent = keeping
+        ? 'Next — are you keeping your current desk?'
+        : 'I’m ready — choose my desks';
+    }
+    if (note) {
+      note.textContent = keeping
+        ? 'Ranking has not opened yet. This stage is only about who is keeping the ' +
+          'desk they already sit at — if you would rather move, there is nothing for ' +
+          'you to do until ranking opens.'
+        : 'You can come back to this page at any time from the progress bar at the ' +
+          'top, and you can change your ranking until the deadline.';
+    }
   }
 
   var rendered = false;
@@ -1137,6 +1170,7 @@
     wireChrome();
     renderScalars();
     renderZones();
+    renderCta();
 
     var okA = false, okB = false;
     try { okA = buildFigA(); } catch (e) { okA = false; report('figure A', e); }

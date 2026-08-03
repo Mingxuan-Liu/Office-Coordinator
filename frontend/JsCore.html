@@ -502,6 +502,33 @@
     return { ok: false, redirect: 'login', message: 'Tell us who you are first.' };
   }
 
+  /* The ranking half of the cycle has not started yet, so the two views that
+     belong to it are closed — exactly the way Pre-lock is closed during the
+     ranking phase. Landing on Pre-lock is the sensible fallback: in this phase
+     it is the only thing anybody can actually do. */
+  function requireRankingPhase() {
+    if (rankingOpen()) { return { ok: true }; }
+    return {
+      ok: false,
+      redirect: viewEl('prelock') ? 'prelock' : 'explainer',
+      message: rankingOffReason()
+    };
+  }
+
+  /* What somebody holding a claim is told when they try to rank anyway.
+
+     A claim outlives the phase it was made in — that is the point of reading
+     the claim log in both — so by the ranking phase the claim window has
+     usually shut and "release it first" is advice they cannot act on. Say what
+     is actually true of the phase they are in. */
+  function claimHoldMessage() {
+    var base = 'You are keeping ' + deskTitle(myClaimId) + ', so you are not in the ranking';
+    return prelockOpen()
+      ? base + '. Release it first if you would rather move.'
+      : base + ' and there is nothing for you to submit. The window for changing ' +
+        'that has closed — email the coordinator if you need to move.';
+  }
+
   /* Claiming a desk in the pre-lock step is a way *out* of the ranking, so
      somebody holding a claim must not be able to wander back into it — by the
      stepper, a restored session or a stale link. Releasing lifts this. */
@@ -510,8 +537,7 @@
     return {
       ok: false,
       redirect: 'prelock',
-      message: 'You are keeping ' + deskTitle(myClaimId) + ', so you are not in the ' +
-               'ranking. Release it first if you would rather move.'
+      message: claimHoldMessage()
     };
   }
 
@@ -998,9 +1024,13 @@
   function inPrelockPhase() { return phase() === PHASE_PRELOCK; }
   function rankingOpen() { return !inPrelockPhase(); }
 
+  /* The tooltip on the greyed-out Pre-lock chip during the ranking phase.
+     Deliberately silent about history: this reads the same whether the
+     coordinator ran a keeping-seats phase and closed it or never ran one at
+     all, so it cannot promise a stage that is not coming. */
   function prelockOffReason() {
-    return 'Keeping your current desk is not part of this year’s process, so that step ' +
-           'is switched off. Everyone ranks desks.';
+    return 'Keeping your current desk is not something you can do now — this is the ' +
+           'ranking stage. Everyone still in the draw ranks desks.';
   }
 
   /* The tooltip on the greyed-out Choose and Confirm chips, and the message
@@ -1092,11 +1122,16 @@
   }
 
   /* allowedZonesFor is keyed by email (Code.gs). Eligibility is a pure function
-     of roster attributes, and the only attribute the form collects is candidacy
-     (the year is no longer asked for), so a candidacy index can be derived from
-     it by joining against rosterNames. That covers the case where the student
-     has just corrected their candidacy (SPEC §3.3) and their own email key is
-     therefore stale. */
+     of roster attributes, and the only attribute the form lets anybody override
+     is candidacy, so a candidacy index can be derived from it by joining against
+     rosterNames. That covers the case where the student has just corrected their
+     candidacy (SPEC §3.3) and their own email key is therefore stale.
+
+     The form does collect a year again, and it is NOT part of this key, this
+     lookup, or anything else in the estimate below. It is recorded in the
+     response row and reported to the coordinator; candidacy alone decides zones
+     (SPEC §3.1). Adding it here would make the browser's estimate disagree with
+     the server's answer, which is the one thing this fallback exists not to do. */
   function attributeZoneIndex() {
     var lookup = zoneMapLookup();
     var index = {};
@@ -1162,15 +1197,31 @@
     return allZoneIds();
   }
 
+  /* A year is a positive whole number or null. Null means "we were not given a
+     usable one", which is a legal state everywhere: the year is recorded, never
+     acted on, so nothing has to cope with it being absent beyond writing a blank
+     cell (SPEC §3.1). */
+  function normaliseYear(value) {
+    var text = trim(value);
+    if (!/^[0-9]+$/.test(text)) { return null; }
+    var n = parseInt(text, 10);
+    return n > 0 ? n : null;
+  }
+
   function normalisePerson(input) {
     if (!input) { return null; }
     var person = {
       email: lower(input.email),
       name: trim(input.name),
+      year: normaliseYear(input.year),
       candidacy: trim(input.candidacy),
       authMethod: lower(input.authMethod) || 'self_select',
       allowedZones: []
     };
+    /* `year` is pointedly not in this call. resolveAllowedZones() takes email,
+       candidacy and whatever the server already decided — nothing else — and
+       adding the year would put a field the student can type into the estimate
+       of which desks they may rank. */
     person.allowedZones = resolveAllowedZones({
       email: person.email,
       candidacy: person.candidacy,
@@ -1252,6 +1303,7 @@
     store.set(personKey(), {
       email: state.person.email,
       name: state.person.name,
+      year: state.person.year,
       candidacy: state.person.candidacy,
       authMethod: state.person.authMethod
     });
@@ -1522,13 +1574,15 @@
       if (!p.candidacy) { errors.push({ code: 'no_candidacy', message: 'Confirm your candidacy status.' }); }
     }
 
+    /* The ranking half of the cycle is not open. Code.gs refuses this outright
+       — it is the check that counts — but saying so here means the student
+       reads one sentence instead of watching a submission bounce. */
+    if (!rankingOpen()) {
+      errors.push({ code: 'phase', message: rankingOffReason() });
+    }
+
     if (myClaimId) {
-      errors.push({
-        code: 'claimed',
-        deskId: myClaimId,
-        message: 'You are keeping ' + deskTitle(myClaimId) + ', so you are not in the ' +
-                 'ranking. Release it first if you would rather move.'
-      });
+      errors.push({ code: 'claimed', deskId: myClaimId, message: claimHoldMessage() });
     }
 
     var seen = {};
@@ -1657,15 +1711,21 @@
   }
 
   /* Exactly the row Code.gs writes (SPEC §3.1), plus `accommodation`, which is
-     not part of that row — Code.gs puts it in a separate tab. No `year`: the
-     form does not ask for it, candidacy alone decides eligibility, and sending
-     a value the student never confirmed would be recording a guess as a
-     statement. */
+     not part of that row — Code.gs puts it in a separate tab.
+
+     `year` travels with the rest and is treated differently from every other
+     field in it: the server records it in the response row and nothing consults
+     it. `candidacy` is re-checked and decides which desks are allowed;
+     `authMethod` the server derives for itself and ignores ours. The year is
+     the only one that is written down and then left alone. Null is fine and
+     means the student did not give a usable one — it is recorded blank, which
+     the solver reads as "not answered" (responses.OPTIONAL_COLUMNS). */
   function submissionPayload() {
     var p = state.person || {};
     return {
       email: p.email,
       name: p.name,
+      year: (p.year === null || p.year === undefined) ? '' : p.year,
       candidacy: p.candidacy,
       choices: state.picks.slice(),
       accommodation: state.accommodation,
@@ -1748,7 +1808,12 @@
     if (myClaimId) { candidates.push('prelock'); }
     if (saved && saved.view) { candidates.push(saved.view); }
     if (state.bootstrap && state.bootstrap.priorSubmission) { candidates.push('confirm'); }
-    if (store.get(STORAGE_PREFIX + 'seen.explainer')) { candidates.push('select'); }
+    /* Whichever half of the flow is actually open. Every candidate is still
+       run past canEnter() below, so a closed one is skipped rather than
+       bounced through a redirect the student would see as a flash. */
+    if (store.get(STORAGE_PREFIX + 'seen.explainer')) {
+      candidates.push(inPrelockPhase() ? 'prelock' : 'select');
+    }
     candidates.push('explainer');
     for (var i = 0; i < candidates.length; i++) {
       var v = canonView(candidates[i]);
@@ -1775,7 +1840,7 @@
 
     installZoneVars();
     indexDesks();
-    applyPrelockChrome();
+    applyPhaseChrome();
 
     var tag = el('version-tag');
     if (tag) { tag.textContent = APP.clientVersion; }
@@ -1789,6 +1854,7 @@
       setPerson({
         email: b.person.email,
         name: b.person.name,
+        year: b.person.year,          /* the roster's, so the box starts pre-filled */
         candidacy: b.person.candidacy,
         allowedZones: b.person.allowedZones,
         authMethod: b.person.authMethod || 'google'
@@ -1868,7 +1934,7 @@
       APP.state.bootstrap = b;
       installZoneVars();
       indexDesks();
-      applyPrelockChrome();
+      applyPhaseChrome();
       reconcilePicks({});
       renderDeadline();
       emit('bootstrap:ready', b);
@@ -1879,12 +1945,23 @@
     }).then(function (r) { loading(false); return r; });
   }
 
-  /* Reflects the PRELOCK_ENABLED script property in the stepper. Called on
-     every bootstrap, so flipping the property and reloading is enough — there
-     is no second place to change. */
-  function applyPrelockChrome() {
-    if (!viewEl('prelock')) { return; }
-    setStepEnabled('prelock', prelockEnabled(), prelockOffReason());
+  /* Reflects the phase in the stepper: exactly one half of the flow is live and
+     the other half is greyed, struck through, unclickable and carries a tooltip
+     saying why and when it opens. One mechanism for both — setStepEnabled() is
+     what already did this for Pre-lock, and Choose and Confirm now go through
+     the same door rather than getting a second one.
+
+     Called on every bootstrap and every refresh, so flipping PRELOCK_ENABLED
+     and reloading is the whole operation; there is no second place to change. */
+  function applyPhaseChrome() {
+    var keeping = inPrelockPhase();
+    if (viewEl('prelock')) {
+      setStepEnabled('prelock', keeping, prelockOffReason());
+    }
+    var closedReason = rankingOffReason();
+    ['select', 'confirm'].forEach(function (name) {
+      if (viewEl(name)) { setStepEnabled(name, !keeping, closedReason); }
+    });
   }
 
   /* Claim or release a desk in the pre-lock step, then re-read the world so the
@@ -2006,6 +2083,11 @@
     concentration: concentration,
     concentrationFor: concentrationFor,
     contentionLevel: contentionLevel,
+
+    /* --- phase (pre-lock and ranking are mutually exclusive) --- */
+    phase: phase,
+    rankingOpen: rankingOpen,
+    rankingOffReason: rankingOffReason,
 
     /* --- pre-lock --- */
     prelock: prelockConfig,

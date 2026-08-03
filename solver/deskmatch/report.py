@@ -2208,21 +2208,62 @@ def _ledger_items(build: Any, responses: Any, solution: Solution) -> list[_Item]
                        key=lambda c: (c.email, c.field))
     section(
         f"Roster conflicts ({_n(len(conflicts))})",
-        "The student's own answer on the form wins over the roster (SPEC §3.3), "
-        "because the roster is stale by design. Each one below changed what the "
-        "solver believed about that person, and year/candidacy decide which "
-        "zones they may sit in — so none of them is cosmetic. Fix roster.csv "
-        "and re-run if the roster was the correct one.",
+        "Where a student's own answer on the form disagreed with roster.csv. On "
+        "candidacy the submission wins (SPEC §3.3), because the roster is stale "
+        "by design and candidacy decides which zones a person may sit in — those "
+        "lines changed what the solver believed and are not cosmetic. A year "
+        "disagreement is listed and nothing more: the year is recorded, never "
+        "used for eligibility, so the roster's value stayed in force. Fix "
+        "roster.csv and re-run if the roster was the wrong one.",
     )
     if not conflicts:
         items.append(_Item("None. The roster and the submissions agreed about "
                            "every person.", size=8.6, color=_MUTED))
     for conflict in conflicts:
+        outcome = ("the submission was used" if getattr(conflict, "applied", True)
+                   else "the roster value was used; recorded only")
         items.append(_Item(
             f"{conflict.email} — {conflict.field}: roster said "
             f"{conflict.roster_value!r}, submission said "
-            f"{conflict.submitted_value!r}; the submission was used.",
+            f"{conflict.submitted_value!r}; {outcome}.",
             size=8.6, indent=0.17,
+        ))
+
+    # The year, alongside the name, on the one page allowed to carry both. This
+    # is the whole reason the form collects it: the coordinator wants it on the
+    # record. It took no part in the assignment — `_effective_person` keeps a
+    # submitted year out of the attributes the rule table sees — so this is a
+    # record, not a rationale, and the blurb says so rather than leaving the
+    # reader to assume the usual "the submission wins" rule applied here too.
+    people = getattr(build, "effective_people", {}) or {}
+    latest = dict(getattr(responses, "latest", {}) or {}) if responses is not None else {}
+    section(
+        f"Year on file ({_n(len(people))})",
+        "What each person put on the form, falling back to roster.csv where the "
+        "form got no usable answer — a dash means neither had one, which is legal "
+        "and changes nothing. Recorded only: candidacy alone decided which zones "
+        "each person could rank, so no number on this list moved anybody. Where "
+        "a submitted year disagreed with the roster it is listed under Roster "
+        "conflicts above and the roster's value stayed in force; this column is "
+        "what the student said.",
+    )
+    if not people:
+        items.append(_Item("Nobody was in the pool, so there is nothing to list.",
+                           size=8.6, color=_MUTED))
+    for email in sorted(people):
+        person = people[email]
+        submitted = getattr(latest.get(email), "year", 0)
+        rostered = getattr(person, "year", 0)
+        # 0 is "not answered" (responses.OPTIONAL_COLUMNS), never a real year.
+        year = submitted if isinstance(submitted, int) and submitted > 0 else rostered
+        shown = str(year) if isinstance(year, int) and year > 0 else "—"
+        source = ""
+        if (isinstance(rostered, int) and rostered > 0
+                and not (isinstance(submitted, int) and submitted > 0)):
+            source = "  (from roster.csv; the form got no usable answer)"
+        items.append(_Item(
+            f"{getattr(person, 'name', '') or email} <{email}> — year {shown}{source}",
+            size=8.6, indent=0.17, gap_after=0.025,
         ))
 
     dropped = sorted(getattr(build, "dropped_choices", ()) or ())

@@ -22,7 +22,13 @@
      ?mockLatency=<ms>              simulate a slow server
      ?mockFail=getBootstrap         make a call throw
      ?mockLocked=<n>                override how many desks are held by keepers
-     ?mockPrelock=on|off            the PRELOCK_ENABLED script property (default off)
+     ?mockPrelock=on|off            the PRELOCK_ENABLED script property, i.e. WHICH
+                                    PHASE (default off = the ranking phase).
+                                      on  -> phase 1, keeping seats. Pre-lock is live,
+                                             Choose and Confirm are greyed out and
+                                             submitRanking() refuses.
+                                      off -> phase 2, ranking. Pre-lock is greyed out
+                                             and claimDesk() refuses.
      ?mockPrelockDeadline=past|soon|far   move the claim deadline
      ?mockClaims=<n>                pre-seed n desks claimed by other people
    Console: MOCK_SERVER.__state() and MOCK_SERVER.__reset().
@@ -865,6 +871,15 @@
 
   function truthy(v) { return /^(yes|true|1|y)$/i.test(trim(v)); }
 
+  /* Code.gs positiveInteger_(): a whole number of 1 or more, else null. `year`
+     is the only caller, and null there means "recorded blank", never "refused". */
+  function positiveInteger(v) {
+    var text = trim(v);
+    if (!/^[+]?\d+(\.0+)?$/.test(text)) { return null; }
+    var n = Math.floor(Number(text));
+    return n >= 1 ? n : null;
+  }
+
   /* Deterministic: same page load, same sequence. Used for the synthetic
      department so reloads give the same fake world. */
   function uuid() {
@@ -1132,6 +1147,9 @@
   /* PRELOCK_ENABLED, as a query switch. Default off, exactly as the script
      property defaults to "false".
 
+     It selects the PHASE, not an optional extra step: on = keeping seats with
+     ranking shut, off = ranking with claims shut. Mirrors Code.gs phase_().
+
      Also readable from localStorage, because some preview surfaces (the in-app
      browser pane, for one) drop the query string, and a switch you cannot
      actually flip is not a switch. From the console:
@@ -1156,6 +1174,20 @@
   function prelockPassed() {
     if (!PRELOCK_DEADLINE_ISO) { return false; }
     return Date.now() > Date.parse(PRELOCK_DEADLINE_ISO);
+  }
+
+  /* Code.gs phase_(), verbatim in meaning. */
+  var PHASE = PRELOCK_ENABLED ? 'prelock' : 'ranking';
+
+  /* Code.gs rankingClosedMessage_(). Kept close to the original wording: this
+     is the string the preview teaches the coordinator to expect. */
+  function rankingClosedMessage() {
+    var when = (PRELOCK_DEADLINE_ISO && !prelockPassed())
+      ? ' That stage closes at ' + PRELOCK_DEADLINE_ISO + ' and ranking opens after it.'
+      : ' Ranking opens once that stage closes.';
+    return 'Ranking has not opened yet: the form is still in the stage where people ' +
+      'keep the desk they already sit at.' + when + ' Nothing was saved. Reload the ' +
+      'page when the coordinator says ranking is open, and rank then.';
   }
 
   /* Claims other people made before the page loaded. Derived from the desk
@@ -1401,6 +1433,7 @@
       person: person ? {
         email: person.email,
         name: person.name,
+        year: person.year,              // pre-fills the box; the roster's value
         candidacy: person.candidacy,
         allowedZones: zonesForAttributes(person),
         authMethod: 'google'
@@ -1409,7 +1442,7 @@
         return {
           email: p.email,
           name: p.name,
-          year: p.year,                 // roster metadata; the form never asks for it
+          year: p.year,                 // what the Year box starts out showing
           candidacy: p.candidacy,
           keepsDesk: p.keepsDesk,
           currentDesk: p.currentDesk
@@ -1417,6 +1450,7 @@
       }).sort(function (a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); }),
       lockedDesks: LOCKED.slice(),
       allowedZonesFor: ALLOWED_ZONES_FOR,
+      phase: PHASE,
       prelock: {
         enabled: PRELOCK_ENABLED,
         deadlineIso: PRELOCK_DEADLINE_ISO,
@@ -1481,6 +1515,15 @@
     }
 
     payload = payload || {};
+
+    /* The phase, checked exactly where Code.gs checks it: before anything is
+       read or written, and before any other complaint. A preview that let a
+       ranking through during the keeping-seats phase would be teaching the
+       coordinator that the greyed-out chips are only decoration. */
+    if (PHASE === 'prelock') {
+      return { ok: false, errors: [rankingClosedMessage()] };
+    }
+
     var errors = [];
     var person = rosterByEmail(payload.email);
 
@@ -1488,8 +1531,14 @@
     else if (!person) { errors.push(payload.email + ' is not on the roster.'); }
     if (!trim(payload.name)) { errors.push('No name was submitted.'); }
 
-    /* No year: the form does not collect it and the payload does not carry it. */
     if (!trim(payload.candidacy)) { errors.push('Candidacy is required.'); }
+
+    /* `year` is collected, recorded and then left alone — exactly as in Code.gs.
+       It is read here and NOT added to `errors`: an unusable one cannot change
+       the outcome, so refusing over it would refuse over nothing. It also never
+       reaches `attrs` below, which is what zonesForAttributes() evaluates. */
+    var year = positiveInteger(payload.year);
+    if (year === null && person) { year = positiveInteger(person.year); }
 
     if (person && person.keepsDesk) {
       errors.push(person.name + ' is keeping desk ' + person.currentDesk + ' and is not in the pool.');
@@ -1555,6 +1604,7 @@
       email: lower(payload.email),
       name: trim(payload.name),
       candidacy: trim(payload.candidacy),
+      year: year === null ? '' : year,   // recorded; blank when there is no usable one
       choices: choices,
       authMethod: payload.authMethod || 'self_select',
       clientVersion: payload.clientVersion || 'unknown'
@@ -1590,7 +1640,9 @@
     var errors = [];
 
     if (!PRELOCK_ENABLED) {
-      return { ok: false, errors: ['The pre-lock step is not in use this year.'] };
+      return { ok: false, errors: ['The stage for keeping your current desk is not ' +
+        'open, so nothing was saved. Rank your desks as normal — that is the step ' +
+        'that is live now.'] };
     }
     if (Date.now() > Date.parse(DEADLINE_ISO)) {
       return { ok: false, errors: ['The form closed on ' + DEADLINE_ISO + '.'] };
@@ -1660,6 +1712,7 @@
       return {
         k: K, desks: DESKS.length, zones: ZONE_IDS, roster: ROSTER.length,
         pool: POOL_PEOPLE.length, locked: LOCKED, deadline: DEADLINE_ISO,
+        phase: PHASE,
         prelock: { enabled: PRELOCK_ENABLED, deadline: PRELOCK_DEADLINE_ISO },
         claims: activeClaims(),
         submissions: readSubmissions(),
@@ -1680,8 +1733,12 @@
     console.info(
       '%c[deskmatch] mock server active%c\n' +
       DESKS.length + ' desks, ' + ZONE_IDS.length + ' zones, K=' + K + ', ' +
-      ROSTER.length + ' roster members, ' + LOCKED.length + ' desks held, pre-lock ' +
-      (PRELOCK_ENABLED ? 'ON, ' + activeClaims().length + ' claimed' : 'off') + '.\n' +
+      ROSTER.length + ' roster members, ' + LOCKED.length + ' desks held.\n' +
+      'PHASE: ' + PHASE + ' — ' +
+      (PRELOCK_ENABLED
+        ? 'keeping seats. Choose and Confirm are shut; ' + activeClaims().length + ' claimed.'
+        : 'ranking. Pre-lock is shut; ' + activeClaims().length +
+          ' claim(s) still enforced.') + '\n' +
       'Switches: ?mockPerson=none|<email>  ?mockSubmitted=1  ?mockDeadline=past|soon|far  ' +
       '?mockLatency=<ms>  ?mockFail=getBootstrap|submitRanking|claimDesk  ?mockLocked=<n>\n' +
       '          ?mockPrelock=on|off  ?mockPrelockDeadline=past|soon|far  ?mockClaims=<n>\n' +

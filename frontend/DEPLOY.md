@@ -81,12 +81,17 @@ catches most mistakes in thirty seconds.
 The preview's fake server takes switches on the URL. The ones worth knowing:
 
 ```
-?mockPrelock=on          turn the Pre-lock step on (it is off by default,
-                         same as the real script property)
+?mockPrelock=on          run phase 1, keeping seats: Pre-lock live, Choose and
+                         Confirm greyed out. Off by default, same as the real
+                         script property, which is phase 2 — ranking
 ?mockClaims=3            pretend three other people already claimed a desk
 ?mockPerson=none         see the self-select login instead of Google
 ?mockDeadline=past       see what a closed form looks like
 ```
+
+Click through **both** phases before you deploy. They are mutually exclusive
+(step 5b), so `?mockPrelock=on` and `?mockPrelock=off` are two different forms
+and each is worth thirty seconds.
 
 Open the console once — the mock prints the full list.
 
@@ -102,11 +107,18 @@ You do not need to create the `Keepers` tab. If you turn the Pre-lock step on
 
 Do **not** share this Sheet with students. It is the raw response log.
 
-> **Re-using last year's spreadsheet?** The response header changed: `year` is
-> gone, because the form no longer asks for it. The script refuses to append to
-> a tab whose header does not match, which is deliberate — it will not quietly
-> write rows the solver would misread. Start a new tab (or clear the old one)
-> rather than editing the header by hand.
+> **Re-using an older spreadsheet?** The response header has changed twice, so a
+> tab from *any* previous cycle is very likely to be the wrong shape. `year` was
+> dropped and is now back, and it now sits **after** `candidacy` rather than
+> before it — the order SPEC §3.1 and the solver both use. The current header is
+> `submission_id, timestamp, email, name, candidacy, year, choice_1 … choice_K,
+> client_version, auth_method`.
+>
+> The script refuses to append to a tab whose header does not match, which is
+> deliberate — it will not quietly write rows the solver would misread, and a
+> `year` that has silently swapped places with `candidacy` is exactly the kind of
+> mistake that survives all the way to a finished assignment. Start a new tab (or
+> clear the old one) rather than editing the header by hand.
 
 ## Step 4 — Create the script project
 
@@ -156,25 +168,105 @@ Set a deadline the same way if you want the form to close itself:
 |---|---|
 | `DEADLINE_ISO` | `2026-09-22T17:00:00-04:00` |
 
-## Step 5b — Decide about the Pre-lock step
+## Step 5b — The two phases
 
-**Optional, and off unless you turn it on.**
+**Optional. Skip the whole of this step and the form runs as one phase: everyone
+ranks, and the Pre-lock chip stays greyed out. That is the default.**
 
-The Pre-lock step sits between "How it works" and "Choose". On it, a student who
-is happy where they are can claim the desk they already sit at and keep it,
-instead of ranking anything. Claiming takes **both** that person and that desk
-out of the draw, which is the same thing `keeps_desk` in the roster has always
-meant — the difference is that the students tell you, rather than you asking
-them one at a time.
+If you *do* want to let people keep the desk they already sit at, the cycle runs
+in **two phases, one after the other, never both at once**. `PRELOCK_ENABLED`
+is the switch that says which phase you are in. It does not mean "an extra step
+is available"; it means "which half of the process is this".
+
+| `PRELOCK_ENABLED` | phase | Pre-lock | Choose and Confirm |
+|---|---|---|---|
+| `true` | **1 — keeping seats** | live | greyed out, struck through, unclickable, tooltip saying ranking has not opened yet and when it will. `submitRanking()` refuses on the server. |
+| `false`, or not set | **2 — ranking**. The default. | greyed out, struck through, unclickable. `claimDesk()` refuses on the server. | live |
+
+Both halves are enforced by `Code.gs`, not just drawn that way. The greying is
+what makes it *easy*; the two server refusals are what make it *true*.
 
 | property | value | effect |
 |---|---|---|
-| `PRELOCK_ENABLED` | `true` | the step is live |
-| `PRELOCK_ENABLED` | `false`, or not set | **default.** The chip is greyed out and struck through, cannot be clicked, and has a tooltip saying it is not in use this year. The flow goes straight from the explainer to Choose. Nothing else changes. |
-| `PRELOCK_DEADLINE_ISO` | `2026-09-12T17:00:00-04:00` | optional, and usually a few days *before* `DEADLINE_ISO`: you want the keepers settled before everyone else ranks. After it passes, claims and releases are refused. `DEADLINE_ISO` still applies as the outer bound. |
+| `PRELOCK_DEADLINE_ISO` | `2026-09-12T17:00:00-04:00` | optional, and this is where you put the end of **phase 1**. After it passes, claims and releases are refused. The form also quotes it to a phase-1 student who wants to move, so they are told when ranking opens instead of "later". `DEADLINE_ISO` still applies as the outer bound. |
 | `KEEPERS_SHEET_NAME` | `Keepers` | optional. The tab claims are written to. Defaults to `Keepers`. |
 
-What a student sees when it is on:
+### Run the phases in this order
+
+The order matters, and step 4 is the one that is easy to skip. Do not reorder it.
+
+1. **Open phase 1.** Set `PRELOCK_ENABLED` to `true` and (recommended)
+   `PRELOCK_DEADLINE_ISO`. Deploy (step 6). Post the URL and say plainly what
+   this stage is: *only* for people keeping the desk they already have, and
+   ranking opens afterwards. Most of the department has nothing to do — the
+   form tells them so and shows them the date, so this is not the email that
+   has to carry it.
+
+2. **Close phase 1.** When `PRELOCK_DEADLINE_ISO` passes, claims and releases
+   stop being accepted on their own. Nothing else changes yet.
+
+3. **Export the `Keepers` tab.** Open it, **File → Download → Comma Separated
+   Values**.
+
+4. **Merge the claims into the roster.** Dry run first, always:
+
+   ```bash
+   python tools/merge_keepers.py --roster config/roster.csv \
+                                 --keepers ~/Downloads/keepers.csv --dry-run
+   python tools/merge_keepers.py --roster config/roster.csv \
+                                 --keepers ~/Downloads/keepers.csv
+   git add config/roster.csv && git commit -m "Desk keepers, 2026 cycle"
+   ```
+
+   Full detail in [Merging the claims](#merging-the-claims-into-the-roster).
+
+5. **Re-generate `ConfigData.gs` and redeploy.**
+
+   ```bash
+   python tools/sync_config.py --config-dir config/ --out frontend/ConfigData.gs
+   ```
+
+   Paste (or `clasp push`) the new `ConfigData.gs`, then
+   **Deploy → Manage deployments → ✏️ → Version: New version → Deploy**.
+   Script properties are read live, but `ConfigData.gs` is *code*: the running
+   deployment keeps serving the old roster until you cut a new version.
+
+6. **Open phase 2.** Now set `PRELOCK_ENABLED` to `false`. It takes effect on
+   the next page load — no further redeploy. Pre-lock goes grey; Choose and
+   Confirm come back.
+
+7. **Announce phase 2** and run the rest of the cycle as normal.
+
+Steps 4 and 5 sit between the phases on purpose, and step 6 comes after step 5
+so that the moment ranking opens the roster already reflects the keepers.
+
+### What breaks if you skip the merge
+
+The pool would still show kept desks as **available**, and the failure is quiet
+and lands on the wrong person.
+
+`Code.gs` reads the `Keepers` tab directly, so the *form* keeps hiding claimed
+desks either way — every screen a human looks at during phase 2 is correct, and
+nothing complains. But the **solver reads `config/roster.csv`**, which without
+the merge still says those desks are free. It will hand somebody's kept desk to
+a stranger, and the person who was told "you are keeping this desk, there is
+nothing more for you to do" finds out when the results are published.
+
+Two things catch it. The pre-deadline check will not, because the desk looks
+free to it too — so:
+
+- pass the same export to the solver, which cross-checks both directions and
+  refuses to write anything if the roster and the claims disagree:
+
+  ```bash
+  python -m deskmatch solve --config config/ --responses data/responses_2026.csv \
+                            --keepers ~/Downloads/keepers.csv --out out/
+  ```
+
+- and read the `keepers` line in the solve summary. After a phase 1, a count of
+  **zero** is the visible symptom of a merge that never happened.
+
+### What a student sees in phase 1
 
 - the same floor plan as the Choose step, in single-select mode;
 - they tap **one** desk — the one they are sitting at;
@@ -185,6 +277,13 @@ What a student sees when it is on:
   as roster keepers' desks are;
 - if they have already claimed one, they see it and can **release** it, which
   puts them and the desk straight back into the draw.
+
+And — this is most of the department — a student who does **not** want to keep
+their desk is told so in as many words: there is nothing for them to do right
+now, nothing to submit, this stage closes on `PRELOCK_DEADLINE_ISO`, and ranking
+opens after it. They are not handed a "rank desks instead" button that leads to
+a step which is shut. The explainer's final button changes to match, so it never
+promises to choose desks during phase 1 either.
 
 Zones are deliberately **not** enforced here. The eligibility rules say where
 somebody may be *assigned*; staying at the desk you already occupy is not an
@@ -205,20 +304,21 @@ Nothing reads this tab automatically. Claims become real when you merge them
 into the roster, which is one command — see
 [Merging the claims](#merging-the-claims-into-the-roster) below.
 
-**If you turn `PRELOCK_ENABLED` back off** after claims exist, the step
-disappears and nobody can make a *new* claim — but claims already made are still
+**When you move to phase 2** — which is exactly "turn `PRELOCK_ENABLED` back
+off" — nobody can make a *new* claim, but claims already made are still
 honoured. Those desks stay shown as taken, and anyone holding one still cannot
-submit a ranking. The switch means "students may still claim a desk", not
-"claims exist".
+submit a ranking, in **both** phases. The switch says which phase you are in; it
+does not say whether claims exist.
 
-That is deliberate. The alternative — releasing the claims when the step is
-switched off — fails silently and lands on exactly the wrong person: someone who
-did what the form told them, was shown "there is nothing else for you to do",
-and would then lose their desk without ever being asked.
+That is deliberate. The alternative — releasing the claims when the phase ends —
+fails silently and lands on exactly the wrong person: someone who did what the
+form told them, was shown "there is nothing else for you to do", and would then
+lose their desk without ever being asked.
 
-Merge the claims into the roster anyway, before you close the form. After
-merging, `keeps_desk` in `roster.csv` is what holds the desk, which is the
-version the solver reads and the version that is visible in git.
+It is also why the claim log is not a substitute for the merge. Merge before
+phase 2 opens (step 4 above). After merging, `keeps_desk` in `roster.csv` is
+what holds the desk — the version the solver reads, and the version visible in
+git.
 
 ## Step 5c — The private note box
 
@@ -274,8 +374,12 @@ Copy the **Web app URL**. That is what you post.
 
 Open the URL in an incognito window, or ask one student to try it early. Check:
 
-- your name and candidacy appear, and changing the candidacy updates the zones
-  you are offered (the year is not asked for — candidacy alone decides seating);
+- your name, candidacy and year appear, pre-filled from the roster;
+- changing the **candidacy** updates the zones you are offered;
+- changing the **year** does not — that line must not move. It is recorded and
+  nothing more, which is what the help text under the box promises. Blanking it,
+  or typing something that is not a whole number, must warn beside the box and
+  still let you continue;
 - desks kept by other people are hatched and unclickable;
 - if you are a pre-candidate, upper-years desks are visibly not available to you;
 - submitting adds exactly one row to the `Responses` tab, with the columns in
@@ -283,23 +387,28 @@ Open the URL in an incognito window, or ask one student to try it early. Check:
 - submitting a second time adds a **second** row and does not overwrite the
   first — history is append-only, and the solver takes the latest.
 
-If you turned the Pre-lock step on, also check:
+If you are running phase 1 (`PRELOCK_ENABLED=true`), check instead:
 
 - the Pre-lock chip is clickable and the map appears on it;
+- **Choose and Confirm are grey, struck through, and do nothing when clicked**,
+  with a tooltip saying ranking has not opened yet;
+- the explainer's final button says "are you keeping your current desk?" and
+  lands on Pre-lock, not on the shut Choose step;
+- the "No, I want to move" card says there is nothing to do yet and names the
+  date ranking opens — no button;
 - claiming a desk writes one row to `Keepers` and the student is told plainly
   that they are out of the ranking;
 - releasing writes a **second** row with `keeping=no` and puts them back;
 - from a different account, that desk now shows as taken.
 
-And if you left it off, check the opposite: the Pre-lock chip is grey, struck
-through, does nothing when clicked, and the explainer's "I'm ready" button goes
-straight to Choose.
+And in phase 2 (`PRELOCK_ENABLED=false`, the default), check the mirror image:
+the Pre-lock chip is grey, struck through and does nothing when clicked, the
+explainer's "I'm ready" button goes straight to Choose, and a desk claimed
+during phase 1 still shows as taken.
 
 ### Response schema
 
-The `Responses` tab, written from K (SPEC §3.1). `year` is **not** a column —
-the form stopped asking, because candidacy alone decides which zones a person
-may sit in.
+The `Responses` tab, written from K (SPEC §3.1).
 
 | column | what it is |
 |---|---|
@@ -308,9 +417,22 @@ may sit in.
 | `email` | lower-cased; joins to the roster |
 | `name` | as submitted |
 | `candidacy` | as confirmed by the student; overrides the roster |
+| `year` | as confirmed by the student; **recorded only — never decides anything** |
 | `choice_1` … `choice_K` | desk ids, best first. K columns, from your scoring curve |
 | `client_version` | frontend build id + config fingerprint |
 | `auth_method` | `google` or `self_select`; audit only |
+
+Two columns, two very different things. `candidacy` is authoritative: the
+student's answer replaces `roster.csv` and decides which zones they could rank.
+`year` is a record: it is written here, it appears next to the name in the
+coordinator report, and no part of the solve reads it — not even if you write an
+eligibility rule on `year`, which reads your roster instead. That split is
+enforced in three places (`Code.gs:CONFIRMED_FIELDS`, the client never sends the
+year to the eligibility call, and `problem._effective_person`), because the
+help text under the box promises the student it holds.
+
+A blank `year` cell is fine and stops nothing. Older exports have no `year`
+column at all and still load.
 
 ---
 
@@ -328,8 +450,9 @@ names who is colliding on what. Talk to those people *before* the deadline.
 
 ## Merging the claims into the roster
 
-Only if you turned the Pre-lock step on. Do this **once, after the pre-lock
-deadline and before you solve** — the solver reads `keeps_desk` and
+Only if you ran a phase 1. Do this **once, after the pre-lock deadline and
+before you open phase 2** — it is step 4 of the order in
+[step 5b](#step-5b--the-two-phases). The solver reads `keeps_desk` and
 `current_desk` from `config/roster.csv`, and until you merge, it does not know
 anybody claimed anything.
 
@@ -422,12 +545,26 @@ This catches everyone at least once.
 too (`tests/test_frontend_parity.py`).
 
 **"The response sheet header does not match the current config."** Either your
-scoring curve changed length mid-round (do not do that), or the tab is from a
-cycle that still had a `year` column. Start a fresh tab.
+scoring curve changed length mid-round (do not do that), or the tab is from an
+earlier cycle whose `year` column was missing, or was there but sat before
+`candidacy` instead of after it. Start a fresh tab; the error message prints the
+header this config expects, in order.
 
 **The Pre-lock chip is grey and I want it live.** `PRELOCK_ENABLED` must be the
 string `true`, lower case, and script properties only take effect on the next
 page load — no redeploy needed, but do reload.
+
+**Choose and Confirm are grey and struck through.** That is phase 1
+(`PRELOCK_ENABLED=true`): ranking has not opened yet, and the server refuses
+rankings as well as greying the chips. Working through
+[step 5b](#step-5b--the-two-phases) — export, merge, re-sync, redeploy, then set
+`PRELOCK_ENABLED=false` — is what opens them. Setting the property to `false`
+*without* doing the merge first opens ranking against a roster that still thinks
+the kept desks are free.
+
+**A student says the form told them there was nothing to do.** In phase 1 that
+is correct and deliberate: the stage is only for people keeping their current
+desk. They come back when you open phase 2.
 
 **A claim did not appear in the roster.** Merging is a manual step, on purpose.
 Run `tools/merge_keepers.py` (above). Nothing reads the `Keepers` tab

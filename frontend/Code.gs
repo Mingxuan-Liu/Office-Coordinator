@@ -82,9 +82,13 @@ var DEFAULT_ACCOMMODATIONS_SHEET = 'Accommodations';
 /* The fixed part of the response header (SPEC §3.1). The choice_N columns are
  * generated from K and spliced in between these two halves.
  *
- * `year` is deliberately absent: the form no longer asks for it, because
- * candidacy alone decides which zones a person may sit in. */
-var HEADER_LEAD = ['submission_id', 'timestamp', 'email', 'name', 'candidacy'];
+ * `year` sits after `candidacy`, which is the order SPEC §3.1 and the solver's
+ * responses.canonical_header() both use. It is collected and recorded for the
+ * coordinator's records and it is NOT an input to eligibility: candidacy alone
+ * decides which zones a person may sit in. The two live one column apart and
+ * mean completely different things — see CONFIRMED_FIELDS, which is what keeps
+ * the year out of the attributes the rule table is evaluated against. */
+var HEADER_LEAD = ['submission_id', 'timestamp', 'email', 'name', 'candidacy', 'year'];
 var HEADER_TAIL = ['client_version', 'auth_method'];
 
 /* The pre-lock claim log. Append-only, exactly like the response sheet:
@@ -386,8 +390,11 @@ function getConcentration() {
  * Recomputes allowed zones when the student corrects their candidacy on the
  * identity screen.
  *
- * Candidacy is the only thing the form asks them to confirm, because it is the
- * only thing that decides where they may sit. The year is not collected at all.
+ * Candidacy is the only thing that decides where they may sit, so it is the only
+ * thing this function looks at. The form also collects a year, and the client
+ * does not send it here — but even if it did, claimAttributes_() would drop it,
+ * because `year` is not in CONFIRMED_FIELDS. That is on purpose and is what
+ * makes the answer on this screen the same answer submitRanking() will give.
  *
  * Applies exactly the rule submitRanking() applies: the intersection of the
  * zones the roster entitles them to and the zones their claimed attributes
@@ -614,6 +621,10 @@ function resolveAllowZones_(allowZones, known, where) {
  *   - every chosen desk's zone is eligible under BOTH the roster attributes and
  *     the candidacy the student just confirmed (see the note below)
  *   - candidacy is non-empty
+ *
+ * Note that `year` is not in that list and never will be. The form collects it,
+ * this function records it in the response row, and no check above or below
+ * consults it — see the "year, for the record only" block.
  *   - the Sheet header is the SPEC §3.1 header for this K
  *
  * On success appends exactly one row and returns its id. Rows are never
@@ -632,7 +643,7 @@ function resolveAllowZones_(allowZones, known, where) {
  * retyping their candidacy, and so the form can never accept a pick the solver
  * would later rule ineligible under either reading.
  *
- * @param {Object} payload {email, name, candidacy, choices[], authMethod,
+ * @param {Object} payload {email, name, candidacy, year, choices[], authMethod,
  *                          clientVersion, accommodation}.
  * @return {Object} {ok:true, submissionId, timestampIso, noteRecorded,
  *                   noteWithdrawn, noteTruncated, noteError} |
@@ -733,6 +744,22 @@ function submitRanking(payload) {
       errors.push('Candidacy is blank and the roster does not have one either. ' +
         'Tell the coordinator.');
     }
+  }
+
+  // ---- year, for the record only ----------------------------------------
+  // Same fallback shape as candidacy above — submitted value, else the roster's
+  // — and deliberately NOT the same consequences. Nothing below this line reads
+  // `year`: it is written to its column and that is the end of it. It is not
+  // passed to claimAttributes_(), so it cannot reach getEligibleZones() and
+  // cannot move anybody between zones. A blank or unusable one is recorded as
+  // an empty cell rather than refused; the solver reads that as "not answered"
+  // (responses.OPTIONAL_COLUMNS) and the run is unaffected either way, so
+  // failing a whole submission over it would be failing it over nothing.
+  var year = '';
+  if (person) {
+    year = positiveInteger_(payload.year);
+    if (year === null) { year = positiveInteger_(person.year); }
+    if (year === null) { year = ''; }
   }
 
   // ---- eligible zones ---------------------------------------------------
@@ -857,6 +884,7 @@ function submitRanking(payload) {
         case 'email': return email;
         case 'name': return String(payload.name || '').trim() || person.name;
         case 'candidacy': return candidacy;
+        case 'year': return year;             // recorded; read by nobody here
         default: return '';
       }
     })
@@ -1037,8 +1065,9 @@ function readResponses_() {
       timestampIso: isoCell_(rowVals[col.timestamp]),
       email: email,
       name: cell_(rowVals, col.name),
-      // `year` is no longer written. A sheet left over from an older cycle may
-      // still have the column; read it if it is there, ignore it otherwise.
+      // `year` is written again, but a sheet left over from the cycle that did
+      // not collect it will not have the column. Read it where it exists and
+      // leave it blank where it does not — nothing in this file branches on it.
       year: col.year === undefined ? '' : rowVals[col.year],
       candidacy: cell_(rowVals, col.candidacy),
       choices: choices,
@@ -1776,11 +1805,24 @@ function findRosterRow_(roster, email) {
  * top (SPEC §3.3: the submission wins). Column names are matched
  * case-insensitively so an oddly-cased header still gets overridden.
  *
- * CONFIRMED_FIELDS is the list of roster columns the form lets a student
- * correct. It is one entry long on purpose: candidacy is the only attribute the
- * form collects, so it is the only one that can override the roster. Everything
- * else — including `year`, which eligibility rules may still reference — is
- * taken from the roster untouched.
+ * CONFIRMED_FIELDS is the list of roster columns a student's own answer is
+ * allowed to override in the attributes the rule table is evaluated against. It
+ * is one entry long on purpose, and `year` is not the entry it is missing by
+ * accident.
+ *
+ * The form collects a year again, and records it in the response row — but the
+ * eligibility grammar (SPEC §2.2) accepts predicates like {"year": [1, 2]}, so
+ * the moment a coordinator writes one, anything in this list becomes a field a
+ * student can type into to change which desks they may rank. Candidacy is in
+ * that position deliberately and the department's answer to it is "the student's
+ * own answer counts". A year typed into a box the form calls "recorded only" is
+ * not that; it would move people between zones silently, from a field whose own
+ * help text promises it cannot. So year is read from the roster, like every
+ * other column, and the submitted one never reaches these attributes.
+ *
+ * If you add an entry here, the label and help text on that field in
+ * ViewLogin.html have to change with it, because they are what tells the
+ * student whether their answer has consequences.
  */
 var CONFIRMED_FIELDS = ['candidacy'];
 
@@ -1932,6 +1974,19 @@ function toNumber_(value) {
   if (s === '' || !/^[+-]?(\d+(\.\d+)?|\.\d+)$/.test(s)) return null;
   var n = Number(s);
   return isFinite(n) ? n : null;
+}
+
+/**
+ * A whole number of 1 or more, or null for anything else — blank, a decimal,
+ * "third year", a negative. Used for `year`, which is the one field the form
+ * collects that nothing is allowed to act on, so "I cannot read this" has to be
+ * a value the caller can record rather than a reason to refuse a submission.
+ * A spreadsheet hands back 4 as the number 4 and sometimes as "4.0"; both are 4.
+ */
+function positiveInteger_(value) {
+  var n = toNumber_(value);
+  if (n === null || n !== Math.floor(n) || n < 1) return null;
+  return n;
 }
 
 function normStr_(value) {
