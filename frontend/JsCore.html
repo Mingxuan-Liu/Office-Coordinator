@@ -473,11 +473,15 @@
     select: function () {
       var need = requirePerson();
       if (!need.ok) { return need; }
+      var open = requireRankingPhase();
+      if (!open.ok) { return open; }
       return requireNoClaim();
     },
     confirm: function () {
       var need = requirePerson();
       if (!need.ok) { return need; }
+      var open = requireRankingPhase();
+      if (!open.ok) { return open; }
       var free = requireNoClaim();
       if (!free.ok) { return free; }
       var required = requiredPicks();
@@ -964,9 +968,51 @@
 
   function prelockEnabled() { return prelockConfig().enabled; }
 
+  /* ----------------------------------------------------------------------
+     Phases
+
+     Pre-lock and ranking are two PHASES of the cycle, not two steps that
+     happen to both be available. Exactly one of them is open at a time:
+
+       'prelock' — people who want to keep the desk they already sit at say so.
+                   Choose and Confirm are shut, because the roster has not been
+                   updated with the keepers yet and a ranking taken now would be
+                   against a stale pool.
+       'ranking' — everybody else ranks. Pre-lock is shut.
+
+     The server says which, in bootstrap.phase. prelock.enabled is still read as
+     a fallback for a deployment whose Code.gs predates the phase field, so the
+     two can never disagree about which half we are in.
+     ---------------------------------------------------------------------- */
+
+  var PHASE_PRELOCK = 'prelock';
+  var PHASE_RANKING = 'ranking';
+
+  function phase() {
+    var b = state.bootstrap || {};
+    var named = lower(b.phase);
+    if (named === PHASE_PRELOCK || named === PHASE_RANKING) { return named; }
+    return prelockEnabled() ? PHASE_PRELOCK : PHASE_RANKING;
+  }
+
+  function inPrelockPhase() { return phase() === PHASE_PRELOCK; }
+  function rankingOpen() { return !inPrelockPhase(); }
+
   function prelockOffReason() {
     return 'Keeping your current desk is not part of this year’s process, so that step ' +
            'is switched off. Everyone ranks desks.';
+  }
+
+  /* The tooltip on the greyed-out Choose and Confirm chips, and the message
+     anyone who tries to reach them anyway is shown. Says why it is shut AND
+     when it opens: "not yet" on its own is not something anybody can act on. */
+  function rankingOffReason() {
+    var p = prelockConfig();
+    var when = (p.deadlineIso && !p.deadlinePassed)
+      ? ' That closes ' + formatWhen(p.deadlineIso) + ', and ranking opens after it.'
+      : ' Ranking opens once that stage closes.';
+    return 'Ranking has not opened yet. Right now the only thing to do is say whether ' +
+           'you are keeping the desk you already sit at.' + when;
   }
 
   /* Whether the claim window is still open. The server decides for real; this

@@ -129,13 +129,33 @@ def cmd_solve(args: argparse.Namespace) -> int:
         _eprint("  ! scoring.json has no seed_committed_at. Record when you "
                 "announced the seed -- it is part of the audit trail.")
 
+    # Cross-check the pre-lock claim log against the roster, when given one.
+    # See deskmatch/keepers.py for why: the solver reads the roster, the form
+    # reads the claim log, and if the merge was skipped only the solver is wrong.
+    if args.keepers:
+        from . import keepers as keepers_mod
+
+        claims = keepers_mod.load_claims(Path(args.keepers))
+        mismatches = keepers_mod.verify_against_roster(claims, cfg.roster)
+        if mismatches:
+            raise keepers_mod.KeepersError(mismatches)
+        print(f"  keepers     : {len(claims)} active claim(s), all reflected in "
+              f"the roster")
+
     build = problem_mod.build_problem(cfg, resp, args.curve)
     prob = build.problem
 
     _rule("POOL")
     print(f"  {prob.n_people} people competing for {prob.n_desks} desks (K={prob.k})")
-    if build.locked_desks:
-        print(f"  {len(build.locked_desks)} desk(s) held by people keeping their seat")
+    # Printed even when zero, deliberately. After a pre-lock phase, "0 desk(s)
+    # held" is the visible symptom of the claims never having been merged into
+    # the roster -- and that mistake is otherwise silent all the way to
+    # publication. Staying quiet on zero hides exactly the case worth seeing.
+    print(f"  {len(build.locked_desks)} desk(s) held by people keeping their seat")
+    if not build.locked_desks:
+        print("      (if you have just run a pre-lock phase, this should not be "
+              "zero --\n       check the claims were merged with "
+              "tools/merge_keepers.py)")
     pool_notes = build.render_warnings()
     if pool_notes:
         print("\nNotes:")
@@ -502,6 +522,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "individual preferences")
     s.add_argument("--trials", type=int, default=5000,
                    help="Monte-Carlo trials for the baseline comparison")
+    s.add_argument("--keepers", default=None,
+                   help="the Keepers tab exported as CSV. Optional, and worth "
+                        "passing after a pre-lock phase: it refuses to run if a "
+                        "claimed desk is not yet recorded in roster.csv")
     s.add_argument("--verify", default=None,
                    help="assert the results hash equals this value")
     s.set_defaults(func=cmd_solve)

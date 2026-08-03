@@ -31,14 +31,30 @@
  *   ALLOW_PROXY_SUBMIT      optional. "true" lets a signed-in user submit under
  *                           a different roster email (coordinator taking a
  *                           submission over the phone). Off by default.
- *   PRELOCK_ENABLED         optional. "true" turns on the pre-lock step, where a
- *                           student may claim the desk they already sit at and
- *                           keep it instead of entering the ranking. Default
- *                           "false": the step is greyed out and unreachable.
+ *   PRELOCK_ENABLED         optional. WHICH PHASE THE CYCLE IS IN. The two are
+ *                           mutually exclusive and this one property switches
+ *                           between them:
+ *                             "true"  -> PHASE 1, keeping seats. A student may
+ *                                        claim the desk they already sit at.
+ *                                        Ranking is CLOSED: submitRanking()
+ *                                        refuses, and the client greys Choose
+ *                                        and Confirm out.
+ *                             "false" -> PHASE 2, ranking (the default). The
+ *                                        pre-lock step is greyed out and
+ *                                        unreachable, and everyone ranks.
+ *                           Ranking is refused in phase 1 because the roster
+ *                           has not yet been updated with the keepers, so a
+ *                           ranking submitted then would be computed against a
+ *                           stale pool. Run phase 1, close it, merge the
+ *                           keepers into config/roster.csv, re-sync, then flip
+ *                           this to "false" — frontend/DEPLOY.md step 5b.
+ *                           Claims made in phase 1 stay enforced in phase 2.
  *   PRELOCK_DEADLINE_ISO    optional. ISO-8601 instant after which claims are
  *                           refused. Independent of DEADLINE_ISO, and usually
  *                           earlier — the coordinator wants the keepers settled
- *                           before everyone else ranks. DEADLINE_ISO still
+ *                           before everyone else ranks. It is also what the
+ *                           form quotes to a phase-1 student who wants to move
+ *                           and is told when ranking opens. DEADLINE_ISO still
  *                           applies as the outer bound.
  *   KEEPERS_SHEET_NAME      optional. Tab the pre-lock claims are appended to.
  *                           Defaults to "Keepers".
@@ -180,6 +196,10 @@ function getBootstrap() {
       priorAccommodation: null,
       accommodationMaxChars: ACCOMMODATION_MAX_CHARS,
       concentration: {},
+      // Consistent with prelock.enabled below it. The client never gets this
+      // far — ok:false stops it at the boot screen — but the two must not
+      // contradict each other for anyone reading the payload.
+      phase: PHASE_RANKING,
       prelock: { enabled: false, deadlineIso: null, deadlinePassed: false },
       claims: [],
       myClaim: null,
@@ -330,6 +350,11 @@ function getBootstrap() {
     priorAccommodation: priorAccommodation,        // this person's own, or null
     accommodationMaxChars: ACCOMMODATION_MAX_CHARS,
     concentration: concentration,
+    // Which phase the cycle is in, said outright rather than left for the
+    // client to infer from prelock.enabled. 'prelock' means Choose and Confirm
+    // are shut and submitRanking() will refuse; 'ranking' means the pre-lock
+    // step is shut and claimDesk() will refuse.
+    phase: phase_(),
     prelock: {
       enabled: prelock.enabled,
       deadlineIso: prelock.deadlineIso,
@@ -571,6 +596,13 @@ function resolveAllowZones_(allowZones, known, where) {
  *
  * Validates:
  *   - the config is loadable and the deadline (if set) has not passed
+ *   - the cycle is in the RANKING phase. While PRELOCK_ENABLED is true the form
+ *     is in the keeping-seats phase and this refuses outright: the roster has
+ *     not been updated with the keepers yet, so a ranking taken now would be
+ *     computed against a stale pool — desks that are about to leave it would
+ *     still look available, and the person would have ranked desks nobody could
+ *     be given. The client greys Choose and Confirm out; this is what makes it
+ *     true.
  *   - the email is on the roster, and matches the signed-in user when Google
  *     identified them (unless ALLOW_PROXY_SUBMIT is set)
  *   - the person is not a desk-keeper — keepers are out of the pool (SPEC §3.4)
@@ -625,6 +657,19 @@ function submitRanking(payload) {
   if (deadline.passed) {
     return fail_(['The form closed at ' + deadline.iso + '. Nothing was saved. ' +
       'Email the coordinator if you missed it.']);
+  }
+
+  // ---- phase ------------------------------------------------------------
+  // Pre-lock and ranking are two phases, not two available steps, and this is
+  // where that is enforced rather than merely displayed. Refusing early, before
+  // anything is read or written, is deliberate: there is no partial state to
+  // clean up and no row to supersede.
+  //
+  // This is NOT the same thing as the claim check further down. That one is
+  // about one person holding one desk and is enforced in BOTH phases. This one
+  // is about the whole form being in the wrong half of the process.
+  if (phase_() === PHASE_PRELOCK) {
+    return fail_([rankingClosedMessage_()]);
   }
 
   // ---- identity ---------------------------------------------------------
@@ -1048,6 +1093,38 @@ function firstChoiceCounts_(responses) {
  * staying put is not an assignment. The coordinator sees every claim in the tab.
  * ======================================================================== */
 
+/* The two phases. They are mutually exclusive by construction: there is one
+ * script property and it has two values. */
+var PHASE_PRELOCK = 'prelock';                 // keeping seats; ranking is shut
+var PHASE_RANKING = 'ranking';                 // ranking; no new claims
+
+/**
+ * Which phase the cycle is in, as one word.
+ *
+ * getBootstrap() sends this so the client switches on a phase instead of
+ * inferring one from prelock.enabled — the client used to read "an extra step
+ * is available" out of that flag, and it now means "which half of the process
+ * are we in". Never throws.
+ */
+function phase_() {
+  return prelockSettings_().enabled ? PHASE_PRELOCK : PHASE_RANKING;
+}
+
+/**
+ * Why ranking is shut and when it opens, quoted verbatim to a student who got
+ * a ranking past the greyed-out UI anyway. PRELOCK_DEADLINE_ISO is named when
+ * it is set, because "later" is not an answer somebody can plan around.
+ */
+function rankingClosedMessage_() {
+  var prelock = prelockSettings_();
+  var when = (prelock.deadlineIso && !prelock.deadlinePassed)
+    ? ' That stage closes at ' + prelock.deadlineIso + ' and ranking opens after it.'
+    : ' Ranking opens once that stage closes.';
+  return 'Ranking has not opened yet: the form is still in the stage where people ' +
+    'keep the desk they already sit at.' + when + ' Nothing was saved. Reload the ' +
+    'page when the coordinator says ranking is open, and rank then.';
+}
+
 /** {enabled, deadlineIso, deadlinePassed} for the pre-lock step. Never throws. */
 function prelockSettings_() {
   var enabled = String(prop_(PROP_PRELOCK_ENABLED) || '').trim().toLowerCase() === 'true';
@@ -1208,10 +1285,15 @@ function claimDesk(payload) {
     payload.keeping === undefined ? true : payload.keeping);
   var errors = [];
 
+  // The mirror image of the phase check in submitRanking(): claims are only
+  // taken in phase 1, rankings only in phase 2, and each path refuses in the
+  // other phase. Note this stops NEW claims only — claims already made are
+  // still honoured in phase 2, which is the whole point of merging them into
+  // the roster before it starts.
   var prelock = prelockSettings_();
   if (!prelock.enabled) {
-    return fail_(['The pre-lock step is not in use this year, so nothing was saved. ' +
-      'Rank your desks as normal.']);
+    return fail_(['The stage for keeping your current desk is not open, so nothing ' +
+      'was saved. Rank your desks as normal — that is the step that is live now.']);
   }
 
   var deskIndex, roster;
