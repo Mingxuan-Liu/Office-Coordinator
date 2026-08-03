@@ -1423,7 +1423,9 @@
       ok: true,
       k: K,
       curve: (SCORING.curves[SCORING.primary_curve] || []).slice(),
-      seedString: SCORING.tie_break_seed,
+      /* Mirrors Code.gs resolvedSeed_(): seed_year governs, "auto" is the
+         calendar year. Reading tie_break_seed alone published an empty seed. */
+      seedString: resolvedSeed(),
       seedCommittedAt: SCORING.seed_committed_at || null,
       deadlineIso: DEADLINE_ISO,
       deadlinePassed: Date.now() > Date.parse(DEADLINE_ISO),
@@ -1485,6 +1487,17 @@
      candidacy governs on its own. It used to be intersected with the roster's
      zones, which returned the empty set as soon as a correction crossed the
      cohort boundary — see the note in Code.gs submitRanking(). */
+  function resolvedSeed() {
+    var year = SCORING.seed_year;
+    if (year !== undefined && year !== null && year !== '') {
+      if (typeof year === 'string' && year.trim().toLowerCase() === 'auto') {
+        return String(new Date().getFullYear());
+      }
+      return String(year).trim();
+    }
+    return SCORING.tie_break_seed || '';
+  }
+
   function getEligibleZonesForClaim(claim) {
     if (params.mockFail === 'getEligibleZonesForClaim') {
       throw new Error('Mock failure: getEligibleZonesForClaim.');

@@ -210,6 +210,20 @@
     rank: []            // rank of desks[movable] per person; filled from K
   };
 
+  /* Illustrative names for the ranks that are neither the contested desk nor
+     the movable one. Deterministic, so the figure does not reshuffle as the
+     reader drags. Two disjoint pools so the two lists look like two people's
+     lists rather than the same one twice. */
+  var FIG_A_FILLERS = [
+    ['Desk 12', 'Desk 14', 'Desk 16', 'Desk 18', 'Desk 20'],
+    ['Desk 3', 'Desk 5', 'Desk 9', 'Desk 11', 'Desk 21']
+  ];
+
+  function figAFiller(personIndex, rowIndex) {
+    var pool = FIG_A_FILLERS[personIndex % FIG_A_FILLERS.length];
+    return pool[rowIndex % pool.length];
+  }
+
   function figADefaults() {
     var k = K();
     /* Person 0 has a shallow drop-off, person 1 a steep one — the whole point
@@ -319,13 +333,23 @@
     var b = boot() || {};
     var seed = b.seedString || APP.seedString || '';
     setKey('seed', seed || '(not set in scoring.json)');
+    /* Two different regimes, and the wrong caption undermines the whole
+       section. When the seed is the cycle YEAR it is public by construction --
+       there is nothing to announce and no announcement to be late. Only a
+       hand-chosen string needs a commitment timestamp, and only then is a
+       missing one worth flagging. */
     var when = b.seedCommittedAt;
-    if (when) {
+    if (/^\d{4}$/.test(seed)) {
+      setKey('seed-when',
+        'The calendar year of this cycle. Nobody chooses it, so it was fixed ' +
+        'and knowable before anybody submitted anything.');
+    } else if (when) {
       setKey('seed-when', 'Announced ' + APP.util.formatWhen(when) + ', before this form opened.');
     } else {
       setKey('seed-when',
         'No commitment timestamp is recorded in scoring.json yet — ' +
-        'the seed above is only meaningful once the coordinator has announced it publicly.');
+        'this seed was chosen by hand and is only meaningful once it has been ' +
+        'announced publicly.');
     }
   }
 
@@ -479,7 +503,14 @@
           r.label.textContent = movable.short || movable.name;
           r.pts.textContent = pts(pointsForRank(i + 1));
         } else {
-          r.label.innerHTML = '<span class="muted">another desk</span>';
+          /* Named and marked taken, rather than "another desk". Both people
+             really did rank a full list of K; three of each list are already
+             gone, which is why only two desks are in play. Saying "another
+             desk" made the figure look like a two-desk example, which is not
+             what anybody is being asked to submit. */
+          r.label.innerHTML =
+            '<span class="muted">' + esc(figAFiller(pi, i)) + '</span>' +
+            '<span class="xp-gone">taken</span>';
           r.pts.textContent = fmt(pointsForRank(i + 1));
         }
 

@@ -337,7 +337,7 @@ function getBootstrap() {
     ok: true,
     k: k,
     curve: curve,
-    seedString: scoring.tie_break_seed || '',
+    seedString: resolvedSeed_(scoring),
     seedCommittedAt: scoring.seed_committed_at || null,
     deadlineIso: deadline.iso,
     deadlinePassed: deadline.passed,
@@ -1121,6 +1121,46 @@ function firstChoiceCounts_(responses) {
  * eligibility zones: the rule table says where somebody may be *assigned*, and
  * staying put is not an assignment. The coordinator sees every claim in the tab.
  * ======================================================================== */
+
+/**
+ * The tie-break seed, resolved the way the solver resolves it.
+ *
+ * Mirrors deskmatch.types.Scoring.resolved_seed(): `seed_year` governs when
+ * present, "auto" means the calendar year, and `tie_break_seed` is the fallback
+ * for a config that predates the year seed.
+ *
+ * This used to read `scoring.tie_break_seed` directly. Since scoring.json
+ * switched to `"seed_year": "auto"` there is no such key, so the form has been
+ * publishing an empty seed — the one number the explainer exists to show. Two
+ * separate mistakes stacked: reading a key that is gone, and having no notion of
+ * what "auto" resolves to.
+ *
+ * The year comes from the script's own timezone (appsscript.json), not UTC, so
+ * that a coordinator in Michigan opening the form late on 31 December sees the
+ * same year the solver will use when it runs. Across a New Year boundary the
+ * form and a later solve could still disagree, which is why the solver records
+ * the year it actually used in results.json rather than trusting this.
+ */
+function resolvedSeed_(scoring) {
+  scoring = scoring || {};
+  var year = scoring.seed_year;
+  if (year !== undefined && year !== null && year !== '') {
+    if (typeof year === 'string' && year.trim().toLowerCase() === 'auto') {
+      return Utilities.formatDate(new Date(), scriptTimeZone_(), 'yyyy');
+    }
+    return String(year).trim();
+  }
+  return scoring.tie_break_seed || '';
+}
+
+/** The script's timezone, falling back to the session's and then to UTC. */
+function scriptTimeZone_() {
+  try {
+    var tz = Session.getScriptTimeZone();
+    if (tz) { return tz; }
+  } catch (e) { /* fall through */ }
+  return 'Etc/UTC';
+}
 
 /* The two phases. They are mutually exclusive by construction: there is one
  * script property and it has two values. */

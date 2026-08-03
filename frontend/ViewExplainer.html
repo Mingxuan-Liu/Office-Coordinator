@@ -41,6 +41,30 @@
 #view-explainer .xp-sec:focus { outline: none; }
 #view-explainer .xp-sec > * + * { margin-top: var(--s-4); }
 
+#view-explainer .xp-gone {
+  margin-left: var(--s-2);
+  padding: 0 .4em;
+  border-radius: var(--radius-1);
+  background: var(--surface-3, rgba(128,128,128,.18));
+  font-size: var(--fs-2xs, .7rem);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-3, #888);
+}
+#view-explainer .xp-eq {
+  margin: var(--s-3) 0;
+  padding: var(--s-3) var(--s-4);
+  background: var(--surface-2);
+  border-radius: var(--radius-2);
+  text-align: center;
+  font-size: var(--fs-md);
+  overflow-x: auto;
+}
+#view-explainer .xp-h3 {
+  margin: var(--s-5) 0 var(--s-2);
+  font-size: var(--fs-md);
+  font-weight: 650;
+}
 #view-explainer .xp-h {
   counter-increment: xpsec;
   display: grid;
@@ -455,7 +479,6 @@
 </div>
 
 <nav class="xp-jump" aria-label="Jump to a section" data-xp-jump hidden>
-  <button type="button" data-xp-goto="xp-sec-race">Racing</button>
   <button type="button" data-xp-goto="xp-sec-objective">The objective</button>
   <button type="button" data-xp-goto="xp-sec-global">Global vs. greedy</button>
   <button type="button" data-xp-goto="xp-sec-floor">The top-K floor</button>
@@ -465,40 +488,6 @@
 </nav>
 
 <div class="xp-body">
-
-  <!-- =====================================================================
-       1. Why ranking beats racing
-       ===================================================================== -->
-  <section class="xp-sec" id="xp-sec-race" tabindex="-1">
-    <h2 class="xp-h"><span>Why ranking beats racing</span></h2>
-
-    <p>
-      The previous process was a shared document that opened at an announced
-      time. Everyone piled in at once and typed their name next to a desk.
-      Whoever&rsquo;s laptop woke up first got the window.
-    </p>
-    <p>
-      That process was optimising something. Just not preference. It rewarded
-      being awake, being on a fast connection, and not being mid-observing-run
-      in Chile. It also quietly punished caring: if the one desk you actually
-      wanted was gone in the first four seconds, you were left choosing between
-      options you were indifferent about, with no way to say so.
-    </p>
-    <p>
-      Here, <strong>submission time is not an input to the answer</strong>. Not
-      as a tie-break, not as a tie-break of a tie-break. The only thing
-      timestamps are used for is deciding which of <em>your own</em> submissions
-      is the latest. Submit in the first minute or the last; change your mind
-      six times; the result is identical. The solver is a pure function of
-      (responses, config, seed) &mdash; same inputs, byte-identical output file,
-      on any machine.
-    </p>
-    <p class="xp-lead-in">
-      What replaces the race is an ordering. You say which desks you want and in
-      what order. Everyone else does the same. Then one calculation seats
-      everybody.
-    </p>
-  </section>
 
   <!-- =====================================================================
        2. What "maximise total satisfaction" means  (THE WORKED EXAMPLE)
@@ -523,21 +512,83 @@
       <b class="num" data-xp="ck">&hellip;</b>.
     </p>
     <p>
-      The solver returns the seating that makes <strong>the sum of everyone&rsquo;s
-      points as large as it can possibly be</strong>. That sentence does more
-      work than it looks like it does, because what you <em>lose</em> by being
-      moved off a desk depends on how far down your list the next available desk
-      sits &mdash; and that differs enormously between people.
+      The solver picks the seating that makes <strong>the total of everyone&rsquo;s
+      points as large as it can possibly be</strong>. Written out: let
+      <code>x<sub>pd</sub></code> be 1 if person <em>p</em> sits at desk
+      <em>d</em> and 0 otherwise, and let <code>w<sub>pd</sub></code> be the
+      curve value for the rank <em>p</em> gave <em>d</em>. The solver maximises
+    </p>
+
+    <p class="xp-eq"><code>&Sigma;<sub>p</sub> &Sigma;<sub>d</sub>
+      w<sub>pd</sub> &middot; x<sub>pd</sub></code></p>
+
+    <p>
+      subject to: everyone gets exactly one desk, no desk gets two people, and
+      <code>x<sub>pd</sub></code> is only allowed to be 1 when <em>d</em> is
+      inside <em>p</em>&rsquo;s top <span class="num" data-xp="k">&hellip;</span>
+      <em>and</em> in a zone open to them. That is a textbook
+      <strong>assignment problem</strong>. Two consequences are worth knowing.
     </p>
 
     <p>
-      Two people. Both put the same desk first. Only one can have it. The
-      question the solver asks is not who wants it more &mdash; the curve gives
-      both of them <b class="num" data-xp="c1">&hellip;</b> for a first choice,
-      so &ldquo;wanting it more&rdquo; is not something this form can express.
-      The question is <strong>what it costs to move each of them off it</strong>.
+      <strong>Under this year&rsquo;s curve, the objective is exactly
+      &ldquo;make the sum of everyone&rsquo;s rank numbers as small as
+      possible&rdquo;.</strong> The curve is linear, so a rank-<em>r</em> desk is
+      worth <code>K+1&minus;r</code> points, and the total over
+      <span class="num" data-xp="n-people">n</span> people is
+      <code>n(K+1) &minus; &Sigma;r</code>. The first term does not depend on who
+      sits where, so maximising points and minimising the total of the rank
+      numbers are the same problem. If ten people get their 1st choice and two
+      get their 3rd, that total is <code>10&times;1 + 2&times;3 = 16</code>, and
+      the solver returns a seating for which no smaller total exists.
     </p>
 
+    <p>
+      <strong>&ldquo;Optimal&rdquo; here means proven, not
+      approximately&nbsp;good.</strong> An assignment problem is a linear
+      program whose constraint matrix is totally unimodular, which means the
+      best fractional answer is already a whole-number one &mdash; so the exact
+      optimum can be found in polynomial time rather than searched for. The
+      solver uses the Jonker&ndash;Volgenant algorithm; for a department this
+      size it finishes in well under a millisecond, and it is exhaustive. There
+      is no heuristic, no iteration limit, and nothing that could have found a
+      better seating and stopped early.
+    </p>
+
+    <h3 class="xp-h3">What the objective can and cannot see</h3>
+
+    <p>
+      This is the part worth being precise about, because the loose version of
+      it is wrong. On a linear curve, moving one person up one place gains
+      exactly <b class="num">1</b> point and moving another down one place loses
+      exactly <b class="num">1</b>. <strong>Those cancel.</strong> A
+      straight one-for-one swap is not an improvement and not a loss &mdash; it
+      is an <em>exact tie</em>, and the published seed is what settles it.
+    </p>
+    <p>
+      What the objective <em>can</em> see is <strong>unequal</strong> movement.
+      If giving a desk to somebody else costs you one place but saves them
+      three, the total falls by two, and that seating is strictly better. So
+      &ldquo;the person who loses more by not getting it&rdquo; has a precise
+      meaning here: <strong>the one who would fall further down their own
+      list</strong>, counted in list positions. Not who wants it more &mdash;
+      the form has no way to say that, and does not try.
+    </p>
+    <p>
+      A convex curve would change the arithmetic. On
+      <code>16&nbsp;8&nbsp;4&nbsp;2&nbsp;1</code>, dropping somebody from 1st to
+      2nd costs 8 while lifting somebody else from 4th to 3rd gains only 2, so
+      that curve buys first choices at the price of pushing other people further
+      down. The results report shows the outcome under the alternatives as well
+      as the one in use, so you can see whether the choice of curve actually
+      moved anybody this year.
+    </p>
+
+    <p>
+      A worked example. Two people, both with a full list of
+      <span class="num" data-xp="k">&hellip;</span>; three desks on each list are
+      already taken by people keeping their seats, so only two are still in play.
+    </p>
     <figure class="xp-fig" data-xp-figa>
       <div class="xp-fig__head">
         <p class="xp-fig__title">Live: two people, one contested desk</p>
@@ -573,11 +624,15 @@
 
     <p>
       Note what did <em>not</em> decide this: not who submitted first, not
-      seniority, not who wrote a more emphatic justification. The contested desk
-      goes to the person whose alternatives are worse. Move the highlighted row
-      so both people have the same fallback and watch the two totals become
-      exactly equal &mdash; that is the one and only situation where the
-      published seed does anything, and it is dealt with further down.
+      seniority, not who argued hardest. The contested desk goes to whoever
+      would fall further down their own list without it.
+    </p>
+    <p>
+      Now drag the movable row so <em>both</em> people would fall the same
+      number of places. The two totals become identical &mdash; not close,
+      identical &mdash; because on a linear curve equal falls cancel exactly.
+      That is a genuine draw, and it is the only situation in which the seed
+      does anything at all.
     </p>
   </section>
 
@@ -711,11 +766,13 @@
        5. Ties and the seed
        ===================================================================== -->
   <section class="xp-sec" id="xp-sec-ties" tabindex="-1">
-    <h2 class="xp-h"><span>Ties, and why the seed is published first</span></h2>
+    <h2 class="xp-h"><span>Ties, and what the seed can do</span></h2>
 
     <p>
-      Two different seatings can score exactly the same total. Something has to
-      choose. Here is exactly what does, and exactly how much it is capable of.
+      Exact ties are not a corner case here &mdash; on a linear curve they are
+      routine. Any two people who would fall the same number of places produce
+      seatings with identical totals, so something has to choose. Here is
+      exactly what does, and exactly how much it is capable of.
     </p>
 
     <div class="xp-seedbox" data-xp-seedbox>
@@ -725,9 +782,12 @@
     </div>
 
     <p>
-      It is announced before the form opens. SHA-256 of that string gives an
-      integer; that integer seeds NumPy&rsquo;s PCG64 generator; that stream
-      does two things, and only two:
+      It is the calendar year of the cycle, and nothing else. Nobody picks it,
+      so nobody can shop for a favourable one &mdash; it is fixed and public
+      before anybody submits anything, including the coordinator, who is also
+      competing for a desk. SHA-256 of that string gives an integer; that
+      integer seeds NumPy&rsquo;s PCG64 generator; that stream does two things,
+      and only two:
     </p>
     <ul class="xp-bullets">
       <li><strong>It shuffles the rows and columns</strong> before solving and
@@ -753,6 +813,11 @@
     <p>
       Plainly: <strong>the seed cannot make you lose a contest you won. It can
       only settle a genuine draw.</strong>
+    </p>
+    <p>
+      The year is recorded in <code>results.json</code> when the solve runs, so
+      re-running the 2026 cycle in 2028 reproduces 2026&rsquo;s answer rather
+      than silently re-drawing it with a new seed.
     </p>
     <p>
       Why not break ties alphabetically, or by year, or by seniority? Because
