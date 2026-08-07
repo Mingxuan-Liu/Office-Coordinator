@@ -407,20 +407,25 @@ def test_zone_starved_cohort_blames_the_zone_not_the_building(
 
 @pytest.mark.parametrize("k", K_VALUES)
 @pytest.mark.parametrize("n_desks_extra", (0, 3))
-def test_empty_roster_is_a_readable_config_error(k, n_desks_extra, world_config_dir):
-    """Zero people is degenerate, not undefined: it must not be a traceback."""
+def test_an_empty_roster_is_valid(k, n_desks_extra, world_config_dir):
+    """A header-only roster is the normal configuration, not a fault.
+
+    The department decided the domain-restricted link is the membership check,
+    so there is nothing to list. `config/roster.csv` ships empty and everything
+    that reads it degrades to doing nothing: no "did not submit" warnings, no
+    cohort-capacity check, no conflicts. It must not be an error, and it must
+    not be a warning either -- a warning on every single run for the intended
+    state is a warning nobody reads.
+    """
     case = synth.empty_roster(n_desks=k + n_desks_extra, k=k, seed=f"empty-k{k}")
     config_dir, _responses = world_config_dir(case.world)
     assert case.world.n_people == 0
 
-    with only_deskmatch_errors("loading a header-only roster"):
-        with pytest.raises(ConfigError) as excinfo:
-            load_config(config_dir)
-
-    assert excinfo.value.exit_code == 4
-    problem = find_problem(excinfo.value.problems, where="roster.csv", what="no people")
-    assert "roster.csv" in problem.where
-    assert problem.hint, "an empty roster is a mistake worth explaining"
+    config = load_config(config_dir)          # must not raise
+    assert config.roster.people == ()
+    assert not [w for w in config.warnings if "roster" in w.lower() and "no people" in w.lower()], (
+        "an intentionally empty roster must be silent: " + repr(config.warnings)
+    )
 
 
 @pytest.mark.parametrize("k", K_VALUES)
@@ -830,14 +835,24 @@ def test_an_empty_desk_pool_is_a_readable_error(k, n_people, world_config_dir):
 
 @pytest.mark.parametrize("k", SMALL_K)
 @pytest.mark.parametrize("n_people", (3, 7))
-def test_a_submission_from_someone_not_on_the_roster_is_an_error(
+def test_a_submission_from_someone_not_on_the_roster_is_admitted(
     k, n_people, world_config_dir
 ):
-    """SPEC §3.3: membership is an ERROR, not a warning. Someone outside the
-    department must not be able to walk into the pool."""
+    """The pool is whoever submitted. The roster does not gate it.
+
+    This used to be a hard error, on the reasoning that somebody outside the
+    department must not be able to walk into the pool. Google already prevents
+    that -- the web app is deployed domain-restricted, so an outsider cannot
+    reach the form to submit at all. What the rule actually did was lock out
+    real students whose roster row was missing or misspelled, after they had
+    filled the form in good faith.
+
+    So an off-roster submitter must be seated like anybody else, with their name
+    and candidacy taken from what they themselves submitted.
+    """
     world = synth.generate(
         n_people,
-        n_desks=n_people + k,
+        n_desks=n_people + k + 2,
         k=k,
         seed=f"intruder-k{k}-n{n_people}",
         n_zones=1,
@@ -850,26 +865,24 @@ def test_a_submission_from_someone_not_on_the_roster_is_an_error(
 
     rows = list(csv.reader(io.StringIO(responses_path.read_text(encoding="utf-8"))))
     header, data = rows[0], rows[1:]
-    intruder = dict(zip(header, data[0]))
-    intruder["email"] = "not.on.the.roster@umich.edu"
-    intruder["submission_id"] = "intruder-row"
-    data.append([intruder[column] for column in header])
+    newcomer = dict(zip(header, data[0]))
+    newcomer["email"] = "new.arrival@umich.edu"
+    newcomer["name"] = "New Arrival"
+    newcomer["submission_id"] = "newcomer-row"
+    data.append([newcomer[column] for column in header])
     write_text(responses_path, dump_csv_text(header, [dict(zip(header, r)) for r in data]))
 
     loaded = responses_mod.load_responses(str(responses_path), config.k)
-    assert "not.on.the.roster@umich.edu" in loaded.latest, (
-        "the loader itself has no roster; membership is the problem builder's job"
+    assert "new.arrival@umich.edu" in loaded.latest
+
+    report = problem_mod.build_problem(config, loaded)
+    assert "new.arrival@umich.edu" in report.problem.people, (
+        "somebody who submitted must be in the pool whether or not a CSV "
+        "elsewhere happens to list them"
     )
-
-    with only_deskmatch_errors("building a problem with an off-roster submission"):
-        with pytest.raises(ResponseError) as excinfo:
-            problem_mod.build_problem(config, loaded)
-
-    assert excinfo.value.exit_code == 4
-    complaint = find_problem(excinfo.value.problems, what="not on the roster")
-    assert "not.on.the.roster@umich.edu" in complaint.where
-    assert str(responses_path) in complaint.where, "name the file it came from"
-    assert "roster.csv" in complaint.hint
+    assert report.problem.person_names["new.arrival@umich.edu"] == "New Arrival", (
+        "with no roster row, the name they submitted is the name on record"
+    )
 
 
 @pytest.mark.parametrize("k", SMALL_K)

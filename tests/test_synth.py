@@ -231,6 +231,19 @@ class TestRealLoaderAcceptance:
         scoring = json.loads((real_config_dir / "scoring.json").read_text())
         with open(real_config_dir / "roster.csv", newline="", encoding="utf-8") as handle:
             roster_rows = list(csv.DictReader(handle))
+        if not roster_rows:
+            # config/roster.csv ships EMPTY -- the domain-restricted link is the
+            # membership check, so there is nobody to list. The point of this
+            # test is that the department's own rooms / eligibility / scoring can
+            # be handed to the generator verbatim, so supply people and keep
+            # reusing the three files that matter.
+            roster_rows = [
+                {"name": f"Synthetic {i}", "email": f"synthetic{i}@umich.edu",
+                 "year": str(1 + i % 5),
+                 "candidacy": "precandidate" if i % 3 == 0 else "candidate",
+                 "keeps_desk": "no", "current_desk": ""}
+                for i in range(8)
+            ]
 
         world = synth.generate(
             rooms=rooms, eligibility=eligibility, scoring=scoring,

@@ -184,11 +184,28 @@
     <div class="card__head"><h2>Check your details</h2></div>
     <div class="card__body stack">
       <p class="small muted">
-        The roster is often out of date, so correct it here. Your candidacy is the
-        answer the solver acts on; your year is kept with your response for the
-        coordinator&rsquo;s records. Both are reported back, so the roster itself
-        can be fixed at the source.
+        Your candidacy is the answer the solver acts on. Your name and year are
+        recorded with your response and change nothing about which desks you can
+        rank.
       </p>
+
+      <!-- Google hands us an email and nothing else: there is no name in the
+           Apps Script session API without adding an OAuth scope and the People
+           API, which is a lot of machinery for one string. So we ask. It is
+           required because the published assignment list should read as names,
+           not as uniqnames. -->
+      <div class="field">
+        <label class="field__label" for="login-name">Your name</label>
+        <input class="input" id="login-name" type="text" autocomplete="name"
+               spellcheck="false" required
+               aria-describedby="login-name-help"
+               placeholder="How you want to appear in the results">
+        <span class="field__help" id="login-name-help">
+          This is the name that appears next to your desk when the results are
+          published.
+        </span>
+        <span class="field__error" id="login-name-error" hidden></span>
+      </div>
 
       <div class="field-row">
         <div class="field">
@@ -265,7 +282,7 @@
   var el = U.el, esc = U.esc, trim = U.trim, lower = U.lower;
 
   var LOGIN = 'login';
-  var OTHER = ' other';            /* sentinel: "type it yourself" option */
+  var OTHER = '\u0000other';            /* sentinel: "type it yourself" option */
   var ELIG_DEBOUNCE_MS = 350;
 
   function isArr(v) { return Object.prototype.toString.call(v) === '[object Array]'; }
@@ -549,6 +566,9 @@
       authMethod: lower(person.authMethod) || 'self_select',
       allowedZones: isArr(person.allowedZones) ? person.allowedZones.slice() : null
     };
+    var nameInput = el('login-name');
+    if (nameInput) { nameInput.value = sel.name || ''; }
+    fieldError('login-name-error', '');
     var yearInput = el('login-year');
     if (yearInput) { yearInput.value = (sel.year === null) ? '' : sel.year; }
     fieldError('login-year-error', '');
@@ -569,8 +589,16 @@
 
   function readForm() {
     if (!sel) { return; }
+    sel.name = readName();
     sel.candidacy = readCandidacy();
     sel.year = readYear();
+  }
+
+  /* Collapse runs of whitespace so "Ada   Lovelace" and "Ada Lovelace" are the
+     same name in the results table. */
+  function readName() {
+    var box = el('login-name');
+    return box ? trim(box.value).replace(/\s+/g, ' ') : '';
   }
 
   /* True when the candidacy in hand is still the roster's. Not shown to anyone:
@@ -691,6 +719,9 @@
     var out = [];
     if (!sel) { out.push('Choose your name first.'); return out; }
     if (isKeeper(sel.email)) { out.push('You are not in the draw.'); return out; }
+    if (!trim(sel.name)) {
+      out.push('Give your name, so the results read as names rather than email addresses.');
+    }
     if (!trim(sel.candidacy)) { out.push('Choose or type your candidacy status.'); }
     return out;
   }
@@ -833,6 +864,18 @@
        would be asking it the same question and getting the same answer. If you
        ever find yourself adding it here, check Code.gs CONFIRMED_FIELDS first —
        the two would have to change together, and neither should. */
+    /* The name changes nothing about eligibility, so this deliberately does NOT
+       call requestEligibility() -- no reason to ask the server on every
+       keystroke of somebody's surname. */
+    var nameBox = el('login-name');
+    if (nameBox) {
+      nameBox.addEventListener('input', function () {
+        readForm();
+        fieldError('login-name-error', '');
+        paintActions();
+      });
+    }
+
     var year = el('login-year');
     if (year) {
       year.addEventListener('input', function () {

@@ -1660,12 +1660,14 @@ def validate_roster(
             )
 
     if not rows:
-        ctx.error(
-            f"{ROSTER_FILE}: (no data rows)",
-            "contains a header but no people.",
-            "Export the department roster into this file; the solver matches every"
-            " response against it.",
-        )
+        # An empty roster is the normal configuration, not a fault.
+        #
+        # The web app is deployed domain-restricted, so Google has already
+        # established that whoever is filling the form is in the department.
+        # Re-listing everybody in a CSV added a second thing to keep in sync and
+        # a second way to be wrong -- a missing row locked a real student out of
+        # a process the link had already invited them into. The pool is now
+        # whoever submits; the roster, when present, is optional annotation.
         return ctx
 
     seen_emails: dict[str, int] = {}      # normalised email -> line number

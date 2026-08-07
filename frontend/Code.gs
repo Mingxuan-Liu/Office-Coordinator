@@ -217,11 +217,24 @@ function getBootstrap() {
   // handled: we fall back to self-select and record that in auth_method.
   var sessionEmail = activeEmail_();
   var matched = sessionEmail ? findRosterRow_(roster, sessionEmail) : null;
+
+  // Signed in but not on the roster is NORMAL, not a warning. The roster is
+  // optional now (it ships empty) and the domain-restricted deployment is what
+  // establishes membership; anybody Google can name is somebody who belongs.
+  // A synthetic row carries them through the rest of this function so every
+  // caller downstream sees the same shape whether or not a CSV listed them.
   if (sessionEmail && !matched) {
-    warnings.push(
-      'You are signed in as ' + sessionEmail + ', which is not on the roster. ' +
-      'Pick your name from the list, or ask the coordinator to add you.'
-    );
+    matched = {
+      email: sessionEmail,
+      name: '',                 // Google will not tell us; the form asks
+      year: '',
+      candidacy: '',
+      keepsDesk: false,
+      currentDesk: '',
+      attributes: { email: sessionEmail, name: '', year: '', candidacy: '',
+                    keeps_desk: 'no', current_desk: '' },
+      fromRoster: false
+    };
   }
 
   var person = null;
@@ -409,7 +422,15 @@ function getEligibleZonesForClaim(claim) {
     var roster = rosterRows_();
     var row = findRosterRow_(roster, normEmail_(claim.email));
     if (!row) {
-      return { ok: false, error: 'That email address is not on the roster.', zones: [] };
+      // Not listed is not an error: the roster is optional. Evaluate the rule
+      // table against what they have told us instead, which for zones is the
+      // candidacy they just picked.
+      row = {
+        email: normEmail_(claim.email), name: '', year: '', candidacy: '',
+        keepsDesk: false, currentDesk: '',
+        attributes: { email: normEmail_(claim.email), name: '', year: '',
+                      candidacy: '', keeps_desk: 'no', current_desk: '' }
+      };
     }
     // The submitted candidacy governs; see the note in submitRanking(). This
     // must agree with the submit path exactly, or the form shows one set of
@@ -684,21 +705,45 @@ function submitRanking(payload) {
   }
 
   // ---- identity ---------------------------------------------------------
+  // Roster membership is NOT a gate.
+  //
+  // It used to be: an email the roster did not list was refused, so that
+  // somebody outside the department could not enter the pool. Google already
+  // guarantees that -- the web app is deployed to the UMich domain only, so a
+  // stranger cannot load this page, let alone post to it. The rule's real
+  // effect was to turn a missing or misspelled CSV row into a locked-out
+  // student, discovered at the moment they tried to submit.
+  //
+  // The roster is now optional annotation. When a row exists it supplies the
+  // authoritative name and tells us whether they are keeping a desk; when it
+  // does not, the person speaks for themselves and we record what they typed.
   var email = normEmail_(payload.email);
   var person = null;
   if (!email) {
-    errors.push('No email address was submitted. Reload the page and choose your name.');
+    errors.push('No email address was submitted. Reload the page and sign in again.');
   } else {
     person = findRosterRow_(roster, email);
-    if (!person) {
-      errors.push('"' + email + '" is not on the department roster, so it cannot enter the ' +
-        'desk pool. Email the coordinator to be added.');
-    } else if (person.keepsDesk) {
+    if (person && person.keepsDesk) {
       errors.push(person.name + ' is down as keeping ' +
         deskDescription_(deskIndex, person.currentDesk) + ', so is not in the draw. ' +
-        'If that is wrong, the roster needs fixing before you can submit.');
+        'Email the coordinator if that is wrong.');
     }
   }
+
+  // Google gives us an email and nothing else -- there is no name API without
+  // pulling in an extra OAuth scope and the People API, which is a lot of
+  // machinery for one string. So the name is asked for, and it is required:
+  // an assignment list of bare uniqnames is no use to anybody reading it.
+  var submittedName = String(payload.name === undefined || payload.name === null
+    ? '' : payload.name).trim().replace(/\s+/g, ' ');
+  if (!submittedName && !(person && person.name)) {
+    errors.push('Please give your name, so the results list reads as names rather ' +
+      'than email addresses.');
+  }
+  /* What actually gets written. Falls back through: what they typed, the roster
+     row if there is one, then the email -- never undefined, because `person` is
+     null for anybody the (optional) roster does not list. */
+  var recordName = submittedName || (person && person.name) || email;
 
   // A Google identity, when we have one, pins the submission to that person.
   // Self-select is a convenience for people we cannot identify, not a way to
@@ -882,7 +927,7 @@ function submitRanking(payload) {
         case 'submission_id': return submissionId;
         case 'timestamp': return timestampIso;
         case 'email': return email;
-        case 'name': return String(payload.name || '').trim() || person.name;
+        case 'name': return recordName;
         case 'candidacy': return candidacy;
         case 'year': return year;             // recorded; read by nobody here
         default: return '';
@@ -909,7 +954,7 @@ function submitRanking(payload) {
     // did not save" instead of throwing away a ranking that is already on disk.
     var noteWrite = { recorded: false, withdrawn: false, error: '' };
     try {
-      noteWrite = recordAccommodation_(email, String(payload.name || '').trim() || person.name,
+      noteWrite = recordAccommodation_(email, recordName,
         note.text, String(payload.clientVersion || '').trim() || clientVersion_(), timestampIso);
     } catch (errNote) {
       noteWrite = { recorded: false, withdrawn: false, error: errText_(errNote) };
@@ -1384,17 +1429,25 @@ function claimDesk(payload) {
   }
 
   // ---- identity ---------------------------------------------------------
+  // Roster membership is not a gate here either; see submitRanking(). Somebody
+  // who has sat at a desk all year must be able to keep it whether or not a CSV
+  // lists them, and the domain-restricted deployment is what establishes that
+  // they belong.
   var email = normEmail_(payload.email);
   var person = null;
   if (!email) {
-    errors.push('No email address was submitted. Reload the page and choose your name.');
+    errors.push('No email address was submitted. Reload the page and sign in again.');
   } else {
     person = findRosterRow_(roster, email);
-    if (!person) {
-      errors.push('"' + email + '" is not on the department roster, so it cannot claim a ' +
-        'desk. Email the coordinator to be added.');
-    }
   }
+  var claimName = String(payload.name === undefined || payload.name === null
+    ? '' : payload.name).trim().replace(/\s+/g, ' ');
+  if (!claimName && !(person && person.name)) {
+    errors.push('Please give your name, so the coordinator knows who is keeping ' +
+      'which desk.');
+  }
+  var recordName = claimName || (person && person.name) || email;
+
   var sessionEmail = activeEmail_();
   if (sessionEmail && email && sessionEmail !== email && !proxySubmitAllowed_()) {
     errors.push('You are signed in as ' + sessionEmail + ' but tried to claim a desk as ' +
@@ -1465,7 +1518,7 @@ function claimDesk(payload) {
         case 'claim_id': return claimId;
         case 'timestamp': return timestampIso;
         case 'email': return email;
-        case 'name': return String(payload.name || '').trim() || person.name;
+        case 'name': return recordName;
         case 'desk_id': return desk.id;
         case 'keeping': return keeping ? 'yes' : 'no';
         case 'client_version': return String(payload.clientVersion || '').trim() || clientVersion_();

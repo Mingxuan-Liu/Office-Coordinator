@@ -51,25 +51,65 @@ def inputs(real_config_dir, real_responses_csv):
 
 @pytest.fixture
 def keeper(real_config):
+    """A roster row that records a kept desk.
+
+    config/roster.csv ships EMPTY, so this normally skips -- the cross-check it
+    guards only has anything to reconcile when a roster exists. The tests that
+    do not need one (below) build their claim logs directly.
+    """
     who = [p for p in real_config.roster.people if p.keeps_desk and p.current_desk]
     if not who:
-        pytest.skip("the shipped roster has no desk keeper")
+        pytest.skip("the shipped roster is empty, so there is nothing to reconcile")
     return who[0]
 
 
 @pytest.fixture
-def mover(real_config):
+def mover(real_config, real_responses_csv):
+    """Somebody in the pool who is not keeping a desk.
+
+    Taken from the responses when the roster is empty, which is the shipped
+    state: the pool is whoever submitted.
+    """
     who = [p for p in real_config.roster.people if not p.keeps_desk]
-    if not who:
-        pytest.skip("the shipped roster is all keepers")
-    return who[0]
+    if who:
+        return who[0]
+
+    from types import SimpleNamespace
+
+    from deskmatch import responses as responses_mod
+
+    if not real_responses_csv.is_file():
+        pytest.skip("no roster and no response export to draw a person from")
+    latest = responses_mod.load_responses(
+        str(real_responses_csv), real_config.k
+    ).latest
+    if not latest:
+        pytest.skip("no submissions to draw a person from")
+    sub = latest[sorted(latest)[0]]
+    return SimpleNamespace(
+        email=sub.email, name=sub.name, keeps_desk=False, current_desk=None
+    )
 
 
 class TestTheGuard:
     def test_an_unmerged_claim_stops_the_run(self, tmp_path, inputs, mover, real_config):
         """The case that matters: somebody claimed a desk, the roster does not
-        know, and without this the solver would give that desk away."""
+        know, and without this the solver would give that desk away.
+
+        Needs a config that HAS a roster. The shipped one is empty, and with no
+        roster there is nothing for a claim to be out of sync with -- the claim
+        log is simply used as the record. The guard exists for the other setup,
+        where merge_keepers.py writes into a roster and can be skipped.
+        """
         config_dir, responses = inputs
+        config_dir = tmp_path / "config_with_roster"
+        shutil.copytree(inputs[0], config_dir)
+        (config_dir / "roster.csv").write_text(
+            "name,email,year,candidacy,keeps_desk,current_desk\n"
+            f"{mover.name},{mover.email},1,candidate,no,\n",
+            encoding="utf-8",
+        )
+        real_config = load_config(config_dir)
         free = next(
             d.id for d in real_config.rooms.all_desks
             if d.id != (mover.current_desk or "")

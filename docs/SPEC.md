@@ -187,6 +187,17 @@ Vera Rubin,vera@umich.edu,1,precandidate,no,
 Jocelyn Bell,jbell@umich.edu,5,candidate,yes,D07
 ```
 
+**The roster is OPTIONAL and ships empty.** The web app is deployed
+domain-restricted, so Google already establishes that whoever fills the form
+belongs to the department; re-listing everybody in a CSV added a second thing to
+keep in sync and a second way to be wrong — a missing row locked a real student
+out of a process the link had already invited them into. The pool is **whoever
+submits**. A header-only roster is valid and silent.
+
+When rows *are* present they are annotation, not a gate: they supply an
+authoritative name and record who is keeping a desk. Nothing requires a
+submitter to appear here.
+
 - `email` is the primary key; lower-cased and trimmed on load; must be unique.
 - `year` integer ≥ 1.
 - `candidacy` free string (validated only against values used in eligibility rules;
@@ -292,8 +303,11 @@ The roster is stale by design (the coordinator says so). Resolution:
   unparseable year as 0 (§3.1) — and is never a conflict. An export from the
   cycle that did not collect the column must not report one bogus conflict per
   person.
-- Membership: an email not in the roster is an **error**, not a warning. Someone
-  outside the department must not be able to enter the pool.
+- Membership: an email not in the roster is **normal**. The pool is whoever
+  submitted; name, candidacy and year come from the submission itself. (This was
+  once an error, on the reasoning that an outsider must not enter the pool —
+  Google's domain restriction already prevents that, and the rule's real effect
+  was to lock out students whose row was missing.)
 - A roster member with no submission is a **warning**; they are excluded from the
   pool (they did not participate) and listed in the report.
 

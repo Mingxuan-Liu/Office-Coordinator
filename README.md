@@ -81,32 +81,23 @@ python -m deskmatch validate --config config/
 
 Do these in order. Each step says what to check before moving on.
 
-### 1. Update the roster — *the week before, once you know who is in*
+### 1. The roster — *optional, and empty by default*
 
-Edit `config/roster.csv`:
+`config/roster.csv` ships with a header and no rows, and that is a working
+configuration. The form is deployed to the UMich domain only, so Google decides
+who is in the department; the pool is whoever submits. Students give their own
+name and candidacy on the form and those are what get recorded.
 
-```csv
-name,email,year,candidacy,keeps_desk,current_desk
-Ada Lovelace,alovelace@umich.edu,5,candidate,no,
-Jocelyn Bell,jbell@umich.edu,6,candidate,yes,D07
-```
+You only need to touch this file if you want the extras a roster buys:
 
-- `email` is the key. It must match their UMich email exactly.
-- `candidacy` is the only field that affects seating. `year` is recorded
-  metadata: the form asks for it, writes it to the response row and shows it to
-  you in the coordinator report, and nothing decides anything from it.
-- `keeps_desk` = `yes` means they are staying where they are: **they and their
-  desk are both removed from the pool.** `current_desk` is then required.
-- `candidacy` drives which zones they may sit in. The values you use here must
-  match the ones in `config/eligibility.json`.
+- a list of who has **not** submitted yet, so you can chase them;
+- the cohort-capacity warning ("18 people can only sit in 12 desks");
+- `tools/merge_keepers.py`, if you would rather keep desk-keepers in the roster
+  than pass the claim log to the solver with `--keepers`.
 
-Stale data is fine — students confirm and correct their own candidacy and year on
-the form, and every difference is reported back to you. The two are not resolved
-the same way, deliberately: a corrected **candidacy** replaces the roster's and
-changes which desks that person may rank; a corrected **year** is reported and
-then dropped, and this file's value stays in force. So if you ever write an
-eligibility rule that reads `year` (the grammar allows it), it reads *your*
-roster, never a number a student typed — keep this column current if you do that.
+If you do fill it in, the columns are
+`name,email,year,candidacy,keeps_desk,current_desk`, `email` is the key, and
+nothing about it gates participation.
 
 ```bash
 python -m deskmatch validate --config config/

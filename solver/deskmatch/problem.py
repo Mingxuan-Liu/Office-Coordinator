@@ -136,6 +136,7 @@ def build_problem(
     config: Config,
     responses: Responses,
     curve_name: str | None = None,
+    claims: "tuple" = (),
 ) -> BuildReport:
     """Assemble the Problem. Raises ResponseError for conditions the coordinator
     must fix; everything survivable becomes a warning."""
@@ -166,11 +167,22 @@ def build_problem(
     # ---- desk pool -------------------------------------------------------
     all_desks = {d.id: d for d in config.rooms.all_desks}
 
-    locked: list[tuple[DeskId, PersonId]] = []
+    # Locked desks come from two places, and either may be empty.
+    #
+    #   roster.csv keeps_desk  -- the classic route, written by merge_keepers.py
+    #   the pre-lock claim log -- passed in via `deskmatch solve --keepers`
+    #
+    # With no roster the claim log is the only source, which is what makes the
+    # merge step optional rather than load-bearing. With both, they are unioned
+    # and the CLI has already cross-checked that they agree.
+    locked_by_email: dict[PersonId, DeskId] = {}
     for person in config.roster.people:
         if person.keeps_desk and person.current_desk:
-            locked.append((person.current_desk, person.email))
-    locked.sort()
+            locked_by_email[person.email] = person.current_desk
+    for claim in claims or ():
+        if getattr(claim, "keeping", False) and claim.desk_id:
+            locked_by_email[claim.email] = claim.desk_id
+    locked = sorted((desk, email) for email, desk in locked_by_email.items())
 
     unavailable = tuple(sorted(d.id for d in config.rooms.all_desks if not d.available))
     locked_ids = {desk for desk, _ in locked}
@@ -190,25 +202,89 @@ def build_problem(
         )
 
     # ---- people pool -----------------------------------------------------
+    #
+    # The pool is WHOEVER SUBMITTED, not the intersection of the roster and the
+    # responses.
+    #
+    # This used to reject a submission from an email the roster did not list,
+    # on the reasoning that somebody outside the department must not be able to
+    # enter the pool. Google already enforces that: the form is deployed
+    # domain-restricted, so an outsider cannot reach it to submit in the first
+    # place. What the rule actually did was lock out real students whose row was
+    # missing or misspelled -- after they had filled the form, and at the point
+    # where the coordinator could least afford to be debugging a CSV.
+    #
+    # The roster is now optional annotation. When a row exists it supplies the
+    # authoritative name and flags whether they are keeping a desk; when it does
+    # not, the submission speaks for itself.
     submitted = responses.latest
-    unknown_emails = sorted(set(submitted) - set(config.roster.emails))
-    for email in unknown_emails:
-        # SPEC §3.3: not on the roster is an error, not a warning. Someone
-        # outside the department must not be able to enter the pool.
-        problems.append(
-            Complaint(
-                where=f"{responses.source_path}: {email}",
-                what="submitted a ranking but is not on the roster",
-                hint="Add them to config/roster.csv if they belong, or remove the "
-                     "submission. The solver will not assign a desk to someone the "
-                     "roster does not list.",
-            )
-        )
+    by_email = {p.email: p for p in config.roster.people}
 
     pool_people: list[PersonId] = []
     effective: dict[PersonId, Person] = {}
 
+    for email in sorted(submitted):
+        sub = submitted[email]
+        person = by_email.get(email)
+        if person is None:
+            # Not on the roster: build them from what they told us. `attributes`
+            # still carries every roster column name the rule table might read,
+            # so an eligibility predicate keyed on a column this person has no
+            # value for simply does not match, rather than raising.
+            person = Person(
+                email=email,
+                name=(sub.name or "").strip() or email,
+                year=sub.year,
+                candidacy=(sub.candidacy or "").strip(),
+                keeps_desk=False,
+                current_desk=None,
+                attributes={
+                    "email": email,
+                    "name": (sub.name or "").strip() or email,
+                    "year": sub.year,
+                    "candidacy": (sub.candidacy or "").strip(),
+                    "keeps_desk": "no",
+                    "current_desk": "",
+                },
+            )
+            if not person.candidacy:
+                problems.append(
+                    Complaint(
+                        where=f"{responses.source_path}: {email}",
+                        what="submitted no candidacy, and is not on the roster "
+                             "either, so there is nothing to decide their zones from",
+                        hint="Either add them to config/roster.csv with a candidacy, "
+                             "or ask them to re-submit with one. The form requires "
+                             "it, so a blank here usually means a hand-edited file.",
+                    )
+                )
+                continue
+
+        held = locked_by_email.get(email)
+        if person.keeps_desk or held:
+            excluded.append(
+                ExcludedPerson(
+                    person.email, person.name,
+                    f"keeping their current desk ({person.current_desk or held})",
+                )
+            )
+            warnings.append(
+                f"{person.name} <{person.email}> is recorded as keeping desk "
+                f"{person.current_desk or held} but also submitted a ranking. The "
+                f"submission is ignored."
+            )
+            continue
+
+        eff, cs = _effective_person(person, sub)
+        conflicts.extend(cs)
+        effective[person.email] = eff
+        pool_people.append(person.email)
+
+    # Roster rows that did not submit. Only meaningful when there IS a roster --
+    # with an empty one this loop does nothing, which is the point.
     for person in config.roster.people:
+        if person.email in submitted:
+            continue
         if person.keeps_desk:
             excluded.append(
                 ExcludedPerson(
@@ -216,25 +292,12 @@ def build_problem(
                     f"keeping their current desk ({person.current_desk})",
                 )
             )
-            if person.email in submitted:
-                warnings.append(
-                    f"{person.name} <{person.email}> is marked as keeping desk "
-                    f"{person.current_desk} but also submitted a ranking. The "
-                    f"submission is ignored. Fix roster.csv if that is wrong."
-                )
             continue
-        sub = submitted.get(person.email)
-        if sub is None:
-            excluded.append(ExcludedPerson(person.email, person.name, "no submission"))
-            warnings.append(
-                f"{person.name} <{person.email}> did not submit and is excluded "
-                f"from the pool."
-            )
-            continue
-        eff, cs = _effective_person(person, sub)
-        conflicts.extend(cs)
-        effective[person.email] = eff
-        pool_people.append(person.email)
+        excluded.append(ExcludedPerson(person.email, person.name, "no submission"))
+        warnings.append(
+            f"{person.name} <{person.email}> is on the roster but did not submit, "
+            f"and is excluded from the pool."
+        )
 
     pool_people.sort()
 

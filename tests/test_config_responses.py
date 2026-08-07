@@ -891,11 +891,6 @@ ROSTER_RULES: list[BrokenRule] = [
         "Extra columns are fine",
     ),
     BrokenRule(
-        "no-data-rows", "§2.3 the roster lists people",
-        lambda c: c.roster_rows.clear(),
-        "roster.csv: (no data rows)", "contains a header but no people",
-    ),
-    BrokenRule(
         "completely-empty", "§2.3 the roster is a CSV",
         lambda c: c.set_raw("roster.csv", ""),
         "roster.csv", "is empty; there is not even a header row",
@@ -2203,6 +2198,25 @@ class TestAnonymisation:
 # ==========================================================================
 # Cross-file: does every cohort fit?
 # ==========================================================================
+
+
+def test_a_header_only_roster_is_accepted(case: ConfigCase):
+    """It used to be an error ("contains a header but no people").
+
+    It is now the shipped configuration. The domain-restricted link is the
+    membership check, so there is nothing to list; the pool is whoever submits.
+    Everything that reads the roster degrades to a no-op rather than
+    complaining, because a complaint on every run for the intended state is one
+    nobody reads -- and it would sit right next to the ones that matter.
+    """
+    case.roster_rows.clear()
+    config = case.load()
+    assert config.roster.people == ()
+    noisy = [
+        w for w in config.warnings
+        if "roster" in w.lower() and ("no people" in w.lower() or "empty" in w.lower())
+    ]
+    assert not noisy, "an empty roster must be silent, not merely non-fatal: " + repr(noisy)
 
 
 def test_a_cohort_that_cannot_fit_its_zone_warns_at_validate_time(case: ConfigCase):

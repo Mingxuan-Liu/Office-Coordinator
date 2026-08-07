@@ -518,7 +518,18 @@ def two_runs(tmp_path_factory, request):
 
     from deskmatch.config import load_config
 
-    roster = [p.email for p in load_config(config_dir).roster.people]
+    # People come from the RESPONSES, not the roster. config/roster.csv ships
+    # empty now -- the domain-restricted link is the membership check -- so the
+    # pool is whoever submitted, and a note is only interesting when it belongs
+    # to somebody who is actually in that pool.
+    from deskmatch import responses as _responses_mod
+
+    _config = load_config(config_dir)
+    roster = sorted(
+        _responses_mod.load_responses(str(responses_csv), _config.k).latest
+    )
+    if not roster:
+        pytest.skip("the shipped response export has no submissions")
     base = tmp_path_factory.mktemp("accommodations_e2e")
     notes_csv = write_notes(base / "notes.csv", synthetic_notes(roster))
 

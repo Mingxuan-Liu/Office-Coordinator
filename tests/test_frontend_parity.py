@@ -374,7 +374,19 @@ def _valid_payload() -> dict:
     k = config.scoring.k
 
     held = {p.current_desk for p in config.roster.people if p.keeps_desk}
-    person = next(p for p in config.roster.people if not p.keeps_desk)
+    # Synthesised, not taken from the roster. config/roster.csv ships EMPTY now
+    # -- the domain-restricted link is the membership check -- so pulling a
+    # person out of it raised StopIteration. Building one here is also the more
+    # faithful fixture: somebody the roster does not list is the normal case,
+    # not the exceptional one.
+    candidacy = _some_candidacy(config)
+    person = Person(
+        email="parity.fixture@umich.edu", name="Parity Fixture", year=0,
+        candidacy=candidacy, keeps_desk=False, current_desk=None,
+        attributes={"email": "parity.fixture@umich.edu", "name": "Parity Fixture",
+                    "year": 0, "candidacy": candidacy, "keeps_desk": "no",
+                    "current_desk": ""},
+    )
     zones = set(elig.allowed_zones(config.eligibility, config.rooms, person))
     desks = [
         d.id
@@ -393,6 +405,32 @@ def _valid_payload() -> dict:
         "authMethod": "google",
         "clientVersion": "test",
     }
+
+
+def _some_candidacy(config) -> str:
+    """A candidacy the rule table actually opens desks to.
+
+    Read off eligibility.json rather than hard-coded, so renaming a cohort does
+    not quietly turn this fixture into a person with nowhere to sit.
+    """
+    best, best_n = "", -1
+    seen = [
+        str(rule.when["candidacy"])
+        for rule in config.eligibility.rules
+        if isinstance(rule.when.get("candidacy"), str)
+    ] + ["candidate"]
+    for value in seen:
+        probe = Person(
+            email="probe@umich.edu", name="Probe", year=0, candidacy=value,
+            keeps_desk=False, current_desk=None,
+            attributes={"email": "probe@umich.edu", "name": "Probe", "year": 0,
+                        "candidacy": value, "keeps_desk": "no", "current_desk": ""},
+        )
+        zones = set(elig.allowed_zones(config.eligibility, config.rooms, probe))
+        n = sum(1 for d in config.rooms.all_desks if d.available and d.zone in zones)
+        if n > best_n:
+            best, best_n = value, n
+    return best
 
 
 def _run_phase(tmp_path: Path, props: dict, tag: str) -> dict:

@@ -801,7 +801,7 @@
       "sensitivity-delta"
     ]
   };
-  var ROSTER_CSV = "name,email,year,candidacy,keeps_desk,current_desk\nAda Lovelace,alovelace@umich.edu,5,candidate,no,\nVera Rubin,vrubin@umich.edu,1,precandidate,no,\nCecilia Payne,cpayne@umich.edu,2,precandidate,no,\nJocelyn Bell,jbell@umich.edu,6,candidate,yes,D07\nSubrahmanyan Chandrasekhar,schandra@umich.edu,4,candidate,no,\nAnnie Cannon,acannon@umich.edu,3,candidate,no,\nHenrietta Leavitt,hleavitt@umich.edu,1,precandidate,no,\nFritz Zwicky,fzwicky@umich.edu,4,candidate,no,\nNancy Roman,nroman@umich.edu,2,precandidate,no,\nEdwin Hubble,ehubble@umich.edu,3,candidate,no,\n";
+  var ROSTER_CSV = "name,email,year,candidacy,keeps_desk,current_desk\n";
   /* END GENERATED */
 
   /* --- names used to top the roster up to a realistic size --------------- */
@@ -1024,6 +1024,24 @@
        count in rooms.json — never a literal head count. */
     var target = Math.max(rows.length, Math.round(DESKS.length * 0.8));
     var pairs = rows.map(function (p) { return { year: p.year, candidacy: p.candidacy }; });
+
+    /* config/roster.csv ships EMPTY now -- the domain-restricted link is the
+       membership check -- so there are no rows to copy cohorts from, and
+       pick([]) returned undefined straight into the rule table. Derive the
+       cohorts from eligibility.json instead: every candidacy any rule names,
+       plus one that matches nothing so the catch-all is exercised too. */
+    if (!pairs.length) {
+      var seen = {}, derived = [];
+      ((ELIGIBILITY && ELIGIBILITY.rules) || []).forEach(function (rule) {
+        var value = (rule.when || {}).candidacy;
+        if (typeof value === 'string' && !has(seen, lower(value))) {
+          seen[lower(value)] = true;
+          derived.push({ year: 1 + derived.length, candidacy: value });
+        }
+      });
+      derived.push({ year: derived.length + 1, candidacy: 'candidate' });
+      pairs = derived;
+    }
     var widest = pairs.slice().sort(function (a, b) {
       return capacityOf(zoneKey(b)) - capacityOf(zoneKey(a));
     })[0];

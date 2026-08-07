@@ -132,17 +132,28 @@ def cmd_solve(args: argparse.Namespace) -> int:
     # Cross-check the pre-lock claim log against the roster, when given one.
     # See deskmatch/keepers.py for why: the solver reads the roster, the form
     # reads the claim log, and if the merge was skipped only the solver is wrong.
+    claims: tuple = ()
     if args.keepers:
         from . import keepers as keepers_mod
 
         claims = keepers_mod.load_claims(Path(args.keepers))
-        mismatches = keepers_mod.verify_against_roster(claims, cfg.roster)
-        if mismatches:
-            raise keepers_mod.KeepersError(mismatches)
-        print(f"  keepers     : {len(claims)} active claim(s), all reflected in "
-              f"the roster")
+        if cfg.roster.people:
+            # There is a roster, so it is supposed to already record these.
+            # Disagreement means the merge was skipped, and the solver would
+            # otherwise give a kept desk away.
+            mismatches = keepers_mod.verify_against_roster(claims, cfg.roster)
+            if mismatches:
+                raise keepers_mod.KeepersError(mismatches)
+            print(f"  keepers     : {len(claims)} active claim(s), all reflected "
+                  f"in the roster")
+        else:
+            # No roster to reconcile against: the claim log IS the record, and
+            # build_problem takes it directly. This is the normal path now --
+            # it removes merge_keepers.py from the critical route entirely.
+            print(f"  keepers     : {len(claims)} active claim(s), taken from the "
+                  f"claim log (no roster to reconcile against)")
 
-    build = problem_mod.build_problem(cfg, resp, args.curve)
+    build = problem_mod.build_problem(cfg, resp, args.curve, claims=claims)
     prob = build.problem
 
     _rule("POOL")
