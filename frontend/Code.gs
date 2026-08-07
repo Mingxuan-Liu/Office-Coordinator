@@ -194,6 +194,7 @@ function getBootstrap() {
       person: null,
       identity: { sessionEmail: '', onRoster: false },
       rosterNames: [],
+      candidacyOptions: [],
       lockedDesks: [],
       allowedZonesFor: {},
       priorSubmission: null,
@@ -361,6 +362,10 @@ function getBootstrap() {
     person: person,
     identity: { sessionEmail: sessionEmail, onRoster: !!matched },
     rosterNames: rosterNames,
+    // What the Candidacy dropdown offers. Sent even when it is empty, so the
+    // client can tell "the coordinator listed nothing" from "an old deployment
+    // that predates the key" and fall back accordingly.
+    candidacyOptions: candidacyOptions_(),
     lockedDesks: lockedDesks_(roster),
     allowedZonesFor: allowedZonesFor,
     priorSubmission: priorSubmission,
@@ -1841,6 +1846,39 @@ function deskIndex_() {
 /** Zone ids defined in rooms.json, in file order. */
 function zoneIds_() {
   return Object.keys(cfg_('ROOMS_JSON').zones || {});
+}
+
+/**
+ * The candidacy vocabulary the identity page offers, from
+ * eligibility.json:candidacy_options (SPEC §2.2).
+ *
+ * This is config, not a constant, for the same reason zone ids are: the words
+ * are the department's and they are the text the rule table matches on. It is
+ * NOT derived from the rules, because a rule only has to name a cohort it
+ * treats specially -- our table names "precandidate" and leaves everyone else
+ * to the catch-all, so deriving would offer exactly one option and hide the
+ * other. It is no longer derived from roster.csv either: that is what broke
+ * when the roster started shipping empty (SPEC §2.3) and left the dropdown with
+ * nothing in it but "Something else...".
+ *
+ * Missing or unusable degrades to [] rather than throwing: the form's own
+ * free-text fallback still lets somebody through, which beats a boot failure.
+ */
+function candidacyOptions_() {
+  var elig = safeCfg_('ELIGIBILITY_JSON', {});
+  var raw = elig.candidacy_options;
+  if (!isArray_(raw)) { return []; }
+  var seen = {}, out = [];
+  for (var i = 0; i < raw.length; i++) {
+    if (typeof raw[i] !== 'string') { continue; }
+    var value = raw[i].replace(/^\s+|\s+$/g, '');
+    if (!value) { continue; }
+    var key = value.toLowerCase();
+    if (seen[key]) { continue; }
+    seen[key] = true;
+    out.push(value);
+  }
+  return out;
 }
 
 /** Human label for a zone, for error messages. */

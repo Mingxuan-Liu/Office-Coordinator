@@ -1306,7 +1306,8 @@ def validate_eligibility(
         return ctx
 
     _check_schema_version(ctx, ELIGIBILITY_FILE, doc)
-    _check_unknown_keys(ctx, top, doc, ("schema_version", "rules"))
+    _check_unknown_keys(ctx, top, doc, ("schema_version", "candidacy_options", "rules"))
+    _validate_candidacy_options(ctx, doc)
 
     rules = _require(
         ctx, top, doc, "rules", _is_list, "an array of rule objects",
@@ -1404,7 +1405,92 @@ def validate_eligibility(
         _validate_allow_zones(ctx, where, rule, zone_ids)
 
     _validate_catch_all_last(ctx, rules)
+    _check_rules_are_reachable_from_the_form(ctx, doc)
     return ctx
+
+
+def _validate_candidacy_options(ctx: ValidationContext, doc: Mapping[str, Any]) -> None:
+    """The candidacy vocabulary the form offers (SPEC §2.2).
+
+    Optional: leaving it out is how you say "whatever the roster carries", which
+    is what the form did before this key existed. Present but wrong is worth an
+    error, because the failure it produces is a dropdown a student cannot answer
+    and nothing else that looks amiss.
+    """
+    where = f"{ELIGIBILITY_FILE}: candidacy_options"
+    if "candidacy_options" not in doc:
+        return
+    options = doc["candidacy_options"]
+    if not _is_list(options):
+        ctx.error(
+            where,
+            f"is {_a_typename(options)} ({_fmt(options)}); expected an array of strings.",
+            'e.g. ["precandidate", "candidate"] — the words the form offers, in'
+            " the order it offers them.",
+        )
+        return
+    if not options:
+        ctx.warn(
+            where,
+            "is empty, so the form offers no candidacy to choose from and every"
+            " student has to type one by hand.",
+            "Either list the department's wording, or remove the key entirely to"
+            " fall back to the values in roster.csv.",
+        )
+        return
+
+    seen: dict[str, int] = {}
+    for index, value in enumerate(options):
+        at = f"{where}[{index}]"
+        if not _is_str(value):
+            ctx.error(
+                at,
+                f"is {_a_typename(value)} ({_fmt(value)}); expected a string.",
+                "Eligibility predicates compare candidacy as text, so an option"
+                " that is not text can never match one.",
+            )
+            continue
+        if not value.strip():
+            ctx.error(at, "is blank.", "Remove it, or write the value the department uses.")
+            continue
+        key = value.strip().lower()
+        if key in seen:
+            ctx.warn(
+                at,
+                f"repeats {_fmt(options[seen[key]])} (candidacy is compared"
+                " case-insensitively), so the dropdown would list it twice.",
+            )
+        else:
+            seen[key] = index
+
+
+def _check_rules_are_reachable_from_the_form(
+    ctx: ValidationContext, doc: Mapping[str, Any]
+) -> None:
+    """Warn about a cohort a rule singles out that the form never offers.
+
+    Candidacy is the one attribute a student answers for themselves, so a rule
+    keyed on a candidacy that is not in `candidacy_options` can only ever fire
+    for someone who typed it exactly, or for a roster row. That is usually a
+    typo on one side or the other, and it is silent: the rule looks written, the
+    cohort it protects just never matches.
+    """
+    options = doc.get("candidacy_options")
+    if not _is_list(options) or not options:
+        return
+    offered = {v.strip().lower() for v in options if _is_str(v) and v.strip()}
+    named = predicate_values(doc).get("candidacy", frozenset())
+    missing = sorted(v for v in named if v not in offered)
+    if not missing:
+        return
+    shown = ", ".join(_fmt(v) for v in missing)
+    ctx.warn(
+        f"{ELIGIBILITY_FILE}: candidacy_options",
+        f"does not offer {shown}, which {'a rule names' if len(missing) == 1 else 'rules name'}"
+        " — nobody can select that from the form.",
+        "Add it to candidacy_options, or correct the spelling in the rule."
+        f" Currently offered: {', '.join(_fmt(v) for v in options if _is_str(v))}.",
+    )
 
 
 def _validate_catch_all_last(ctx: ValidationContext, rules: Sequence[Any]) -> None:

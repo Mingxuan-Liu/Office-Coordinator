@@ -865,6 +865,151 @@ def test_all_four_predicate_forms_are_accepted(config_case):
 
 
 # --------------------------------------------------------------------------
+# SPEC §2.2 — candidacy_options, the vocabulary the form offers
+# --------------------------------------------------------------------------
+#
+# The rules and the dropdown are separate lists, and the reason is easy to lose:
+# a rule only names a cohort it treats *specially*, so the shipped table names
+# "precandidate" and leaves everyone else to the catch-all. Read the rules as
+# the vocabulary and the form offers one word. Read roster.csv as the
+# vocabulary -- which is what it used to do -- and the form offers none at all,
+# because the roster ships empty (§2.3). That is the bug these tests pin down:
+# a student opening the identity page found nothing in the dropdown but
+# "Something else...", and had to type their own cohort into a free-text box
+# for the rule table to match on.
+
+CANDIDACY_OPTION_RULES = [
+    BrokenRule(
+        "candidacy-options-wrong-type", "§2.2 candidacy_options is an array of strings",
+        lambda c: c.eligibility.__setitem__("candidacy_options", "precandidate"),
+        "eligibility.json: candidacy_options", "expected an array of strings",
+        '["precandidate", "candidate"]',
+    ),
+    BrokenRule(
+        "candidacy-option-not-string", "§2.2 candidacy_options entries are strings",
+        lambda c: c.eligibility.__setitem__("candidacy_options", ["precandidate", 4]),
+        "eligibility.json: candidacy_options[1]", "expected a string",
+    ),
+    BrokenRule(
+        "candidacy-option-blank", "§2.2 candidacy_options entries are non-empty",
+        lambda c: c.eligibility.__setitem__("candidacy_options", ["precandidate", "  "]),
+        "eligibility.json: candidacy_options[1]", "is blank",
+    ),
+]
+
+
+@pytest.mark.parametrize("rule", as_params(CANDIDACY_OPTION_RULES))
+def test_candidacy_options_rule_is_enforced(case: ConfigCase, rule: BrokenRule):
+    problem = check(case, rule)
+    assert problem.render(), rule.spec
+
+
+def test_candidacy_options_load_in_the_order_written(case: ConfigCase):
+    """Source order, not sorted: the coordinator writes the department's order.
+
+    Sorting would put "candidate" above "precandidate" for a reason nobody
+    reading the config could see.
+    """
+    case.eligibility["candidacy_options"] = ["precandidate", " candidate "]
+    config = case.load()
+    assert config.eligibility.candidacy_options == ("precandidate", "candidate")
+
+
+def test_candidacy_options_is_optional(case: ConfigCase):
+    """Omitting it is how you say "whatever the roster carries"."""
+    case.eligibility.pop("candidacy_options", None)
+    config = case.load()
+    assert config.eligibility.candidacy_options == ()
+    # Absent is silent. A warning on the intended state is one nobody reads.
+    assert not [w for w in config.warnings if "candidacy_options" in w]
+
+
+def test_empty_candidacy_options_warns(case: ConfigCase):
+    """Present but empty is a dropdown nobody can answer — say so."""
+    case.eligibility["candidacy_options"] = []
+    find_warning(
+        case.warnings(),
+        "eligibility.json: candidacy_options",
+        "the form offers no candidacy to choose from",
+    )
+
+
+def test_duplicate_candidacy_option_warns_and_is_collapsed(case: ConfigCase):
+    """Candidacy is compared case-insensitively, so these are the same word.
+
+    It loads (a repeat is a warning, not an error), and the repeat is dropped
+    with the first spelling kept — the same normalisation `Code.gs
+    candidacyOptions_()` applies, so the two builds of the dropdown cannot
+    drift over a config the coordinator was told was merely untidy.
+    """
+    case.eligibility["candidacy_options"] = ["precandidate", "Precandidate"]
+    find_warning(
+        case.warnings(),
+        "eligibility.json: candidacy_options[1]",
+        "the dropdown would list it twice",
+    )
+    assert case.load().eligibility.candidacy_options == ("precandidate",)
+
+
+def test_a_rule_naming_a_candidacy_the_form_never_offers_warns(case: ConfigCase):
+    """The failure this catches is silent: the rule looks written and never fires.
+
+    Candidacy is the one attribute a student answers for themselves, so a rule
+    keyed on a word the dropdown does not carry protects a cohort that cannot
+    select itself.
+    """
+    _set_when(case, {"candidacy": "postcandidate"})
+    case.eligibility["candidacy_options"] = ["precandidate", "candidate"]
+    warning = find_warning(
+        case.warnings(),
+        "eligibility.json: candidacy_options",
+        "nobody can select that from the form",
+    )
+    assert "postcandidate" in warning
+
+
+def test_the_shipped_config_offers_every_candidacy_its_rules_name(case: ConfigCase):
+    """The same check, run over a config whose vocabulary is complete: silence."""
+    _set_when(case, {"candidacy": "precandidate"})
+    case.eligibility["candidacy_options"] = ["precandidate", "candidate"]
+    assert not [
+        w for w in case.warnings() if "nobody can select that from the form" in w
+    ]
+
+
+def test_candidacy_options_decide_nothing_about_zones(case: ConfigCase):
+    """It is a list of words for a dropdown, not a gate.
+
+    A student who picks "Something else…" and types a value that is not offered
+    is matched by the catch-all like anybody else. If this ever stops being
+    true, the form has quietly become a second eligibility rule table.
+    """
+    from deskmatch import eligibility as elig
+    from deskmatch.types import Person
+
+    zone = case.zone_ids[0]
+    case.eligibility["rules"] = [
+        {"id": "pre", "when": {"candidacy": "precandidate"},
+         "allow_zones": [zone], "reason": "Cohort."},
+        {"id": "everyone", "when": {}, "allow_zones": "*", "reason": "Catch-all."},
+    ]
+    case.eligibility["candidacy_options"] = ["precandidate", "candidate"]
+    config = case.load()
+
+    def zones_for(candidacy: str) -> list[str]:
+        person = Person(
+            email="typed@umich.edu", name="Typed", year=3, candidacy=candidacy,
+            keeps_desk=False, current_desk=None,
+            attributes={"email": "typed@umich.edu", "candidacy": candidacy,
+                        "year": 3, "keeps_desk": "no", "current_desk": ""},
+        )
+        return sorted(elig.allowed_zones(config.eligibility, config.rooms, person))
+
+    assert zones_for("visiting scholar") == zones_for("candidate")
+    assert zones_for("precandidate") == [zone]
+
+
+# --------------------------------------------------------------------------
 # SPEC §2.3 — roster.csv
 # --------------------------------------------------------------------------
 

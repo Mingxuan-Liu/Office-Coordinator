@@ -99,6 +99,10 @@ If you do fill it in, the columns are
 `name,email,year,candidacy,keeps_desk,current_desk`, `email` is the key, and
 nothing about it gates participation.
 
+The candidacy choices the form offers are **not** read from this file — they are
+`candidacy_options` in `config/eligibility.json`, so the dropdown still has
+answers in it when the roster is empty.
+
 ```bash
 python -m deskmatch validate --config config/
 ```
@@ -430,6 +434,7 @@ must not be broken.
 | add a room | same; `rooms.json` holds a list of rooms |
 | add a zone | `config/rooms.json` `zones`, then reference it from `eligibility.json` |
 | change who may sit where | `config/eligibility.json` — a rule table, not code |
+| change the candidacy choices the form offers | `config/eligibility.json` `candidacy_options` |
 | change the points per rank | `config/scoring.json` |
 | change K | change the length of *every* curve in `config/scoring.json` |
 | change the seed | `config/scoring.json`, and announce it first |

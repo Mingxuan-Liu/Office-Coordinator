@@ -716,7 +716,22 @@
       "Attribute names must be columns in roster.csv. The form only asks for",
       "candidacy, so a rule keyed on anything else reads the roster's value, which",
       "may be stale. To add a rule, insert it ABOVE the catch-all. Do not edit",
-      "Python for this."
+      "Python for this.",
+      "",
+      "`candidacy_options` is the vocabulary the identity page offers in its",
+      "Candidacy dropdown, in the order shown. It is a SEPARATE list from the",
+      "rules on purpose: the rules say what each value MEANS, and only",
+      "\"precandidate\" needs naming there because everyone else is the catch-all,",
+      "but the form still has to offer both words or nobody can pick the second",
+      "one. The form used to scrape these values out of roster.csv, which stopped",
+      "producing anything the day the roster shipped empty and left students with",
+      "no choice but \"Something else...\". Write them exactly as the department",
+      "does -- the rules match on this text, case-insensitively. A student may",
+      "still type a value that is not on this list; it falls to the catch-all."
+    ],
+    "candidacy_options": [
+      "precandidate",
+      "candidate"
     ],
     "rules": [
       {
@@ -996,6 +1011,22 @@
   /* synthetic department                                                    */
   /* ---------------------------------------------------------------------- */
 
+  /* eligibility.json:candidacy_options, normalised the way Code.gs
+     candidacyOptions_() normalises it. */
+  var CANDIDACY_OPTIONS = (function () {
+    var raw = (ELIGIBILITY && ELIGIBILITY.candidacy_options) || [];
+    var seen = {}, out = [];
+    if (!isArray(raw)) { return out; }
+    raw.forEach(function (value) {
+      if (typeof value !== 'string') { return; }
+      var text = trim(value);
+      if (!text || has(seen, lower(text))) { return; }
+      seen[lower(text)] = true;
+      out.push(text);
+    });
+    return out;
+  }());
+
   var emailsUsed = {};
   function emailFor(name) {
     var parts = lower(name).replace(/[^a-z ]/g, '').split(/\s+/);
@@ -1027,19 +1058,26 @@
 
     /* config/roster.csv ships EMPTY now -- the domain-restricted link is the
        membership check -- so there are no rows to copy cohorts from, and
-       pick([]) returned undefined straight into the rule table. Derive the
-       cohorts from eligibility.json instead: every candidacy any rule names,
-       plus one that matches nothing so the catch-all is exercised too. */
+       pick([]) returned undefined straight into the rule table. Use the
+       vocabulary the form offers, which is the same set of answers a real
+       department would produce. Falling back to the candidacies the rules name
+       keeps a config predating candidacy_options working, plus one that matches
+       nothing so the catch-all is exercised too. */
     if (!pairs.length) {
-      var seen = {}, derived = [];
-      ((ELIGIBILITY && ELIGIBILITY.rules) || []).forEach(function (rule) {
-        var value = (rule.when || {}).candidacy;
-        if (typeof value === 'string' && !has(seen, lower(value))) {
-          seen[lower(value)] = true;
-          derived.push({ year: 1 + derived.length, candidacy: value });
-        }
+      var derived = CANDIDACY_OPTIONS.map(function (value, i) {
+        return { year: i + 1, candidacy: value };
       });
-      derived.push({ year: derived.length + 1, candidacy: 'candidate' });
+      if (!derived.length) {
+        var seen = {};
+        ((ELIGIBILITY && ELIGIBILITY.rules) || []).forEach(function (rule) {
+          var value = (rule.when || {}).candidacy;
+          if (typeof value === 'string' && !has(seen, lower(value))) {
+            seen[lower(value)] = true;
+            derived.push({ year: 1 + derived.length, candidacy: value });
+          }
+        });
+        derived.push({ year: derived.length + 1, candidacy: 'candidate' });
+      }
       pairs = derived;
     }
     var widest = pairs.slice().sort(function (a, b) {
@@ -1468,6 +1506,12 @@
           currentDesk: p.currentDesk
         };
       }).sort(function (a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); }),
+      /* Mirrors Code.gs candidacyOptions_(). The mock roster is synthetic and
+         always has rows, so the identity dropdown would look populated here
+         however this were wired -- which is exactly how the empty-roster bug
+         stayed invisible in the preview. Send the configured list, so what the
+         preview shows is what a real deployment shows. */
+      candidacyOptions: CANDIDACY_OPTIONS.slice(),
       lockedDesks: LOCKED.slice(),
       allowedZonesFor: ALLOWED_ZONES_FOR,
       phase: PHASE,

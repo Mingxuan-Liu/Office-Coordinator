@@ -701,7 +701,22 @@ var ELIGIBILITY_JSON = {
     "Attribute names must be columns in roster.csv. The form only asks for",
     "candidacy, so a rule keyed on anything else reads the roster's value, which",
     "may be stale. To add a rule, insert it ABOVE the catch-all. Do not edit",
-    "Python for this."
+    "Python for this.",
+    "",
+    "`candidacy_options` is the vocabulary the identity page offers in its",
+    "Candidacy dropdown, in the order shown. It is a SEPARATE list from the",
+    "rules on purpose: the rules say what each value MEANS, and only",
+    "\"precandidate\" needs naming there because everyone else is the catch-all,",
+    "but the form still has to offer both words or nobody can pick the second",
+    "one. The form used to scrape these values out of roster.csv, which stopped",
+    "producing anything the day the roster shipped empty and left students with",
+    "no choice but \"Something else...\". Write them exactly as the department",
+    "does -- the rules match on this text, case-insensitively. A student may",
+    "still type a value that is not on this list; it falls to the catch-all."
+  ],
+  "candidacy_options": [
+    "precandidate",
+    "candidate"
   ],
   "rules": [
     {
@@ -790,4 +805,4 @@ var SCORING_JSON = {
 
 var ROSTER = [];
 
-var CONFIG_FINGERPRINT = "20c6f46ed79459cc";
+var CONFIG_FINGERPRINT = "f2c03e7f0d21d565";

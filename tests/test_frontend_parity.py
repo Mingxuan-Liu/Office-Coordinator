@@ -228,6 +228,119 @@ def test_apps_script_sources_parse(tmp_path):
     assert not failures, "Apps Script source(s) failed to parse:\n" + "\n".join(failures)
 
 
+# ==========================================================================
+# The candidacy dropdown has answers in it
+# ==========================================================================
+
+_CANDIDACY_HARNESS = r"""
+var R = %(repo)s;
+var Session = {
+  getActiveUser: function () { return { getEmail: function () { return ''; } }; },
+  getScriptTimeZone: function () { return 'America/Detroit'; }
+};
+var SpreadsheetApp = { getActiveSpreadsheet: function () { return null; }, flush: function () {} };
+var PropertiesService = {
+  getScriptProperties: function () { return { getProperty: function () { return null; } }; }
+};
+var Utilities = { getUuid: function () { return 'u'; }, formatDate: function () { return ''; } };
+var HtmlService = {};
+var LockService = {
+  getScriptLock: function () { return { waitLock: function () {}, releaseLock: function () {} }; }
+};
+var Logger = { log: function () {} };
+
+(0, eval)(readFile(R + 'frontend/ConfigData.gs'));
+(0, eval)(readFile(R + 'frontend/Code.gs'));
+
+var out = {};
+try { out.helper = candidacyOptions_(); }
+catch (e) { out.helperError = String(e && e.message || e); }
+try {
+  var boot = getBootstrap();
+  out.bootstrap = boot.candidacyOptions;
+  out.rosterNames = (boot.rosterNames || []).length;
+} catch (e) { out.bootstrapError = String(e && e.message || e); }
+print(JSON.stringify(out));
+"""
+
+
+@requires_js
+def test_the_candidacy_dropdown_is_not_built_from_the_roster(tmp_path):
+    """The identity page must offer real candidacies with a zero-row roster.
+
+    This is a regression test for a specific, quiet failure. The dropdown used
+    to be built from the distinct `candidacy` values in `rosterNames`, which was
+    fine while a roster shipped with people in it. `config/roster.csv` now ships
+    as a header and nothing else (SPEC §2.3) -- the domain-restricted link is
+    the membership check -- so there were no values to collect, and the only
+    thing a student could pick was "Something else...", forcing them to type
+    their own cohort into a free-text box for the rule table to match on.
+
+    Nothing looked broken from the coordinator's side: the config validated,
+    the tests passed, the page rendered. So assert the thing that actually
+    matters -- with the roster exactly as shipped, the server hands the form a
+    non-empty list of candidacies, and it is the one in eligibility.json.
+    """
+    config = load_config(CONFIG_DIR)
+    expected = list(config.eligibility.candidacy_options)
+    assert expected, (
+        "config/eligibility.json must declare candidacy_options; it is what the "
+        "identity page offers, and nothing else supplies it now that the roster "
+        "ships empty"
+    )
+
+    script = tmp_path / "candidacy.js"
+    script.write_text(
+        _CANDIDACY_HARNESS % {"repo": json.dumps(str(REPO) + os.sep)},
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [_jsc(), str(script)], capture_output=True, text=True, timeout=120, cwd=tmp_path
+    )
+    assert proc.returncode == 0, (
+        f"the Apps Script harness failed (exit {proc.returncode}):\n"
+        f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
+    )
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+
+    assert out.get("helperError") is None, out["helperError"]
+    assert out.get("bootstrapError") is None, out["bootstrapError"]
+    assert out["helper"] == expected, (
+        "Code.gs candidacyOptions_() disagrees with eligibility.json: "
+        f"{out['helper']} != {expected}"
+    )
+    assert out["bootstrap"] == expected, (
+        "getBootstrap() must send the candidacy vocabulary to the client; the "
+        f"form has no other source for it. Got {out['bootstrap']!r}"
+    )
+    assert out["rosterNames"] == len(config.roster.people), (
+        "fixture drift: the harness and load_config disagree about the roster"
+    )
+    if not config.roster.people:
+        assert out["bootstrap"], (
+            "with a zero-row roster the form was offered NO candidacy at all -- "
+            "this is exactly the bug: the dropdown holds nothing but "
+            '"Something else..." and every student has to type their cohort'
+        )
+
+
+def test_view_login_does_not_source_the_dropdown_from_the_roster_alone():
+    """Asserted against the source: the behaviour lives in a browser closure.
+
+    ViewLogin's candidacyOptions() must consult the bootstrap. Folding roster
+    values in on top is fine and deliberate -- a deployment that does list
+    people keeps working -- but the roster must not be the only source, or the
+    empty-roster case regresses to a dropdown with nothing in it.
+    """
+    view = (FRONTEND / "ViewLogin.html").read_text(encoding="utf-8")
+    start = view.index("function candidacyOptions()")
+    body = view[start : view.index("\n  function ", start + 1)]
+    assert "b.candidacyOptions" in body or "bootstrap.candidacyOptions" in body, (
+        "ViewLogin candidacyOptions() no longer reads the server-supplied "
+        "vocabulary, so an empty roster means an empty dropdown again"
+    )
+
+
 @requires_js
 def test_config_data_gs_is_in_sync_with_config_dir(tmp_path):
     """ConfigData.gs is generated from config/. If someone edits rooms.json and

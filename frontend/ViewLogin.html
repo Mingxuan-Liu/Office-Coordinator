@@ -372,19 +372,38 @@
     });
   }());
 
-  /* ---- candidacy options (derived from the roster, never hard-coded) ---- */
+  /* ---- candidacy options (from config, never hard-coded) ---------------- */
 
+  /* The vocabulary comes from eligibility.json:candidacy_options, which the
+     server sends as bootstrap.candidacyOptions. It used to be scraped out of
+     the roster rows instead, and that quietly stopped working the day the
+     roster started shipping empty (SPEC §2.3): with no rows there were no
+     distinct candidacy values, so the dropdown held nothing but the disabled
+     "Choose…" placeholder and "Something else…", and every student had to type
+     their own cohort into a free-text box for the rule table to match on.
+
+     Roster values are still folded in, after the configured ones. A deployment
+     that does list people keeps working exactly as before, and a row carrying a
+     candidacy the coordinator forgot to add to the config is offered rather
+     than silently dropped. Order is config-first, source order preserved --
+     the coordinator writes the list the way the department says it, and
+     alphabetical would have put "candidate" before "precandidate" for no
+     reason anyone reading the config could see. */
   function candidacyOptions() {
     var seen = {}, out = [];
-    roster.forEach(function (r) {
-      var value = trim(r && r.candidacy);
-      if (!value) { return; }
-      var key = lower(value);
+
+    function add(value) {
+      var text = trim(value);
+      if (!text) { return; }
+      var key = lower(text);
       if (seen[key]) { return; }
       seen[key] = true;
-      out.push(value);
-    });
-    out.sort(function (a, b) { return lower(a) < lower(b) ? -1 : (lower(a) > lower(b) ? 1 : 0); });
+      out.push(text);
+    }
+
+    var b = APP.state.bootstrap || {};
+    (isArr(b.candidacyOptions) ? b.candidacyOptions : []).forEach(add);
+    roster.forEach(function (r) { add(r && r.candidacy); });
     return out;
   }
 

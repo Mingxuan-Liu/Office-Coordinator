@@ -56,6 +56,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
         n = sum(1 for d in cfg.rooms.all_desks if d.zone == zone_id)
         print(f"      {zone_id}: {n} desk(s) -- {cfg.rooms.zones[zone_id].label}")
     print(f"  eligibility: {len(cfg.eligibility.rules)} rule(s)")
+    if cfg.eligibility.candidacy_options:
+        print(f"      form offers: {', '.join(cfg.eligibility.candidacy_options)}")
     print(f"  roster     : {len(cfg.roster.people)} person/people, "
           f"{sum(1 for p in cfg.roster.people if p.keeps_desk)} keeping their desk")
     print(f"  scoring    : K={cfg.k}, primary curve '{cfg.scoring.primary_curve}' = "

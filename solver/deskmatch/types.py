@@ -133,6 +133,14 @@ class EligibilityRule:
 class Eligibility:
     schema_version: int
     rules: tuple[EligibilityRule, ...]
+    #: The candidacy vocabulary the form offers, in the order it offers it. Not
+    #: an input to any decision here -- the rules alone decide zones, and a
+    #: value absent from this list is matched by the catch-all like any other.
+    #: It exists because the rule table only has to name a cohort it treats
+    #: specially, so it cannot be read as the list of words a person may choose
+    #: between. Empty is legal and means the form falls back to whatever
+    #: candidacy values the roster happens to carry.
+    candidacy_options: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

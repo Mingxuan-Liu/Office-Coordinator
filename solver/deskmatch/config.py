@@ -473,7 +473,34 @@ def _build_eligibility(doc: Mapping[str, Any]) -> Eligibility:
         )
         for rule in doc["rules"]
     )
-    return Eligibility(schema_version=int(doc["schema_version"]), rules=rules)
+    return Eligibility(
+        schema_version=int(doc["schema_version"]),
+        rules=rules,
+        candidacy_options=_build_candidacy_options(doc.get("candidacy_options")),
+    )
+
+
+def _build_candidacy_options(raw: Any) -> tuple[str, ...]:
+    """Trim, drop blanks, and de-duplicate case-insensitively, first wins.
+
+    Normalised exactly the way `Code.gs candidacyOptions_()` normalises it. The
+    validator only *warns* about a repeat, so both sides have to agree on what
+    they do with one, or the two builds of the dropdown drift apart over a
+    config the coordinator was told was fine.
+    """
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in raw:
+        if not isinstance(value, str):
+            continue
+        text = value.strip()
+        if not text or text.lower() in seen:
+            continue
+        seen.add(text.lower())
+        out.append(text)
+    return tuple(out)
 
 
 def _build_roster(rows: Sequence[Mapping[str, str]]) -> Roster:

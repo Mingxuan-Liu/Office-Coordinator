@@ -145,6 +145,7 @@ anywhere in the codebase.
 ```jsonc
 {
   "schema_version": 1,
+  "candidacy_options": ["precandidate", "candidate"],  // what the form offers
   "rules": [
     {
       "id": "precandidates_together",
@@ -178,6 +179,25 @@ Enforced: the last rule MUST be a catch-all (`"when": {}`), so no person can
 fall through with undefined eligibility. Attribute names in `when` must exist as
 roster columns.
 
+**`candidacy_options`** is the vocabulary the identity page offers in its
+Candidacy dropdown, in the order given. It is optional, and deliberately
+separate from the rules: a rule only has to name a cohort it treats
+*specially* — the shipped table names `precandidate` and leaves everyone else
+to the catch-all — so the rules cannot be read as the list of words a student
+may choose between. Deriving the dropdown from the rules would offer one
+option; deriving it from `roster.csv` offers none, because the roster ships
+empty (§2.3). Both are why this list is written down.
+
+- Write the values exactly as the department does. Rules match this text
+  case-insensitively and trimmed.
+- The list decides nothing. Zones come from the rules alone, and a student who
+  types a value that is not on the list (via *Something else…*) is matched by
+  the catch-all like anybody else.
+- Omitting the key falls back to the distinct `candidacy` values in
+  `roster.csv`, which is what the form did before the key existed.
+- Warned: a candidacy a rule names that the list does not offer — that cohort
+  cannot be selected from the form.
+
 ### 2.3 `config/roster.csv`
 
 ```csv
@@ -201,7 +221,10 @@ submitter to appear here.
 - `email` is the primary key; lower-cased and trimmed on load; must be unique.
 - `year` integer ≥ 1.
 - `candidacy` free string (validated only against values used in eligibility rules;
-  an unreferenced value is a warning).
+  an unreferenced value is a warning). The form's dropdown is **not** built from
+  this column — that is `candidacy_options` in `eligibility.json` (§2.2) — but
+  any values here are offered alongside it, so a row is never a cohort the
+  student cannot select.
 - `keeps_desk` ∈ {yes,no,true,false,1,0,y,n} case-insensitive.
 - If `keeps_desk` is truthy, `current_desk` is REQUIRED and must be a valid desk id.
   That person and that desk are both **removed from the pool** before solving.
